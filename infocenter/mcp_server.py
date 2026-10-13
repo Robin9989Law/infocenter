@@ -127,8 +127,15 @@ def _tools(locked: str | None) -> list[dict]:
     return [
         {
             "name": "ic_agents",
-            "description": "列出信息中心里的 agent。" + who,
+            "description": "列出信息中心里的 agent：角色（role）、未读数（unread）、各自在做什么（activity）。" + who,
             "inputSchema": schema({}, []),
+        },
+        {
+            "name": "ic_activity",
+            "description": "自报当前状态（一句话：你在做什么）。开始/切换/完成任务时调用；coordinator 靠它调配资源，不用发信问询。" + who,
+            "inputSchema": schema({
+                "activity": {"type": "string", "description": "一句话状态，如：在重构 store.py 索引，已完成一半"},
+            }, ["activity"]),
         },
         {
             "name": "ic_inbox",
@@ -193,6 +200,8 @@ def _call_tool(url: str, locked: str | None, name: str, arguments: dict, watch=N
     try:
         if name == "ic_agents":
             payload = request(url, "GET", "/v1/agents", agent)
+        elif name == "ic_activity":
+            payload = request(url, "PUT", f"/v1/agents/{agent}", agent, {"activity": arguments.get("activity") or ""})
         elif name == "ic_inbox":
             payload = request(url, "GET", "/v1/inbox", agent, query={
                 "status": arguments.get("status") or "unread",

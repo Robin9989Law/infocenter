@@ -36,6 +36,7 @@ def main(argv=None) -> int:
 
     reg = sub.add_parser("register", help="注册或更新自己")
     reg.add_argument("--description", default=None)
+    reg.add_argument("--activity", default=None, help="一句话状态自报：你在做什么，coordinator 据此调配")
 
     send = sub.add_parser("send", help="发一封留言")
     send.add_argument("--to", action="append", required=True, help="收件人。可重复。* 表示除自己以外的所有人")
@@ -134,7 +135,11 @@ def main(argv=None) -> int:
                 payload = call(args.url, agent, "DELETE", f"/v1/agents/{name}", {}, home=home)
                 payload["config_removed"] = config.remove(home, name)
         elif args.cmd == "register":
-            body = {} if args.description is None else {"description": args.description}
+            body = {}
+            if args.description is not None:
+                body["description"] = args.description
+            if args.activity is not None:
+                body["activity"] = args.activity
             payload = call(args.url, agent, "PUT", f"/v1/agents/{agent}", body, home=home)
         elif args.cmd == "send":
             payload = call(
@@ -330,6 +335,8 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             role = " [coordinator]" if item.get("role") == "coordinator" else ""
             desc = f"（{item['description']}）" if item.get("description") else ""
             print(f"{item['name']}{role}  未读 {item.get('unread', 0)}  最后活动 {item.get('last_seen_local', '')}{desc}")
+            if item.get("activity"):
+                print(f"    正在: {item['activity']}  [{item.get('activity_at_local', '')}]")
         return
     if as_json or cmd in {"agents", "thread"}:
         print(json.dumps(payload, ensure_ascii=False, indent=2))

@@ -32,8 +32,10 @@ CONVENTIONS = """---
 合作约定（kickoff 自动附加）：
 1. 本信由 coordinator {coordinator} 发出。coordinator 的分工裁定优先执行；有异议只回一条针对冲突点的信，不要并行改文件。
 2. 单一写者原则：每个文件/文档只有一个 owner agent 可写；其他人只以留言发 diff 建议，由 owner 合入。
-3. 礼仪：无新信息不回帖，禁止 +1 附议；同一分歧最多两轮，之后交 coordinator/human 裁定。
-4. 收到本信后先回一条确认认领的分工，再开始动手。"""
+3. 规划纪律：PLAN.md（任务分解）由 coordinator 独家产出和维护，每项任务带 owner、交付物、验收标准、依赖；各成员只把进展写进自己的 TODO-<名字>.md；要调整计划就给 coordinator 发信，不要直接改 PLAN.md。
+4. 状态自报：开始/切换/完成任务时更新自己的 activity（MCP 调 ic_activity，CLI 用 ic register --activity "一句话状态"）。coordinator 想知道各家在做什么，直接看 `ic agents`，**不要发问询信**；要干预、要调配才发信。
+5. 礼仪：无新信息不回帖，禁止 +1 附议；同一分歧最多两轮，之后交 coordinator/human 裁定。
+6. 收到本信后先回一条确认认领的分工，再开始动手。"""
 
 
 def state_dir(home) -> Path:
@@ -142,13 +144,14 @@ def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
                 actions.append({"agent": agent, "kind": "skip", "command": [], "note": "收信守护已在运行"})
             else:
                 poll = _poll_seconds(item)
-                actions.append({
-                    "agent": agent, "kind": "daemon",
-                    "command": [
-                        sys.executable, "-m", "infocenter", "crew", "watch", agent,
-                        "--dir", project, "--url", url, "--home", str(home), "--poll", str(poll),
-                    ],
-                })
+                beat = _heartbeat_seconds(item)
+                command = [
+                    sys.executable, "-m", "infocenter", "crew", "watch", agent,
+                    "--dir", project, "--url", url, "--home", str(home), "--poll", str(poll),
+                ]
+                if beat:
+                    command += ["--heartbeat", str(beat)]
+                actions.append({"agent": agent, "kind": "daemon", "command": command})
         if not (app or launch or headless):
             actions.append({"agent": agent, "kind": "skip", "command": [], "note": "未配置 launch/app/headless"})
     if use_tmux and any(action["kind"] == "tmux" for action in actions) and not _tmux_session_exists():
@@ -165,6 +168,14 @@ def _poll_seconds(item: dict) -> int:
     except (TypeError, ValueError):
         poll = DEFAULT_POLL
     return max(5, min(poll, 3600))
+
+
+def _heartbeat_seconds(item: dict) -> int:
+    try:
+        beat = int(item.get("heartbeat") or 0)
+    except (TypeError, ValueError):
+        beat = 0
+    return max(0, min(beat, 86400))
 
 
 def up(home, url: str, project: str, only: str = "", dry_run: bool = False) -> dict:
@@ -326,21 +337,50 @@ def build_prompt(agent: str, project: str, fresh: list[dict], unread_total: int)
     )
 
 
-def watch(home, agent: str, project: str, url: str, poll: int = DEFAULT_POLL) -> int:
-    """守护进程本体：长轮询 /v1/events，新信即时触发一次 headless 运行。"""
+def build_heartbeat_prompt(agent: str, project: str, coordinator: bool = False) -> str:
+    if coordinator:
+        return (
+            f"你是 {agent}（coordinator），项目目录 {project}。心跳检查（没有新信件）："
+            f"1）维护 {project}/PLAN.md：吸收新需求、更新任务状态、勾掉完成项、拆解停滞项；"
+            f"2）调配资源：用 `ic --as {agent} agents` 看各家的 activity 状态和未读数，对照成员 TODO-<名字>.md 进展；"
+            f"发现谁停滞、跑偏或闲下来，就重排任务（更新 PLAN.md 并发信通知相关方）或发信催办；"
+            f"3）处理收件箱里等你裁定的信：`ic --as {agent} inbox --full`。"
+            f"确实无可推进就直接结束本次运行，不要发客套信、不要 +1。"
+        )
+    return (
+        f"你是 {agent}，项目目录 {project}。心跳检查（没有新信件）："
+        f"阅读 {project} 下的 PLAN.md 和你自己的 TODO-{agent}.md，"
+        f"推进你名下（owner={agent}）的下一个未完成事项，并把进展写回 TODO-{agent}.md。"
+        f"发现 PLAN.md 有空缺、依赖过期或需要调整，给 coordinator 发信说明，不要直接改 PLAN.md。"
+        f"开始或切换任务时，用 `ic --as {agent} register --activity \"一句话状态\"` 自报进展，coordinator 靠它调配资源。"
+        f"需要别人输入或裁定时，用 `ic --as {agent} send/reply` 给相关人留言；"
+        f"确实无可推进就直接结束本次运行，不要发客套信、不要 +1。"
+    )
+
+
+def watch(home, agent: str, project: str, url: str, poll: int = DEFAULT_POLL, heartbeat: int | None = None) -> int:
+    """守护进程本体：长轮询 /v1/events，新信即时触发一次 headless 运行；
+    没有信时每隔 heartbeat 秒触发一次 headless 规划运行（0=关闭，纯信件驱动）。"""
     agent = normalize_name(agent)
     entry = config.entry(home, agent)
     template = str((entry or {}).get("headless") or "").strip()
     if not template:
         raise MailError("no_headless", f"{agent} 在 config.json 里没有 headless 命令")
     poll = max(5, min(int(poll or DEFAULT_POLL), 3600))
+    if heartbeat is None:
+        heartbeat = _heartbeat_seconds(entry or {})
+    heartbeat = max(0, min(int(heartbeat or 0), 86400))
     wait = min(poll, 120)
     cursor_path = _cursor_file(home, agent)
     try:
         cursor = int(cursor_path.read_text().strip())
     except (OSError, ValueError):
         cursor = 0
-    print(f"[{utcnow()}] watch 启动 agent={agent} dir={project} url={url} poll={poll}", flush=True)
+    print(
+        f"[{utcnow()}] watch 启动 agent={agent} dir={project} url={url} poll={poll} heartbeat={heartbeat}",
+        flush=True,
+    )
+    last_run = time.monotonic()
     while True:
         try:
             payload = request(
@@ -355,11 +395,16 @@ def watch(home, agent: str, project: str, url: str, poll: int = DEFAULT_POLL) ->
         cursor = max(cursor, int(payload.get("cursor") or 0))
         cursor_path.write_text(str(cursor))
         fresh = payload.get("new") or []
-        if not fresh:
-            continue
-        prompt = build_prompt(agent, project, fresh, int(payload.get("unread_total") or len(fresh)))
-        print(f"[{utcnow()}] 新信 {len(fresh)} 封，触发 headless", flush=True)
-        _run_headless(template, prompt, project)
+        if fresh:
+            prompt = build_prompt(agent, project, fresh, int(payload.get("unread_total") or len(fresh)))
+            print(f"[{utcnow()}] 新信 {len(fresh)} 封，触发 headless", flush=True)
+            _run_headless(template, prompt, project)
+            last_run = time.monotonic()
+        elif heartbeat and time.monotonic() - last_run >= heartbeat:
+            print(f"[{utcnow()}] 无新信，心跳 {heartbeat}s 到期，触发规划运行", flush=True)
+            is_coord = str((entry or {}).get("role") or "") == "coordinator"
+            _run_headless(template, build_heartbeat_prompt(agent, project, is_coord), project)
+            last_run = time.monotonic()
 
 
 def _run_headless(template: str, prompt: str, project: str) -> None:

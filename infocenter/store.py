@@ -123,7 +123,9 @@ class Store:
                     description TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     last_seen_at TEXT NOT NULL,
-                    role TEXT NOT NULL DEFAULT ''
+                    role TEXT NOT NULL DEFAULT '',
+                    activity TEXT NOT NULL DEFAULT '',
+                    activity_at TEXT NOT NULL DEFAULT ''
                 );
                 CREATE TABLE IF NOT EXISTS messages (
                     id TEXT PRIMARY KEY,
@@ -150,6 +152,10 @@ class Store:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(agents)")}
             if "role" not in columns:
                 conn.execute("ALTER TABLE agents ADD COLUMN role TEXT NOT NULL DEFAULT ''")
+            if "activity" not in columns:
+                conn.execute("ALTER TABLE agents ADD COLUMN activity TEXT NOT NULL DEFAULT ''")
+            if "activity_at" not in columns:
+                conn.execute("ALTER TABLE agents ADD COLUMN activity_at TEXT NOT NULL DEFAULT ''")
 
     def seed(self) -> None:
         now = utcnow()
@@ -162,25 +168,37 @@ class Store:
                 [(name, description, role, now, now) for name, description, role in self._seeds],
             )
 
-    def touch(self, name: str, description: str | None = None, role: str | None = None) -> dict:
+    def touch(
+        self,
+        name: str,
+        description: str | None = None,
+        role: str | None = None,
+        activity: str | None = None,
+    ) -> dict:
         name = normalize_name(name)
         role = _role(role) if role is not None else None
+        activity = _activity(activity) if activity is not None else None
         now = utcnow()
         with self._session() as conn:
             exists = conn.execute("SELECT 1 FROM agents WHERE name = ?", (name,)).fetchone()
             if exists is None:
                 conn.execute(
                     """
-                    INSERT INTO agents(name, description, role, created_at, last_seen_at)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO agents(name, description, role, activity, activity_at, created_at, last_seen_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (name, description or "", role or "", now, now),
+                    (name, description or "", role or "", activity or "", now if activity else "", now, now),
                 )
             else:
                 if description is not None:
                     conn.execute("UPDATE agents SET description = ? WHERE name = ?", (description, name))
                 if role is not None:
                     conn.execute("UPDATE agents SET role = ? WHERE name = ?", (role, name))
+                if activity is not None:
+                    conn.execute(
+                        "UPDATE agents SET activity = ?, activity_at = ? WHERE name = ?",
+                        (activity, now, name),
+                    )
                 conn.execute("UPDATE agents SET last_seen_at = ? WHERE name = ?", (now, name))
             row = conn.execute("SELECT * FROM agents WHERE name = ?", (name,)).fetchone()
             unread = _unread_counts(conn).get(name, 0)
@@ -532,6 +550,9 @@ def _agent(row: sqlite3.Row, unread: int = 0) -> dict:
         "description": row["description"],
         "role": row["role"],
         "unread": unread,
+        "activity": row["activity"],
+        "activity_at": row["activity_at"],
+        "activity_at_local": local_time(row["activity_at"]) if row["activity_at"] else "",
         "created_at": row["created_at"],
         "last_seen_at": row["last_seen_at"],
         "last_seen_local": local_time(row["last_seen_at"]),
@@ -603,3 +624,12 @@ def _role(value) -> str:
     if text == "coordinator":
         return "coordinator"
     raise MailError("invalid_role", "role 只能是空（成员）或 coordinator")
+
+
+def _activity(value) -> str:
+    if value is None:
+        return ""
+    text = " ".join(str(value).split())
+    if len(text) > 200:
+        raise MailError("invalid_activity", "activity 太长了，200 字以内说清楚你在做什么")
+    return text

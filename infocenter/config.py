@@ -11,6 +11,7 @@
   app          macOS 应用名，crew up 时 `open -a <app> <项目目录>`
   headless     无人值守命令模板，{prompt} 会被替换为收信处理指令；配了才会开守护
   poll         守护长轮询的等待上限（秒），默认 300
+  heartbeat    无信心跳间隔（秒）：守护进程定期触发一次 headless 规划运行，推进 TODO；0 或不填=纯信件驱动
 """
 
 import json
@@ -27,7 +28,7 @@ DEFAULT_AGENTS = (
     {"name": "human", "description": "用户"},
 )
 
-_KNOWN_KEYS = {"name", "description", "role", "launch", "app", "headless", "poll"}
+_KNOWN_KEYS = {"name", "description", "role", "launch", "app", "headless", "poll", "heartbeat"}
 
 
 def config_path(home) -> Path:

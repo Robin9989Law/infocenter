@@ -43,7 +43,7 @@ OPENAPI = {
         },
         "/v1/agents/{name}": {
             "put": {
-                "summary": "注册或更新自己",
+                "summary": "注册或更新自己。body 可带 description、role、activity（一句话状态自报）",
                 "parameters": [
                     {"$ref": "#/components/parameters/Agent"},
                     {"name": "name", "in": "path", "required": True, "schema": {"type": "string"}},
@@ -140,10 +140,14 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         role = body.get("role")
         if role is not None and not isinstance(role, str):
             raise MailError("invalid_role", "role 必须是字符串")
+        activity = body.get("activity")
+        if activity is not None and not isinstance(activity, str):
+            raise MailError("invalid_activity", "activity 必须是字符串")
         return 200, store.touch(
             agent,
             description if description is not None else None,
             role if role is not None else None,
+            activity if activity is not None else None,
         )
 
     if method == "DELETE" and path.startswith("/v1/agents/"):

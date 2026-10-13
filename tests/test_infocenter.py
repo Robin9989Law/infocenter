@@ -396,6 +396,8 @@ class HubTest(unittest.TestCase):
         body = request(self.url, "GET", f"/v1/messages/{message['id']}", "fakebot")["body"]
         self.assertIn("fakebot 负责数据", body)
         self.assertIn("单一写者", body)
+        self.assertIn("PLAN.md", body)
+        self.assertIn("状态自报", body)
         dry = subprocess.run(
             [sys.executable, IC, "--home", str(home), "crew", "up",
              "--dir", str(project), "--dry-run"],
@@ -455,6 +457,56 @@ class HubTest(unittest.TestCase):
         finally:
             proc.terminate()
             proc.wait(timeout=5)
+
+    def test_crew_heartbeat_triggers_planning(self):
+        home = self.home / "beat"
+        home.mkdir()
+        (home / "config.json").write_text(json.dumps({"agents": [
+            {"name": "fakebot", "headless": "/usr/bin/tee -a beat.txt", "heartbeat": 3},
+        ]}), encoding="utf-8")
+        project = Path(tempfile.mkdtemp(dir=str(self.home))).resolve()
+        proc = subprocess.Popen(
+            [sys.executable, IC, "--home", str(home), "--url", self.url,
+             "crew", "watch", "fakebot", "--dir", str(project), "--poll", "5"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=self._env(),
+        )
+        try:
+            target = project / "beat.txt"
+            deadline = time.time() + 12
+            while time.time() < deadline and not target.exists():
+                time.sleep(0.2)
+            self.assertTrue(target.exists(), "心跳没有触发 headless 规划运行")
+            content = target.read_text(encoding="utf-8")
+            self.assertIn("心跳检查", content)
+            self.assertIn("TODO-fakebot.md", content)
+        finally:
+            proc.terminate()
+            proc.wait(timeout=5)
+
+    def test_activity_report(self):
+        updated = request(self.url, "PUT", "/v1/agents/kimi", "kimi", {"activity": "在重构 store 索引，完成一半"})
+        self.assertEqual(updated["activity"], "在重构 store 索引，完成一半")
+        self.assertTrue(updated["activity_at_local"])
+        # 普通请求只动 last_seen，不动 activity
+        request(self.url, "GET", "/v1/inbox", "kimi")
+        agents = {a["name"]: a for a in request(self.url, "GET", "/v1/agents", "human")["agents"]}
+        self.assertEqual(agents["kimi"]["activity"], "在重构 store 索引，完成一半")
+        self.assertEqual(agents["grok"]["activity"], "")
+        registered = subprocess.run(
+            [sys.executable, IC, "--as", "grok", "register", "--activity", "在评审 F4 草案"],
+            check=True, capture_output=True, text=True, env=self._env(),
+        )
+        self.assertEqual(registered.returncode, 0)
+        agents = {a["name"]: a for a in request(self.url, "GET", "/v1/agents", "human")["agents"]}
+        self.assertEqual(agents["grok"]["activity"], "在评审 F4 草案")
+        listed = subprocess.run(
+            [sys.executable, IC, "--as", "human", "agents"],
+            check=True, capture_output=True, text=True, env=self._env(),
+        )
+        self.assertIn("正在: 在评审 F4 草案", listed.stdout)
+        with self.assertRaises(ApiError) as caught:
+            request(self.url, "PUT", "/v1/agents/kimi", "kimi", {"activity": "长" * 201})
+        self.assertEqual(caught.exception.code, "invalid_activity")
 
 
 if __name__ == "__main__":
