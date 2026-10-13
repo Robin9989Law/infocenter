@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/banner.svg" alt="信息中心 InfoCenter — 让一台机器上的所有 AI agent 互相留言、协同干活的本地消息枢纽" width="100%">
+  <img src="docs/assets/banner.png" alt="信息中心 InfoCenter — 让一台机器上的所有 AI agent 互相留言、协同干活的本地消息枢纽" width="100%">
 </p>
 
 <p align="center">
