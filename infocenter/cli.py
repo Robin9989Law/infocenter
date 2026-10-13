@@ -83,8 +83,11 @@ def main(argv=None) -> int:
     crew_kick.add_argument("--plan", required=True, help="分工文件路径")
     crew_kick.add_argument("--dir", required=True, help="项目目录，会记进 workspace")
     crew_kick.add_argument("--subject", default=None)
-    crew_sub.add_parser("status", help="查看守护进程与 tmux 状态")
-    crew_sub.add_parser("down", help="杀守护进程、关 tmux 会话")
+    crew_kick.add_argument("--from", dest="sender", default=None, help="多项目时指定发信身份，默认取 config 里第一个 coordinator")
+    crew_status = crew_sub.add_parser("status", help="查看守护进程与 tmux 状态")
+    crew_status.add_argument("--dir", default=None, help="只看某个项目")
+    crew_down = crew_sub.add_parser("down", help="杀守护进程、关 tmux 会话")
+    crew_down.add_argument("--dir", default=None, help="只清理某个项目")
     crew_watch = crew_sub.add_parser("watch", help="（内部）收信守护进程，由 crew up 派生")
     crew_watch.add_argument("name")
     crew_watch.add_argument("--dir", required=True)
@@ -298,9 +301,9 @@ def _crew(args, home: Path) -> int:
             crew.watch(home, args.name, str(Path(args.dir).expanduser().resolve()), url, args.poll, args.heartbeat)
             return 0
         if args.crew_cmd == "status":
-            payload = crew.status(home)
+            payload = crew.status(home, str(Path(args.dir).expanduser().resolve()) if args.dir else None)
         elif args.crew_cmd == "down":
-            payload = crew.down(home)
+            payload = crew.down(home, str(Path(args.dir).expanduser().resolve()) if args.dir else None)
         else:
             project = str(Path(args.dir).expanduser().resolve())
             if not Path(project).is_dir():
@@ -309,7 +312,7 @@ def _crew(args, home: Path) -> int:
             if args.crew_cmd == "up":
                 payload = crew.up(home, url, project, args.only, args.dry_run)
             else:
-                payload = crew.kickoff(home, url, args.plan, project, args.subject)
+                payload = crew.kickoff(home, url, args.plan, project, args.subject, args.sender)
     except MailError as exc:
         sys.stderr.write(f"{exc.code}: {exc.message}\n")
         return 1

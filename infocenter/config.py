@@ -12,6 +12,7 @@
   headless     无人值守命令模板，{prompt} 会被替换为收信处理指令；配了才会开守护
   poll         守护长轮询的等待上限（秒），默认 300
   heartbeat    无信心跳间隔（秒）：守护进程定期触发一次 headless 规划运行，推进 TODO；0 或不填=纯信件驱动
+  heartbeat_mode    可选："idle"（默认，新信会重置心跳计时）或 "always"（严格按间隔调度，新信不重置）
   heartbeat_prompt  可选：替代内置的心跳规划提示词（支持 {agent} {project} 占位符）；不填用内置模板
 """
 
@@ -29,7 +30,7 @@ DEFAULT_AGENTS = (
     {"name": "human", "description": "用户"},
 )
 
-_KNOWN_KEYS = {"name", "description", "role", "launch", "app", "headless", "poll", "heartbeat", "heartbeat_prompt"}
+_KNOWN_KEYS = {"name", "description", "role", "launch", "app", "headless", "poll", "heartbeat", "heartbeat_mode", "heartbeat_prompt"}
 
 
 def config_path(home) -> Path:

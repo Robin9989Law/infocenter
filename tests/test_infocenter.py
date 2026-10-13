@@ -444,7 +444,7 @@ class HubTest(unittest.TestCase):
         try:
             time.sleep(1.0)
             request(self.url, "POST", "/v1/messages", "human", {
-                "to": "fakebot", "subject": "干活", "body": "处理一下",
+                "to": "fakebot", "subject": "干活", "body": "处理一下", "workspace": str(project),
             })
             target = project / "triggered.txt"
             deadline = time.time() + 10
@@ -516,6 +516,86 @@ class HubTest(unittest.TestCase):
         with self.assertRaises(ApiError) as caught:
             request(self.url, "PUT", "/v1/agents/kimi", "kimi", {"activity": "长" * 201})
         self.assertEqual(caught.exception.code, "invalid_activity")
+
+    def test_multi_project_daemons_isolated_by_workspace(self):
+        home = self.home / "mp"
+        home.mkdir()
+        (home / "config.json").write_text(json.dumps({"agents": [
+            {"name": "fakebot", "headless": "/usr/bin/tee -a triggered.txt", "poll": 5},
+        ]}), encoding="utf-8")
+        p1 = Path(tempfile.mkdtemp(dir=str(self.home), prefix="projA")).resolve()
+        p2 = Path(tempfile.mkdtemp(dir=str(self.home), prefix="projB")).resolve()
+        env = self._env()
+        for proj in (p1, p2):
+            up = subprocess.run(
+                [sys.executable, IC, "--home", str(home), "crew", "up", "--dir", str(proj), "--only", "fakebot"],
+                check=True, capture_output=True, text=True, env=env,
+            )
+            self.assertIn("[守护] fakebot pid", up.stdout)
+        status = subprocess.run(
+            [sys.executable, IC, "--home", str(home), "crew", "status"],
+            check=True, capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(status.stdout.count("守护 pid"), 2)
+        try:
+            request(self.url, "POST", "/v1/messages", "human", {
+                "to": "fakebot", "subject": "项目一", "body": "x", "workspace": p1.name,
+            })
+            t1 = p1 / "triggered.txt"
+            deadline = time.time() + 12
+            while time.time() < deadline and not t1.exists():
+                time.sleep(0.2)
+            self.assertTrue(t1.exists(), "项目一守护没有触发")
+            self.assertFalse((p2 / "triggered.txt").exists(), "项目二守护不该被项目一的信触发")
+            request(self.url, "POST", "/v1/messages", "human", {
+                "to": "fakebot", "subject": "无范围", "body": "y",
+            })
+            time.sleep(8)
+            self.assertFalse((p2 / "triggered.txt").exists(), "无 workspace 的信不应触发任何守护")
+            self.assertEqual(t1.read_text(encoding="utf-8").count("项目一"), 1)
+            request(self.url, "POST", "/v1/messages", "human", {
+                "to": "fakebot", "subject": "项目二", "body": "z", "workspace": str(p2),
+            })
+            t2 = p2 / "triggered.txt"
+            deadline = time.time() + 12
+            while time.time() < deadline and not t2.exists():
+                time.sleep(0.2)
+            self.assertTrue(t2.exists(), "项目二守护没有按全路径 workspace 触发")
+            down = subprocess.run(
+                [sys.executable, IC, "--home", str(home), "crew", "down", "--dir", str(p1)],
+                check=True, capture_output=True, text=True, env=env,
+            )
+            self.assertIn("已终止守护", down.stdout)
+            status = subprocess.run(
+                [sys.executable, IC, "--home", str(home), "crew", "status"],
+                check=True, capture_output=True, text=True, env=env,
+            )
+            self.assertEqual(status.stdout.count("守护 pid"), 1)
+        finally:
+            subprocess.run(
+                [sys.executable, IC, "--home", str(home), "crew", "down"],
+                check=True, capture_output=True, text=True, env=env,
+            )
+
+    def test_kickoff_from_override(self):
+        home = self.home / "kf"
+        home.mkdir()
+        (home / "config.json").write_text(json.dumps({"agents": [
+            {"name": "opencode", "role": "coordinator"},
+            {"name": "kimi"},
+            {"name": "fakebot"},
+        ]}), encoding="utf-8")
+        project = Path(tempfile.mkdtemp(dir=str(self.home))).resolve()
+        plan = home / "p.md"
+        plan.write_text("# 分工\n", encoding="utf-8")
+        out = subprocess.run(
+            [sys.executable, IC, "--home", str(home), "crew", "kickoff",
+             "--plan", str(plan), "--dir", str(project), "--from", "kimi"],
+            check=True, capture_output=True, text=True, env=self._env(),
+        )
+        self.assertIn("已以 kimi", out.stdout)
+        inbox = request(self.url, "GET", "/v1/inbox", "fakebot")
+        self.assertEqual(inbox["messages"][0]["from"], "kimi")
 
 
 if __name__ == "__main__":

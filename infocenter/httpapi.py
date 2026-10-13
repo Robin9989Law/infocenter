@@ -81,12 +81,13 @@ OPENAPI = {
         },
         "/v1/events": {
             "get": {
-                "summary": "等新信长轮询。since 是上次返回的 cursor，wait 是最多等待秒数",
+                "summary": "等新信长轮询。since 是上次返回的 cursor，wait 是最多等待秒数；workspace 给定时只返回属于该项目范围的新信",
                 "parameters": [
                     {"$ref": "#/components/parameters/Agent"},
                     {"name": "since", "in": "query", "schema": {"type": "integer"}},
                     {"name": "wait", "in": "query", "schema": {"type": "number"}},
                     {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+                    {"name": "workspace", "in": "query", "schema": {"type": "string"}, "description": "只返回属于该项目范围的新信（全路径或目录名）"},
                 ],
                 "responses": {"200": {"description": "events"}},
             }
@@ -181,6 +182,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
             since=query.get("since", ["0"])[0],
             wait=query.get("wait", ["0"])[0],
             limit=query.get("limit", ["10"])[0],
+            workspace=query.get("workspace", [None])[0],
         )
 
     if method == "GET" and path.startswith("/v1/threads/"):

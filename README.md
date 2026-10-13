@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.3.0-22d3ee?style=flat-square">
+  <img alt="version" src="https://img.shields.io/badge/version-0.4.0-22d3ee?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-%E2%89%A53.10-34d399?style=flat-square">
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS-f59e0b?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-a78bfa?style=flat-square">
@@ -33,6 +33,7 @@
   - [心跳：没有信也不停摆](#心跳没有信也不停摆)
   - [kickoff 与项目规划（WBS）](#kickoff-与项目规划wbs)
   - [状态自报与资源调配](#状态自报与资源调配)
+  - [多项目并行](#多项目并行)
 - [协作约定](#协作约定)
 - [数据与文件位置](#数据与文件位置)
 - [故障排查 FAQ](#故障排查-faq)
@@ -192,9 +193,9 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | --- | --- |
 | `ic mcp [--agent 名字] [--no-notify]` | 以 stdio MCP 方式运行（供客户端配置使用） |
 | `ic crew up --dir <项目> [--dry-run] [--only a,b]` | 按 config 逐个拉起 agent，并开启收信守护进程 |
-| `ic crew kickoff --plan 分工.md --dir <项目>` | 以 coordinator 身份群发 high 优先级的启动信 |
-| `ic crew status` | 收信守护进程的 pid、tmux 窗口和各家配置 |
-| `ic crew down` | 终止收信守护进程，并关闭 tmux 会话 |
+| `ic crew kickoff --plan 分工.md --dir <项目> [--from 身份]` | 以 coordinator 身份群发 high 启动信；多项目时用 `--from` 指定发信身份 |
+| `ic crew status [--dir 项目]` | 收信守护进程的 pid、tmux 会话和各家配置；`--dir` 只看一个项目 |
+| `ic crew down [--dir 项目]` | 终止收信守护进程、关闭 tmux 会话；`--dir` 只清理一个项目 |
 
 ## 给 agent 接入
 
@@ -257,7 +258,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `DELETE` | `/v1/agents/{name}` | 移除成员。只能删除自己；`human` 可以删除任何 agent |
 | `POST` | `/v1/messages` | 发信。`to` 可填名字、逗号分隔的多个名字，或 `*` |
 | `GET` | `/v1/inbox` | 收件箱，默认只列未读，不消费；可按 `workspace` 过滤 |
-| `GET` | `/v1/events` | **长轮询等待新信**。`since` 取上次返回的 `cursor`，`wait` 上限为 120 秒 |
+| `GET` | `/v1/events` | **长轮询等待新信**。`since` 取上次返回的 `cursor`，`wait` 上限为 120 秒；带 `workspace` 时只返回属于该项目范围的新信 |
 | `GET` | `/v1/messages/{id}` | 查看全文，不消费 |
 | `POST` | `/v1/messages/{id}/read` | 签收自己的那一份 |
 | `POST` | `/v1/messages/{id}/archive` | 归档自己的那一份 |
@@ -374,6 +375,23 @@ coordinator 要调配资源，就得知道各家在做什么，办法是**靠自
 - 每个 agent 在开始、切换或完成任务时，更新自己的 `activity`：MCP 调用 `ic_activity`，CLI 使用 `ic register --activity "一句话"`，HTTP 使用 `PUT /v1/agents/{name}` 并带上 `activity`（不超过 200 字）。
 - coordinator 只要看 `ic agents`，就能看到每家的「正在: …」和时间戳，**无需发问询信**；只有要干预、要调配时才发信。
 
+### 多项目并行
+
+多个项目可以同时开工，互不干扰。隔离单位是**身份 × 项目**：
+
+- 每个（身份, 项目）组合有自己独立的收信守护进程、pid/游标/日志文件、tmux 会话（`ic-crew-<hash>`）和窗口（`<项目名>-<身份>`）。同一个身份在两个项目里就是两个守护，各管各的。
+- **信件按 workspace 归属**：守护只处理 workspace 等于本项目（全路径、解析后路径或目录名都算命中，例如 `workspace: LLM思维链` 能匹配到同名目录）的信；其他项目的信留给那边的守护。
+- **没有 workspace 的信不自动触发任何守护**——它由交互会话处理（MCP 推送照常）；心跳运行查收件时若发现明确属于本项目的，会顺手处理。这条仲裁规则保证两个守护不会抢同一封信。
+- `ic crew status --dir <项目>` / `ic crew down --dir <项目>` 按项目查看和清理；不带 `--dir` 则是全局视图/全局清理。
+- 多项目各有 coordinator 时，`ic crew kickoff --from <身份>` 指定以谁的名义发启动信（默认取 config 里第一个 coordinator）。
+
+```bash
+ic crew up --dir ~/projects/alpha        # 项目甲：各家守护各起一个（键 = 身份×甲）
+ic crew up --dir ~/projects/beta         # 项目乙：同身份再起一组，互不抢占
+ic crew status                           # 全局：每个身份列出它在哪些项目的守护
+ic crew down --dir ~/projects/alpha      # 只收工项目甲
+```
+
 ## 协作约定
 
 系统并不强制「谁听谁的」，但把规则做成了机器可读的形式（config 的 `role`），并写进每个 agent 的 SKILL 和 kickoff 信：
@@ -442,4 +460,4 @@ python3 -m unittest tests.test_infocenter   # 全量测试（14 个，含收信�
 
 ---
 
-<p align="center">版本 0.3.0 · MIT · <a href="https://github.com/Robin9989Law/infocenter">GitHub</a></p>
+<p align="center">版本 0.4.0 · MIT · <a href="https://github.com/Robin9989Law/infocenter">GitHub</a></p>

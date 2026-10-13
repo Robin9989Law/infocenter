@@ -218,8 +218,9 @@ class Store:
             removed = conn.execute("DELETE FROM agents WHERE name = ?", (name,)).rowcount > 0
         return {"name": name, "removed": removed}
 
-    def events(self, agent: str, since=0, wait=0.0, limit: int = 10) -> dict:
-        """等新信。since 是上次返回的 deliveries rowid 游标；wait 秒内没有新信就返回现状。"""
+    def events(self, agent: str, since=0, wait=0.0, limit: int = 10, workspace: str | None = None) -> dict:
+        """等新信。since 是上次返回的 deliveries rowid 游标；wait 秒内没有新信就返回现状。
+        workspace 给定时只返回属于该项目范围的新信（多项目守护隔离用）。"""
         agent = normalize_name(agent)
         limit = _limit(limit)
         try:
@@ -234,7 +235,7 @@ class Store:
         deadline = time.monotonic() + wait
         with self._cond:
             while True:
-                snapshot = self._events_snapshot(agent, since, limit)
+                snapshot = self._events_snapshot(agent, since, limit, workspace)
                 if snapshot["new"] or wait <= 0:
                     return snapshot
                 remaining = deadline - time.monotonic()
@@ -242,7 +243,7 @@ class Store:
                     return snapshot
                 self._cond.wait(remaining)
 
-    def _events_snapshot(self, agent: str, since: int, limit: int) -> dict:
+    def _events_snapshot(self, agent: str, since: int, limit: int, workspace: str | None = None) -> dict:
         with self._session() as conn:
             rows = conn.execute(
                 """
@@ -255,6 +256,8 @@ class Store:
                 """,
                 (agent,),
             ).fetchall()
+            if workspace is not None:
+                rows = [row for row in rows if _workspace_scope(row["workspace"], workspace)]
             cursor = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM deliveries").fetchone()[0]
             fresh = [row for row in rows if row["delivery_seq"] > since]
             messages = [
@@ -262,6 +265,7 @@ class Store:
                 for row in fresh[-limit:]
             ]
         return {"agent": agent, "cursor": cursor, "unread_total": len(rows), "new": messages}
+
 
     def _signal(self) -> None:
         with self._cond:
@@ -462,6 +466,27 @@ class Store:
                     )
                 )
         return {"thread_id": thread_id, "count": len(messages), "messages": messages}
+
+
+def _workspace_scope(value: str | None, scope: str | None) -> bool:
+    """workspace 是否属于项目 scope：全路径、解析后路径、或目录 basename（不区分大小写）都算命中。
+    scope 为 None 不过滤；workspace 为空的信不属于任何项目范围。"""
+    if scope is None:
+        return True
+    text = (value or "").strip()
+    target = str(scope).strip()
+    if not text or not target:
+        return False
+    if text == target:
+        return True
+    left = Path(text).expanduser()
+    right = Path(target).expanduser()
+    try:
+        if left.resolve() == right.resolve():
+            return True
+    except OSError:
+        pass
+    return bool(right.name) and left.name.casefold() == right.name.casefold()
 
 
 def _upsert(conn: sqlite3.Connection, name: str, description: str | None) -> None:

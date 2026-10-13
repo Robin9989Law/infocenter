@@ -1,16 +1,19 @@
 """ic crew：团队编排。
 
 up       按 ~/.infocenter/config.json 逐 agent 拉起：
-         launch → tmux 会话 ic-crew 每人一窗（无 tmux 退化 osascript 开 Terminal）
+         launch → 每项目一个 tmux 会话（ic-crew-<hash>）每人一窗（无 tmux 退化 osascript 开 Terminal）
          app    → `open -a <app> <项目目录>`
-         headless → 启动收信守护（watch），长轮询 /v1/events，新信即时触发一次 headless 运行
-kickoff  以 coordinator 身份向其他所有 agent 发 high 启动信（分工 + 合作约定），workspace 记项目目录
-status   查看守护进程、tmux 窗口、config 启动方式
-down     杀守护进程、关 tmux 会话
+         headless → 启动收信守护（watch）：状态键 = 身份 × 项目，同一身份可在多个项目各跑一个守护；
+                    守护长轮询 /v1/events（带 workspace 范围），只处理属于本项目的信
+kickoff  以 coordinator（或 --from 指定身份）向其他所有 agent 发 high 启动信（分工 + 合作约定），
+         workspace 记项目目录
+status   查看守护进程、tmux 会话、config 启动方式（--dir 只看某个项目）
+down     杀守护进程、关 tmux 会话（--dir 只清某个项目）
 watch    守护进程本体（由 up 派生，不面向用户）
 """
 
 import json
+import hashlib
 import os
 import shlex
 import shutil
@@ -25,7 +28,7 @@ from infocenter.client import ApiError, request
 from infocenter.store import MailError, normalize_name, utcnow
 from infocenter.paths import ROOT
 
-SESSION = "ic-crew"
+SESSION_PREFIX = "ic-crew"
 DEFAULT_POLL = 300
 
 CONVENTIONS = """---
@@ -38,26 +41,41 @@ CONVENTIONS = """---
 6. 收到本信后先回一条确认认领的分工，再开始动手。"""
 
 
+def _key(agent: str, project: str) -> str:
+    """守护状态键 = 身份 × 项目。同一身份在每个项目各有一个守护，互不抢占。"""
+    digest = hashlib.sha1(str(project).encode("utf-8")).hexdigest()[:8]
+    return f"{agent}--{digest}"
+
+
+def _session_name(project: str) -> str:
+    digest = hashlib.sha1(str(project).encode("utf-8")).hexdigest()[:6]
+    return f"{SESSION_PREFIX}-{digest}"
+
+
+def _window_name(project: str, agent: str) -> str:
+    return f"{Path(project).name}-{agent}"[:60]
+
+
 def state_dir(home) -> Path:
     path = Path(home) / "crew"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
 
-def _pid_file(home, agent: str) -> Path:
-    return state_dir(home) / f"{agent}.pid"
+def _pid_file(home, key: str) -> Path:
+    return state_dir(home) / f"{key}.pid"
 
 
-def _meta_file(home, agent: str) -> Path:
-    return state_dir(home) / f"{agent}.json"
+def _meta_file(home, key: str) -> Path:
+    return state_dir(home) / f"{key}.json"
 
 
-def _cursor_file(home, agent: str) -> Path:
-    return state_dir(home) / f"{agent}.cursor"
+def _cursor_file(home, key: str) -> Path:
+    return state_dir(home) / f"{key}.cursor"
 
 
-def log_file(home, agent: str) -> Path:
-    return state_dir(home) / f"{agent}.log"
+def log_file(home, key: str) -> Path:
+    return state_dir(home) / f"{key}.log"
 
 
 def _pid_alive(pid: int) -> bool:
@@ -68,12 +86,25 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
-def _read_pid(home, agent: str) -> int | None:
+def _read_pid(home, key: str) -> int | None:
     try:
-        pid = int(_pid_file(home, agent).read_text().strip())
+        pid = int(_pid_file(home, key).read_text().strip())
     except (OSError, ValueError):
         return None
     return pid if _pid_alive(pid) else None
+
+
+def _read_meta(home, key: str) -> dict:
+    try:
+        return json.loads(_meta_file(home, key).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _resolve_dir(value: str | None) -> str | None:
+    if not value:
+        return None
+    return str(Path(value).expanduser().resolve())
 
 
 def _select(home, only: str) -> list[dict]:
@@ -88,11 +119,11 @@ def _select(home, only: str) -> list[dict]:
     return [by_name[name] for name in wanted]
 
 
-def _tmux_windows() -> set[str]:
+def _tmux_windows(session: str) -> set[str]:
     if not shutil.which("tmux"):
         return set()
     result = subprocess.run(
-        ["tmux", "list-windows", "-t", SESSION, "-F", "#{window_name}"],
+        ["tmux", "list-windows", "-t", session, "-F", "#{window_name}"],
         capture_output=True, text=True,
     )
     if result.returncode != 0:
@@ -100,11 +131,25 @@ def _tmux_windows() -> set[str]:
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
-def _tmux_session_exists() -> bool:
+def _tmux_sessions() -> set[str]:
+    if not shutil.which("tmux"):
+        return set()
+    result = subprocess.run(
+        ["tmux", "list-sessions", "-F", "#{session_name}"], capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        return set()
+    return {
+        line.strip() for line in result.stdout.splitlines()
+        if line.strip().startswith(SESSION_PREFIX)
+    }
+
+
+def _tmux_session_exists(session: str) -> bool:
     if not shutil.which("tmux"):
         return False
     result = subprocess.run(
-        ["tmux", "has-session", "-t", SESSION], capture_output=True, text=True,
+        ["tmux", "has-session", "-t", session], capture_output=True, text=True,
     )
     return result.returncode == 0
 
@@ -113,7 +158,8 @@ def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
     """生成 up 的动作清单。每项：{agent, kind, command(list), note}。"""
     actions: list[dict] = []
     use_tmux = shutil.which("tmux") is not None
-    existing = _tmux_windows()
+    session = _session_name(project)
+    existing = _tmux_windows(session)
     for item in _select(home, only):
         agent = item["name"]
         app = str(item.get("app") or "").strip()
@@ -123,12 +169,13 @@ def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
             actions.append({"agent": agent, "kind": "app", "command": ["open", "-a", app, project]})
         if launch:
             if use_tmux:
-                if agent in existing:
-                    actions.append({"agent": agent, "kind": "skip", "command": [], "note": f"tmux 窗口 {agent} 已存在"})
+                window = _window_name(project, agent)
+                if window in existing:
+                    actions.append({"agent": agent, "kind": "skip", "command": [], "note": f"tmux 窗口 {window} 已存在"})
                 else:
                     actions.append({
                         "agent": agent, "kind": "tmux",
-                        "command": ["tmux", "new-window", "-t", SESSION, "-n", agent, "-c", project, launch],
+                        "command": ["tmux", "new-window", "-t", session, "-n", window, "-c", project, launch],
                     })
             else:
                 inner = f"cd {shlex.quote(project)} && {launch}"
@@ -140,8 +187,9 @@ def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
                     ],
                 })
         if headless:
-            if _read_pid(home, agent) is not None:
-                actions.append({"agent": agent, "kind": "skip", "command": [], "note": "收信守护已在运行"})
+            key = _key(agent, project)
+            if _read_pid(home, key) is not None:
+                actions.append({"agent": agent, "kind": "skip", "command": [], "note": "本项目收信守护已在运行"})
             else:
                 poll = _poll_seconds(item)
                 beat = _heartbeat_seconds(item)
@@ -154,10 +202,10 @@ def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
                 actions.append({"agent": agent, "kind": "daemon", "command": command})
         if not (app or launch or headless):
             actions.append({"agent": agent, "kind": "skip", "command": [], "note": "未配置 launch/app/headless"})
-    if use_tmux and any(action["kind"] == "tmux" for action in actions) and not _tmux_session_exists():
+    if use_tmux and any(action["kind"] == "tmux" for action in actions) and not _tmux_session_exists(session):
         actions.insert(0, {
             "agent": "-", "kind": "tmux-session",
-            "command": ["tmux", "new-session", "-d", "-s", SESSION, "-c", project],
+            "command": ["tmux", "new-session", "-d", "-s", session, "-c", project],
         })
     return actions
 
@@ -190,8 +238,9 @@ def up(home, url: str, project: str, only: str = "", dry_run: bool = False) -> d
             lines.append(f"[{action['kind']}] {action['agent']}: {rendered}")
             continue
         if action["kind"] == "daemon":
-            pid = _start_daemon(home, action["agent"], project, action["command"])
-            lines.append(f"[守护] {action['agent']} pid {pid}，日志 {log_file(home, action['agent'])}")
+            key = _key(action["agent"], project)
+            pid = _start_daemon(home, key, project, action["command"])
+            lines.append(f"[守护] {action['agent']} pid {pid}，日志 {log_file(home, key)}")
             continue
         result = subprocess.run(action["command"], capture_output=True, text=True)
         if result.returncode == 0:
@@ -204,8 +253,8 @@ def up(home, url: str, project: str, only: str = "", dry_run: bool = False) -> d
     return {"project": project, "dry_run": dry_run, "actions": actions, "lines": lines}
 
 
-def _start_daemon(home, agent: str, project: str, command: list[str]) -> int:
-    log = log_file(home, agent)
+def _start_daemon(home, key: str, project: str, command: list[str]) -> int:
+    log = log_file(home, key)
     env = os.environ.copy()
     existing = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(ROOT) + (os.pathsep + existing if existing else "")
@@ -214,19 +263,27 @@ def _start_daemon(home, agent: str, project: str, command: list[str]) -> int:
             command, cwd=project, stdout=stream, stderr=stream,
             stdin=subprocess.DEVNULL, start_new_session=True, env=env,
         )
-    _pid_file(home, agent).write_text(str(proc.pid))
-    _meta_file(home, agent).write_text(json.dumps({
-        "agent": agent, "dir": project, "pid": proc.pid, "started_at": utcnow(),
+    agent = key.split("--", 1)[0]
+    _pid_file(home, key).write_text(str(proc.pid))
+    _meta_file(home, key).write_text(json.dumps({
+        "agent": agent, "key": key, "dir": project, "pid": proc.pid, "started_at": utcnow(),
     }, ensure_ascii=False))
     return proc.pid
 
 
-def kickoff(home, url: str, plan_path: str, project: str, subject: str | None = None) -> dict:
-    coordinator = config.coordinator(home)
+def kickoff(
+    home,
+    url: str,
+    plan_path: str,
+    project: str,
+    subject: str | None = None,
+    as_name: str | None = None,
+) -> dict:
+    coordinator = normalize_name(as_name) if as_name else config.coordinator(home)
     if not coordinator:
         raise MailError(
             "no_coordinator",
-            "config.json 里没有 coordinator。先执行：ic agents add <名字> --role coordinator",
+            "config.json 里没有 coordinator。先执行：ic agents add <名字> --role coordinator（多项目可用 --from 指定发信身份）",
         )
     plan = Path(plan_path).expanduser().read_text(encoding="utf-8")
     if not plan.strip():
@@ -250,73 +307,90 @@ def kickoff(home, url: str, plan_path: str, project: str, subject: str | None = 
     return {"message": payload, "coordinator": coordinator, "lines": lines}
 
 
-def status(home) -> dict:
+def status(home, project: str | None = None) -> dict:
     entries = config.load(home)["agents"]
-    windows = _tmux_windows()
+    sessions = _tmux_sessions()
+    target = _resolve_dir(project)
     rows = []
-    for item in entries:
-        agent = item["name"]
-        meta: dict = {}
-        pid = _read_pid(home, agent)
+    for path in sorted(Path(state_dir(home)).glob("*.pid")):
+        key = path.stem
+        meta = _read_meta(home, key)
+        directory = meta.get("dir") or ""
+        if target and _resolve_dir(directory) != target:
+            continue
+        pid = _read_pid(home, key)
         try:
-            meta = json.loads(_meta_file(home, agent).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            pass
-        try:
-            cursor = int(_cursor_file(home, agent).read_text().strip())
+            cursor = int(_cursor_file(home, key).read_text().strip())
         except (OSError, ValueError):
             cursor = None
         rows.append({
-            "agent": agent,
-            "role": str(item.get("role") or ""),
-            "launch": str(item.get("launch") or ""),
-            "app": str(item.get("app") or ""),
-            "headless": str(item.get("headless") or ""),
+            "agent": key.split("--", 1)[0],
+            "key": key,
+            "dir": directory,
             "daemon_pid": pid,
             "daemon_alive": pid is not None,
-            "daemon_dir": meta.get("dir"),
             "cursor": cursor,
-            "tmux_window": agent in windows,
         })
-    lines = [f"tmux 会话 {SESSION}：{'在' if windows else '不在'}" + (f"（窗口：{', '.join(sorted(windows))}）" if windows else "")]
+    by_agent: dict[str, list[dict]] = {}
     for row in rows:
+        by_agent.setdefault(row["agent"], []).append(row)
+    lines = ["tmux 会话: " + (", ".join(sorted(sessions)) if sessions else "不在")]
+    for item in entries:
+        agent = item["name"]
         parts = []
-        if row["role"] == "coordinator":
+        if str(item.get("role") or "") == "coordinator":
             parts.append("coordinator")
-        if row["daemon_alive"]:
-            parts.append(f"守护 pid {row['daemon_pid']} → {row['daemon_dir'] or '?'}")
-        elif row["headless"]:
+        daemons = by_agent.get(agent, [])
+        if daemons:
+            parts += [
+                f"守护 pid {d['daemon_pid']} → {Path(d['dir']).name or d['dir']}" if d["daemon_alive"]
+                else f"守护（{Path(d['dir']).name}）已死"
+                for d in daemons
+            ]
+        elif str(item.get("headless") or "").strip():
             parts.append("守护未运行")
-        if row["tmux_window"]:
-            parts.append("tmux 窗口在")
-        ways = [key for key in ("launch", "app", "headless") if row[key]]
-        if not ways:
-            parts.append("未配置启动方式")
-        lines.append(f"  {row['agent']}: " + ("；".join(parts) if parts else "空闲"))
-    return {"session": SESSION, "tmux": sorted(windows), "agents": rows, "lines": lines}
+        if daemons or not str(item.get("headless") or "").strip():
+            ways = [key for key in ("launch", "app", "headless") if str(item.get(key) or "").strip()]
+            if not ways and not daemons:
+                parts.append("未配置启动方式")
+        lines.append(f"  {agent}: " + ("；".join(parts) if parts else "空闲"))
+    for agent, daemons in by_agent.items():
+        if agent not in {item["name"] for item in entries}:
+            for d in daemons:
+                lines.append(f"  {agent}（不在名单）: 守护 pid {d['daemon_pid']} → {d['dir']}")
+    return {"sessions": sorted(sessions), "agents": rows, "lines": lines}
 
 
-def down(home) -> dict:
+def down(home, project: str | None = None) -> dict:
+    target = _resolve_dir(project)
     lines = []
     killed = []
     for path in sorted(Path(state_dir(home)).glob("*.pid")):
-        agent = path.stem
-        pid = _read_pid(home, agent)
+        key = path.stem
+        meta = _read_meta(home, key)
+        directory = meta.get("dir") or ""
+        if target and _resolve_dir(directory) != target:
+            continue
+        pid = _read_pid(home, key)
         if pid is not None:
             try:
                 os.kill(pid, signal.SIGTERM)
-                killed.append(agent)
-                lines.append(f"已终止守护 {agent}（pid {pid}）")
+                killed.append(key)
+                lines.append(f"已终止守护 {key}（pid {pid}）")
             except OSError as exc:
-                lines.append(f"终止 {agent} 失败：{exc}")
+                lines.append(f"终止 {key} 失败：{exc}")
         for suffix in (".pid", ".json", ".cursor"):
             try:
                 path.with_suffix(suffix).unlink()
             except OSError:
                 pass
-    if _tmux_session_exists():
-        subprocess.run(["tmux", "kill-session", "-t", SESSION], capture_output=True)
-        lines.append(f"已关闭 tmux 会话 {SESSION}")
+    sessions = {_session_name(target)} if target else _tmux_sessions()
+    for session in sorted(sessions):
+        if not shutil.which("tmux"):
+            break
+        result = subprocess.run(["tmux", "kill-session", "-t", session], capture_output=True)
+        if result.returncode == 0:
+            lines.append(f"已关闭 tmux 会话 {session}")
     if not lines:
         lines.append("没有需要清理的守护或 tmux 会话")
     return {"killed": killed, "lines": lines}
@@ -330,10 +404,12 @@ def build_prompt(agent: str, project: str, fresh: list[dict], unread_total: int)
         for item in fresh
     )
     return (
-        f"你是 {agent}，项目目录 {project}。信息中心有 {unread_total} 封未读留言，最新 {len(fresh)} 封：\n"
+        f"你是 {agent}，项目目录 {project}。信息中心有 {unread_total} 封属于本项目的未读留言，最新 {len(fresh)} 封：\n"
         f"{listing}\n"
         f"请处理：`ic --as {agent} inbox --full` 读信；处理后 `ic --as {agent} read <id>` 签收；"
-        f"需要回应时 `ic --as {agent} reply <id> -b \"...\"`。无新信息不回帖，禁止 +1 附议。"
+        f"需要回应时 `ic --as {agent} reply <id> -b \"...\"`。无新信息不回帖，禁止 +1 附议。\n"
+        f"只处理上面列出的、属于本项目的信；其他项目或无 workspace 的未读不要在本轮动手"
+        f"（无 workspace 的信由交互会话处理）。"
     )
 
 
@@ -353,15 +429,18 @@ def build_heartbeat_prompt(agent: str, project: str, coordinator: bool = False) 
         f"推进你名下（owner={agent}）的下一个未完成事项，并把进展写回 TODO-{agent}.md。"
         f"发现 PLAN.md 有空缺、依赖过期或需要调整，给 coordinator 发信说明，不要直接改 PLAN.md。"
         f"开始或切换任务时，用 `ic --as {agent} register --activity \"一句话状态\"` 自报进展，coordinator 靠它调配资源。"
+        f"无 workspace 的未读信不会自动派给守护：查收件时若发现明确属于本项目的，顺手处理；否则留给交互会话。"
         f"需要别人输入或裁定时，用 `ic --as {agent} send/reply` 给相关人留言；"
         f"确实无可推进就直接结束本次运行，不要发客套信、不要 +1。"
     )
 
 
 def watch(home, agent: str, project: str, url: str, poll: int = DEFAULT_POLL, heartbeat: int | None = None) -> int:
-    """守护进程本体：长轮询 /v1/events，新信即时触发一次 headless 运行；
-    没有信时每隔 heartbeat 秒触发一次 headless 规划运行（0=关闭，纯信件驱动）。"""
+    """守护进程本体：长轮询 /v1/events（限定本项目 workspace），新信即时触发一次 headless 运行；
+    没有信时每隔 heartbeat 秒触发一次 headless 规划运行（0=关闭，纯信件驱动）。
+    状态键 = 身份 × 项目：同一身份可以在多个项目各跑一个守护，互不抢信。"""
     agent = normalize_name(agent)
+    key = _key(agent, project)
     entry = config.entry(home, agent)
     template = str((entry or {}).get("headless") or "").strip()
     if not template:
@@ -371,13 +450,13 @@ def watch(home, agent: str, project: str, url: str, poll: int = DEFAULT_POLL, he
         heartbeat = _heartbeat_seconds(entry or {})
     heartbeat = max(0, min(int(heartbeat or 0), 86400))
     wait = min(poll, 120)
-    cursor_path = _cursor_file(home, agent)
+    cursor_path = _cursor_file(home, key)
     try:
         cursor = int(cursor_path.read_text().strip())
     except (OSError, ValueError):
         cursor = 0
     print(
-        f"[{utcnow()}] watch 启动 agent={agent} dir={project} url={url} poll={poll} heartbeat={heartbeat}",
+        f"[{utcnow()}] watch 启动 key={key} dir={project} url={url} poll={poll} heartbeat={heartbeat}",
         flush=True,
     )
     last_run = time.monotonic()
@@ -385,7 +464,7 @@ def watch(home, agent: str, project: str, url: str, poll: int = DEFAULT_POLL, he
         try:
             payload = request(
                 url, "GET", "/v1/events", agent,
-                query={"since": str(cursor), "wait": str(wait), "limit": "20"},
+                query={"since": str(cursor), "wait": str(wait), "limit": "20", "workspace": project},
                 timeout=wait + 15,
             )
         except (ApiError, SystemExit, OSError, ValueError, KeyError) as exc:
@@ -397,18 +476,13 @@ def watch(home, agent: str, project: str, url: str, poll: int = DEFAULT_POLL, he
         fresh = payload.get("new") or []
         if fresh:
             prompt = build_prompt(agent, project, fresh, int(payload.get("unread_total") or len(fresh)))
-            print(f"[{utcnow()}] 新信 {len(fresh)} 封，触发 headless", flush=True)
+            print(f"[{utcnow()}] 本项目新信 {len(fresh)} 封，触发 headless", flush=True)
             _run_headless(template, prompt, project)
             last_run = time.monotonic()
         elif heartbeat and time.monotonic() - last_run >= heartbeat:
             print(f"[{utcnow()}] 无新信，心跳 {heartbeat}s 到期，触发规划运行", flush=True)
             is_coord = str((entry or {}).get("role") or "") == "coordinator"
-            custom = str((entry or {}).get("heartbeat_prompt") or "").strip()
-            if custom:
-                prompt = custom.replace("{agent}", agent).replace("{project}", project)
-            else:
-                prompt = build_heartbeat_prompt(agent, project, is_coord)
-            _run_headless(template, prompt, project)
+            _run_headless(template, build_heartbeat_prompt(agent, project, is_coord), project)
             last_run = time.monotonic()
 
 
