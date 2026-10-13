@@ -462,15 +462,21 @@ class HubTest(unittest.TestCase):
         home = self.home / "beat"
         home.mkdir()
         (home / "config.json").write_text(json.dumps({"agents": [
-            {"name": "fakebot", "headless": "/usr/bin/tee -a beat.txt", "heartbeat": 3},
+            {"name": "fakebot", "headless": "/usr/bin/tee -a beat.txt", "poll": 5, "heartbeat": 3},
         ]}), encoding="utf-8")
         project = Path(tempfile.mkdtemp(dir=str(self.home))).resolve()
-        proc = subprocess.Popen(
-            [sys.executable, IC, "--home", str(home), "--url", self.url,
-             "crew", "watch", "fakebot", "--dir", str(project), "--poll", "5"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=self._env(),
+        up = subprocess.run(
+            [sys.executable, IC, "--home", str(home), "crew", "up",
+             "--dir", str(project), "--only", "fakebot"],
+            check=True, capture_output=True, text=True, env=self._env(),
         )
+        self.assertIn("[守护] fakebot pid", up.stdout)
         try:
+            status = subprocess.run(
+                [sys.executable, IC, "--home", str(home), "crew", "status"],
+                check=True, capture_output=True, text=True, env=self._env(),
+            )
+            self.assertIn("守护 pid", status.stdout)
             target = project / "beat.txt"
             deadline = time.time() + 12
             while time.time() < deadline and not target.exists():
@@ -480,8 +486,11 @@ class HubTest(unittest.TestCase):
             self.assertIn("心跳检查", content)
             self.assertIn("TODO-fakebot.md", content)
         finally:
-            proc.terminate()
-            proc.wait(timeout=5)
+            down = subprocess.run(
+                [sys.executable, IC, "--home", str(home), "crew", "down"],
+                check=True, capture_output=True, text=True, env=self._env(),
+            )
+            self.assertIn("已终止守护 fakebot", down.stdout)
 
     def test_activity_report(self):
         updated = request(self.url, "PUT", "/v1/agents/kimi", "kimi", {"activity": "在重构 store 索引，完成一半"})

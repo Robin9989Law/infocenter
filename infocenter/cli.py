@@ -89,6 +89,7 @@ def main(argv=None) -> int:
     crew_watch.add_argument("name")
     crew_watch.add_argument("--dir", required=True)
     crew_watch.add_argument("--poll", type=int, default=300)
+    crew_watch.add_argument("--heartbeat", type=int, default=None, help="无信心跳间隔秒；不写则读 config")
 
     args = parser.parse_args(argv)
     args.agent = agent_arg
@@ -294,7 +295,7 @@ def _crew(args, home: Path) -> int:
     try:
         if args.crew_cmd == "watch":
             url = resolve_url(args.url, home)
-            crew.watch(home, args.name, str(Path(args.dir).expanduser().resolve()), url, args.poll)
+            crew.watch(home, args.name, str(Path(args.dir).expanduser().resolve()), url, args.poll, args.heartbeat)
             return 0
         if args.crew_cmd == "status":
             payload = crew.status(home)
