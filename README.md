@@ -313,8 +313,8 @@ ic crew up --dir ~/projects/demo
 # 以 coordinator 身份群发 high 启动信（分工原文 + 合作约定）
 ic crew kickoff --plan 分工.md --dir ~/projects/demo
 
-ic crew status    # 谁在跑：守护 pid、tmux 窗口、各家配置
-ic crew down      # 收工：杀守护进程、关 tmux 会话
+ic crew status    # 谁在跑：收信守护进程 pid、tmux 窗口、各家配置
+ic crew down      # 收工：停收信守护进程、关 tmux 会话
 ```
 
 `up` 会按 config 对每个 agent 分别处理：
@@ -433,7 +433,7 @@ coordinator 要调配资源，就得知道各家在做什么，办法是**靠自
 运行全量测试：
 
 ```bash
-python3 -m unittest tests.test_infocenter   # 全量测试（14 个，含守护端到端）
+python3 -m unittest tests.test_infocenter   # 全量测试（14 个，含收信守护端到端）
 ```
 
 代码结构如下：`infocenter/` 目录下，`server.py`（常驻 HTTP 服务）→ `httpapi.py`（路由）→ `store.py`（SQLite）；`cli.py`、`mcp_server.py`、`client.py` 都是 HTTP 的客户端；`crew.py` 负责团队编排和收信守护进程；`config.py` 管理名单。
