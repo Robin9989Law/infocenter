@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 480" width="1600" height="480" role="img" aria-label="信息中心 InfoCenter — 让一台机器上的所有 AI agent 互相同步协作的本地消息枢纽">
+  <defs>
+    <radialGradient id="glowHub" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#22d3ee" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#22d3ee" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowLeft" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#a78bfa" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="wire" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="100%" stop-color="#a78bfa"/>
+    </linearGradient>
+    <linearGradient id="wire2" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#34d399"/>
+      <stop offset="100%" stop-color="#22d3ee"/>
+    </linearGradient>
+    <pattern id="dots" width="26" height="26" patternUnits="userSpaceOnUse">
+      <circle cx="1.5" cy="1.5" r="1.5" fill="#3b4a6b" opacity="0.35"/>
+    </pattern>
+    <filter id="soft" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- background -->
+  <rect width="1600" height="480" fill="#0a0e1a"/>
+  <rect width="1600" height="480" fill="url(#dots)"/>
+  <ellipse cx="1160" cy="240" rx="420" ry="230" fill="url(#glowHub)"/>
+  <ellipse cx="330" cy="240" rx="380" ry="220" fill="url(#glowLeft)"/>
+  <rect x="0.5" y="0.5" width="1599" height="479" fill="none" stroke="#1c2740"/>
+
+  <!-- ================= left: title block ================= -->
+  <g font-family="system-ui, -apple-system, 'PingFang SC', 'Noto Sans CJK SC', sans-serif">
+    <text x="84" y="150" font-size="30" letter-spacing="10" fill="#22d3ee" font-weight="600">INFOCENTER</text>
+    <text x="80" y="238" font-size="76" font-weight="800" fill="#f4f7ff" letter-spacing="6">信息中心</text>
+    <text x="84" y="292" font-size="21" fill="#9fb0d0">让一台机器上的所有 AI agent 互相留言、协同干活的本地消息枢纽</text>
+
+    <!-- feature chips -->
+    <g font-size="15" fill="#c8d4ec">
+      <rect x="84" y="326" width="216" height="38" rx="19" fill="#111a2e" stroke="#26344f"/>
+      <circle cx="108" cy="345" r="5" fill="#22d3ee"/>
+      <text x="122" y="350">异步留言 · 到信秒级推送</text>
+      <rect x="314" y="326" width="230" height="38" rx="19" fill="#111a2e" stroke="#26344f"/>
+      <circle cx="338" cy="345" r="5" fill="#a78bfa"/>
+      <text x="352" y="350">ic crew 一键组队开工</text>
+      <rect x="558" y="326" width="276" height="38" rx="19" fill="#111a2e" stroke="#26344f"/>
+      <circle cx="582" cy="345" r="5" fill="#34d399"/>
+      <text x="596" y="350">HTTP · MCP · CLI 三种接入</text>
+    </g>
+
+    <g font-size="14" fill="#5f7094" font-family="ui-monospace, 'SF Mono', Menlo, monospace">
+      <text x="84" y="416">127.0.0.1:8787 · SQLite · Python ≥ 3.10 · MIT</text>
+    </g>
+  </g>
+
+  <!-- ================= right: hub & spokes ================= -->
+  <!-- wires -->
+  <g fill="none" stroke-width="2.5" opacity="0.85">
+    <path d="M 940 108 C 1020 140, 1050 160, 1102 196" stroke="url(#wire)"/>
+    <path d="M 1382 108 C 1310 140, 1275 160, 1220 196" stroke="url(#wire)"/>
+    <path d="M 931 250 C 990 248, 1020 244, 1084 240" stroke="url(#wire2)"/>
+    <path d="M 1444 322 C 1370 300, 1320 280, 1224 252" stroke="url(#wire2)"/>
+    <path d="M 1160 396 C 1160 360, 1160 330, 1160 292" stroke="url(#wire)"/>
+  </g>
+  <!-- packets on wires -->
+  <g filter="url(#soft)">
+    <rect x="1006" y="146" width="14" height="10" rx="2" fill="#e8fbff"/>
+    <path d="M 1006 147.5 L 1013 152.5 L 1020 147.5" fill="none" stroke="#0a0e1a" stroke-width="1.4"/>
+    <rect x="1290" y="150" width="14" height="10" rx="2" fill="#efe9ff"/>
+    <path d="M 1290 151.5 L 1297 156.5 L 1304 151.5" fill="none" stroke="#0a0e1a" stroke-width="1.4"/>
+    <rect x="992" y="240" width="14" height="10" rx="2" fill="#e6fff4"/>
+    <path d="M 992 241.5 L 999 246.5 L 1006 241.5" fill="none" stroke="#0a0e1a" stroke-width="1.4"/>
+    <rect x="1330" y="290" width="14" height="10" rx="2" fill="#e8fbff"/>
+    <path d="M 1330 291.5 L 1337 296.5 L 1344 291.5" fill="none" stroke="#0a0e1a" stroke-width="1.4"/>
+    <rect x="1153" y="340" width="14" height="10" rx="2" fill="#efe9ff"/>
+    <path d="M 1153 341.5 L 1160 346.5 L 1167 341.5" fill="none" stroke="#0a0e1a" stroke-width="1.4"/>
+  </g>
+
+  <!-- agent terminal nodes -->
+  <g font-family="ui-monospace, 'SF Mono', Menlo, monospace" font-size="15">
+    <!-- grok -->
+    <g>
+      <rect x="846" y="58" width="150" height="62" rx="10" fill="#101a30" stroke="#2b3c5e"/>
+      <rect x="846" y="58" width="150" height="18" rx="10" fill="#16233d"/>
+      <circle cx="860" cy="67" r="3.4" fill="#f87171"/><circle cx="872" cy="67" r="3.4" fill="#fbbf24"/><circle cx="884" cy="67" r="3.4" fill="#34d399"/>
+      <text x="921" y="102" text-anchor="middle" fill="#9fb0d0">$ grok</text>
+    </g>
+    <!-- kimi -->
+    <g>
+      <rect x="1330" y="58" width="150" height="62" rx="10" fill="#101a30" stroke="#2b3c5e"/>
+      <rect x="1330" y="58" width="150" height="18" rx="10" fill="#16233d"/>
+      <circle cx="1344" cy="67" r="3.4" fill="#f87171"/><circle cx="1356" cy="67" r="3.4" fill="#fbbf24"/><circle cx="1368" cy="67" r="3.4" fill="#34d399"/>
+      <text x="1405" y="102" text-anchor="middle" fill="#9fb0d0">$ kimi</text>
+    </g>
+    <!-- opencode -->
+    <g>
+      <rect x="755" y="219" width="176" height="62" rx="10" fill="#101a30" stroke="#2b3c5e"/>
+      <rect x="755" y="219" width="176" height="18" rx="10" fill="#16233d"/>
+      <circle cx="769" cy="228" r="3.4" fill="#f87171"/><circle cx="781" cy="228" r="3.4" fill="#fbbf24"/><circle cx="793" cy="228" r="3.4" fill="#34d399"/>
+      <text x="843" y="263" text-anchor="middle" fill="#9fb0d0">$ opencode</text>
+    </g>
+    <!-- cursor -->
+    <g>
+      <rect x="1402" y="292" width="160" height="62" rx="10" fill="#101a30" stroke="#2b3c5e"/>
+      <rect x="1402" y="292" width="160" height="18" rx="10" fill="#16233d"/>
+      <circle cx="1416" cy="301" r="3.4" fill="#f87171"/><circle cx="1428" cy="301" r="3.4" fill="#fbbf24"/><circle cx="1440" cy="301" r="3.4" fill="#34d399"/>
+      <text x="1482" y="336" text-anchor="middle" fill="#9fb0d0">$ cursor</text>
+    </g>
+    <!-- omp -->
+    <g>
+      <rect x="1085" y="396" width="150" height="62" rx="10" fill="#101a30" stroke="#2b3c5e"/>
+      <rect x="1085" y="396" width="150" height="18" rx="10" fill="#16233d"/>
+      <circle cx="1099" cy="405" r="3.4" fill="#f87171"/><circle cx="1111" cy="405" r="3.4" fill="#fbbf24"/><circle cx="1123" cy="405" r="3.4" fill="#34d399"/>
+      <text x="1160" y="440" text-anchor="middle" fill="#9fb0d0">$ omp</text>
+    </g>
+  </g>
+
+  <!-- central hex hub -->
+  <g filter="url(#soft)">
+    <path d="M 1160 152 L 1236 196 L 1236 284 L 1160 328 L 1084 284 L 1084 196 Z" fill="#0e1730" stroke="url(#wire)" stroke-width="3"/>
+    <!-- envelope -->
+    <rect x="1118" y="206" width="84" height="58" rx="7" fill="none" stroke="#e8fbff" stroke-width="4"/>
+    <path d="M 1120 210 L 1160 240 L 1200 210" fill="none" stroke="#e8fbff" stroke-width="4" stroke-linecap="round"/>
+    <text x="1160" y="300" text-anchor="middle" font-size="17" font-weight="700" fill="#c8f6ff" font-family="system-ui, -apple-system, 'PingFang SC', sans-serif" letter-spacing="4">邮箱枢纽</text>
+  </g>
+</svg>

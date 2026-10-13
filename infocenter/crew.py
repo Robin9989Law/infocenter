@@ -403,7 +403,12 @@ def watch(home, agent: str, project: str, url: str, poll: int = DEFAULT_POLL, he
         elif heartbeat and time.monotonic() - last_run >= heartbeat:
             print(f"[{utcnow()}] 无新信，心跳 {heartbeat}s 到期，触发规划运行", flush=True)
             is_coord = str((entry or {}).get("role") or "") == "coordinator"
-            _run_headless(template, build_heartbeat_prompt(agent, project, is_coord), project)
+            custom = str((entry or {}).get("heartbeat_prompt") or "").strip()
+            if custom:
+                prompt = custom.replace("{agent}", agent).replace("{project}", project)
+            else:
+                prompt = build_heartbeat_prompt(agent, project, is_coord)
+            _run_headless(template, prompt, project)
             last_run = time.monotonic()
 
 
