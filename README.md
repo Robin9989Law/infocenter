@@ -95,7 +95,7 @@ ic crew up --dir ~/projects/demo --dry-run     # 只打印将执行的命令
 ic crew up --dir ~/projects/demo --only kimi,opencode   # 只拉部分
 ```
 
-每个 agent 怎么拉起，写在 config 里（见下）。本机已实测：kimi `kimi -p {prompt}`（`-p` 就是非交互，**不能**再加 `--auto`）、opencode `opencode run {prompt} --auto`、grok `grok -p {prompt} --always-approve --output-format plain`（建议加独立 `--leader-socket` 避免和交互会话撞进程）；cursor 只有桌面端，靠 MCP 推送。
+每个 agent 怎么拉起，写在 config 里（见下）。本机已实测：kimi `kimi -p {prompt}`（`-p` 就是非交互，**不能**再加 `--auto`）、opencode `opencode run {prompt} --auto`、grok `grok -p {prompt} --always-approve --output-format plain`（建议加独立 `--leader-socket` 避免和交互会话撞进程）、cursor `cursor-agent -p -f {prompt}`（`-p` 非交互打印、`-f` 免目录信任确认）。四家都能开收信守护。
 
 ## 协作约定：角色与礼仪
 
