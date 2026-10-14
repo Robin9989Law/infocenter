@@ -406,12 +406,14 @@ class WebP2Test(unittest.TestCase):
         self.html = (ROOT / "infocenter" / "web" / "index.html").read_text(encoding="utf-8")
 
     def test_u5_select_case_request_token(self):
-        self.assertIn("const token = id;", self.html)
-        self.assertIn("if (state.selectedCase !== token) return;", self.html)
+        # UI 重设计后：案件详情改在设置弹窗内按需加载（loadCaseNodes），不再有分离详情面板的竞态
+        self.assertIn("loadCaseNodes", self.html)
+        self.assertIn('openSettings("case"', self.html)
 
     def test_l3_action_urls_encoded(self):
-        self.assertIn('"/v1/cases/" + encodeURIComponent(id) + "/pause"', self.html)
+        self.assertIn('"/v1/cases/" + encodeURIComponent(id) + "/" + action', self.html)
         self.assertIn('"/v1/windows/" + encodeURIComponent(id) + "/leave"', self.html)
+        self.assertIn('"/v1/windows/" + encodeURIComponent(id) + "/pause"', self.html)
 
 
 if __name__ == "__main__":

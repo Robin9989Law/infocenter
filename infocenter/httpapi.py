@@ -464,7 +464,10 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
             ws = body.get("workspace") or body.get("dir") or body.get("path")
             if not isinstance(ws, str) or not ws.strip():
                 raise MailError("invalid_workspace", "需要提供项目路径 workspace")
-            project = store.add_project(ws, name=_opt_str(body, "name"))
+            archived = body.get("archived")
+            if archived is not None and not isinstance(archived, bool):
+                raise MailError("invalid_archived", "archived 必须是布尔值", 400)
+            project = store.add_project(ws, name=_opt_str(body, "name"), archived=archived)
             return (201 if method == "POST" else 200), project
 
     if method not in {"GET", "POST", "PUT", "DELETE"}:

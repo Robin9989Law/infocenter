@@ -15,6 +15,8 @@ h1 { font-size: 28px; margin-bottom: 24px; }
 .panel-head h2 { margin-bottom: 0; }
 .btn-new { background: #007aff; color: #fff; border: none; border-radius: 6px; font-size: 12px; padding: 5px 12px; cursor: pointer; }
 .btn-new:hover { opacity: 0.9; }
+.link { background: none; border: none; color: #007aff; cursor: pointer; font-size: 12px; margin-right: 10px; }
+.tag { font-size: 10px; background: #e5e5ea; color: #666; padding: 1px 6px; border-radius: 4px; vertical-align: middle; font-weight: 400; }
 .panel > div:not(.hint) { overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .panel .hint { font-size: 12px; color: #8e8e93; margin: -6px 0 10px; line-height: 1.4; flex: 0 0 auto; }
 .item { position: relative; padding: 10px 48px 10px 10px; margin: 8px 0; background: #f9f9f9; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
@@ -25,6 +27,10 @@ h1 { font-size: 28px; margin-bottom: 24px; }
 .item.active .meta { color: rgba(255,255,255,0.85); }
 .gear { position: absolute; top: 6px; right: 4px; border: none; background: transparent; cursor: pointer; font-size: 19.5px; line-height: 1; padding: 4px 6px; border-radius: 4px; opacity: 0.45; }
 .gear:hover { opacity: 1; background: rgba(0,0,0,0.08); }
+.arch { position: absolute; top: 7px; right: 30px; border: none; background: transparent; cursor: pointer; font-size: 17px; line-height: 1; padding: 4px 6px; border-radius: 4px; opacity: 0.45; }
+.arch:hover { opacity: 1; background: rgba(0,0,0,0.08); }
+.item.active .arch { color: white; opacity: 0.85; }
+.item.has-arch { padding-right: 76px; }
 .item.active .gear { color: white; opacity: 0.85; }
 .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
 .status.在办, .status.open, .status.doing { background: #34c759; color: white; }
@@ -76,7 +82,7 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 
 <div class="grid">
   <div class="panel">
-    <div class="panel-head"><h2>项目</h2><button class="btn-new" id="btn-new-project">新建项目</button></div>
+    <div class="panel-head"><h2>项目</h2><span><button class="link" id="btn-toggle-archived">显示归档</button><button class="btn-new" id="btn-new-project">新建项目</button></span></div>
     <div class="hint">点一行选中 → 中间过滤；点 ⚙️ → 项目设置</div>
     <div id="projects"></div>
   </div>
@@ -111,7 +117,8 @@ let state = {
   selectedProject: null,
   selectedWindow: null,
   selectedCase: null,
-  settingsTarget: null
+  settingsTarget: null,
+  showArchived: false
 };
 
 async function api(path, opts = {}) {
@@ -183,13 +190,15 @@ function selectCase(id) {
 function render() {
   // 项目
   const projEl = document.getElementById("projects");
-  if (state.projects.length === 0) {
+  const shownProjects = state.projects.filter(p => state.showArchived || !p.archived);
+  if (shownProjects.length === 0) {
     projEl.innerHTML = '<div class="empty">暂无项目</div>';
   } else {
-    projEl.innerHTML = state.projects.map(p => `
-      <div class="item ${state.selectedProject === p.workspace ? 'active' : ''}" data-project-ws="${escapeHtml(p.workspace)}">
+    projEl.innerHTML = shownProjects.map(p => `
+      <div class="item has-arch ${state.selectedProject === p.workspace ? 'active' : ''}" data-project-ws="${escapeHtml(p.workspace)}">
+        <button class="arch" data-arch-id="${escapeHtml(p.workspace)}" title="${p.archived ? '取消归档' : '归档'}">&#128451;</button>
         <button class="gear" data-gear="project" data-gear-id="${escapeHtml(p.workspace)}" title="项目设置">&#9881;</button>
-        <div class="title">${escapeHtml(p.name || p.workspace)}</div>
+        <div class="title">${escapeHtml(p.name || p.workspace)}${p.archived ? ' <span class="tag">已归档</span>' : ''}</div>
         <div class="meta">${p.case_count || 0}案 ${(p.active_cases != null ? p.active_cases : (p.counts && p.counts.active) || 0)}在办</div>
       </div>`).join("");
     wire(projEl, ".item[data-project-ws]", it => selectProject(it.dataset.projectWs));
@@ -252,6 +261,10 @@ function render() {
       ev.stopPropagation();
       openSettings(g.dataset.gear, g.dataset.gearId);
     }));
+    root.querySelectorAll(".arch").forEach(b => b.addEventListener("click", ev => {
+      ev.stopPropagation();
+      toggleArchive(b.dataset.archId);
+    }));
   }
 }
 
@@ -286,6 +299,13 @@ function openSettings(kind, id) {
       <div class="section-title">基本信息</div>
       <div class="form-row"><label>显示名</label><input id="s-proj-name" value="${escapeHtml(p.name || "")}"></div>
       <button class="btn-primary" data-act="save-project">保存</button>
+
+      <div class="section-title">归档</div>
+      <div class="settings-actions">
+        ${p.archived
+          ? '<button class="btn resume" data-act="unarchive-project">取消归档</button>'
+          : '<button class="btn abort" data-act="archive-project">归档此项目</button>'}
+      </div>
 
       <div class="section-title">立案（在该项目下新建案卷）</div>
       <div class="form-row"><label>案卷标题</label><input id="s-case-title" placeholder="例如：实现联邦同步"></div>
@@ -403,6 +423,20 @@ async function saveProject() {
     closeSettings(); await loadProjects();
   } catch (e) { alert("保存失败：" + e.message); }
 }
+async function toggleArchive(ws) {
+  const p = state.projects.find(x => x.workspace === ws);
+  const arch = !(p && p.archived);
+  if (arch && !confirm("归档项目「" + ((p && p.name) || ws) + "」？归档后主界面默认隐藏，可随时取消。")) return;
+  try { await api("/v1/projects", { method: "POST", body: { workspace: ws, archived: arch } }); await loadProjects(); }
+  catch (e) { alert("操作失败：" + e.message); }
+}
+async function archiveProject(flag) {
+  const id = state.settingsTarget && state.settingsTarget.id;
+  try {
+    await api("/v1/projects", { method: "POST", body: { workspace: id, archived: flag } });
+    closeSettings(); await loadProjects();
+  } catch (e) { alert((flag ? "归档" : "取消归档") + "失败：" + e.message); }
+}
 async function createProject() {
   const path = document.getElementById("np-path").value.trim();
   const name = document.getElementById("np-name").value.trim();
@@ -452,6 +486,8 @@ document.getElementById("modal-body").addEventListener("click", ev => {
   const act = el.dataset.act;
   if (act === "create-project") createProject();
   else if (act === "save-project") saveProject();
+  else if (act === "archive-project") archiveProject(true);
+  else if (act === "unarchive-project") archiveProject(false);
   else if (act === "create-case") createCaseFromSettings();
   else if (act === "pause-window") doWindow("pause");
   else if (act === "resume-window") doWindow("resume");
@@ -470,6 +506,11 @@ document.getElementById("modal-body").addEventListener("click", ev => {
   else if (act === "goto-case") openSettings("case", el.dataset.cid);
 });
 document.getElementById("btn-new-project").addEventListener("click", () => openSettings("new-project", null));
+document.getElementById("btn-toggle-archived").addEventListener("click", () => {
+  state.showArchived = !state.showArchived;
+  document.getElementById("btn-toggle-archived").textContent = state.showArchived ? "隐藏归档" : "显示归档";
+  render();
+});
 document.getElementById("modal-close").addEventListener("click", closeSettings);
 document.getElementById("modal-overlay").addEventListener("click", ev => { if (ev.target.id === "modal-overlay") closeSettings(); });
 

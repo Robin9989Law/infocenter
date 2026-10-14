@@ -237,7 +237,8 @@ class Store:
                     workspace TEXT PRIMARY KEY,
                     name TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
+                    updated_at TEXT NOT NULL,
+                    archived INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE TABLE IF NOT EXISTS windows (
                     window_id TEXT PRIMARY KEY,
@@ -301,6 +302,10 @@ class Store:
             window_cols = {row[1] for row in conn.execute("PRAGMA table_info(windows)")}
             if "pid" not in window_cols:
                 conn.execute("ALTER TABLE windows ADD COLUMN pid INTEGER")
+
+            project_cols = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
+            if "archived" not in project_cols:
+                conn.execute("ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
 
     def seed(self) -> None:
         now = utcnow()
@@ -1909,18 +1914,20 @@ class Store:
         self._signal()
         return view
 
-    def add_project(self, workspace: str, name: str | None = None) -> dict:
+    def add_project(self, workspace: str, name: str | None = None, archived: bool | None = None) -> dict:
         ws = _workspace(workspace)
         if not ws:
             raise MailError("invalid_workspace", "项目目录 workspace 不能为空")
         if name is not None and not isinstance(name, str):
             raise MailError("invalid_project_name", "项目名称必须是字符串")
+        if archived is not None and not isinstance(archived, bool):
+            raise MailError("invalid_archived", "archived 必须是布尔值", 400)
         proj_name = (name or "").strip() or Path(ws).name or ws
         if len(proj_name) > 200 or "\n" in proj_name or "\r" in proj_name:
             raise MailError("invalid_project_name", "项目名称不能换行，最长 200 字")
         now = utcnow()
         with self._session(immediate=True) as conn:
-            _upsert_project(conn, ws, proj_name, now)
+            _upsert_project(conn, ws, proj_name, now, archived=archived)
             projects = _collect_projects(conn)
         for item in projects:
             if item["workspace"] == ws:
@@ -2474,23 +2481,30 @@ def _upsert_window(
     )
 
 
-def _upsert_project(conn: sqlite3.Connection, workspace: str, name: str | None, now: str) -> None:
+def _upsert_project(conn: sqlite3.Connection, workspace: str, name: str | None, now: str, archived: bool | None = None) -> None:
     ws = _workspace(workspace)
     if not ws:
         return
     proj_name = (name or "").strip() or Path(ws).name or ws
+    arc = None if archived is None else (1 if archived else 0)
     existing = conn.execute("SELECT * FROM projects WHERE workspace = ?", (ws,)).fetchone()
     if existing is None:
         conn.execute(
-            "INSERT INTO projects(workspace, name, created_at, updated_at) VALUES (?, ?, ?, ?)",
-            (ws, proj_name, now, now),
+            "INSERT INTO projects(workspace, name, created_at, updated_at, archived) VALUES (?, ?, ?, ?, ?)",
+            (ws, proj_name, now, now, arc or 0),
         )
     else:
         final_name = proj_name if name else (existing["name"] or proj_name)
-        conn.execute(
-            "UPDATE projects SET name = ?, updated_at = ? WHERE workspace = ?",
-            (final_name, now, ws),
-        )
+        if arc is None:
+            conn.execute(
+                "UPDATE projects SET name = ?, updated_at = ? WHERE workspace = ?",
+                (final_name, now, ws),
+            )
+        else:
+            conn.execute(
+                "UPDATE projects SET name = ?, updated_at = ?, archived = ? WHERE workspace = ?",
+                (final_name, now, arc, ws),
+            )
 
 
 def _collect_projects(conn: sqlite3.Connection) -> list[dict]:
@@ -2551,6 +2565,7 @@ def _collect_projects(conn: sqlite3.Connection) -> list[dict]:
         out.append({
             "workspace": ws,
             "name": meta["name"] or Path(ws).name or ws,
+            "archived": bool(meta.get("archived")),
             "case_count": total,
             "total_cases": total,
             "cases_total": total,
