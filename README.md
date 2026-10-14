@@ -35,6 +35,7 @@
   - [状态自报与资源调配](#状态自报与资源调配)
   - [多项目并行](#多项目并行)
 - [跨机联邦：ic sync](#跨机联邦ic-sync)
+- [窗口 · 案卷 · 管理台（/ui）](#窗口--案卷--管理台ui)
 - [协作约定](#协作约定)
 - [数据与文件位置](#数据与文件位置)
 - [故障排查 FAQ](#故障排查-faq)
@@ -45,7 +46,7 @@
 
 ## 它解决什么问题
 
-你可能同时开着 Grok、Kimi Code、OpenCode、Cursor 和 omp。它们各自困在自己的会话里，**彼此看不见**，于是你成了唯一的人肉消息总线：把 A 的结论复制给 B，再把 B 的反对意见搬回给 A；A 干完活还在等 B，而 B 对此一无所知。
+你可能同时开着 Grok、Kimi Code、OpenCode、Cursor 和 pi。它们各自困在自己的会话里，**彼此看不见**，于是你成了唯一的人肉消息总线：把 A 的结论复制给 B，再把 B 的反对意见搬回给 A；A 干完活还在等 B，而 B 对此一无所知。
 
 信息中心把这套流程变成一个本地服务：
 
@@ -56,10 +57,10 @@ flowchart LR
     K[kimi] <--> HUB
     O[opencode<br/>coordinator] <--> HUB
     C[cursor] <--> HUB
-    M[omp] <--> HUB
+    P[pi] <--> HUB
     U[你 human] <--> HUB
     HUB{{"信息中心<br/>127.0.0.1:8787<br/>SQLite 邮箱"}}
-    HUB -. 秒级推送 .-> G & K & O & C & M
+    HUB -. 秒级推送 .-> G & K & O & C & P
   end
 ```
 
@@ -81,6 +82,9 @@ flowchart LR
 | **收信守护进程** | `ic crew up` 派生的后台进程 | 长轮询等待新信，一有新信就触发一次 headless 运行 |
 | **心跳（heartbeat）** | 收信守护进程在无信时使用的定时器 | 没信也会定期触发一次「规划运行」，推进任务 |
 | **activity** | 每个 agent 的一句话状态 | agent 自报「我在做什么」的字段，coordinator 据此调配，无需发问询信 |
+| **窗口（window）** | 一个会话的内部编号，如 `w-3f9a1c` | 走 `X-Window` 请求头透传；同一身份开多个会话时用它区分「哪个会话」，**不动名字空间** |
+| **办公室（office）** | 窗口在服务端的登记行 | 记录窗口属于谁、哪个项目、最近活动；同一身份的多个窗口各自登记 |
+| **案卷（case）** | 一个 thread 的「办事追踪」 | 由若干**一行一节点**的进展组成，有主办窗口与状态（见[窗口 · 案卷 · 管理台](#窗口--案卷--管理台ui)） |
 
 ## 安装与启动
 
@@ -188,6 +192,14 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic reply <id> -b 正文 [-s 主题] [--to X]` | 回复，默认回给发信人，沿用线程 |
 | `ic thread <id>` | 查看自己参与过的整个回合 |
 
+### 窗口与案卷
+
+| 命令 | 作用 |
+| --- | --- |
+| `ic case <案卷或线程 id> [--note "一行进展"] [--status 状态]` | 查看一份案卷；`--note` 追加一行节点，`--status` 顺手改状态 |
+| `ic cases [--workspace X] [--status 状态] [--owner 身份] [--limit N]` | 列出案卷 |
+| `ic windows [--agent 身份] [--workspace X] [--state 状态]` | 列出办公室（窗口）登记 |
+
 ### 接入与编排
 
 | 命令 | 作用 |
@@ -196,7 +208,11 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic crew up --dir <项目> [--dry-run] [--only a,b]` | 按 config 逐个拉起 agent，并开启收信守护进程 |
 | `ic crew kickoff --plan 分工.md --dir <项目> [--from 身份]` | 以 coordinator 身份群发 high 启动信；多项目时用 `--from` 指定发信身份 |
 | `ic crew status [--dir 项目]` | 收信守护进程的 pid、tmux 会话和各家配置；`--dir` 只看一个项目 |
-| `ic crew down [--dir 项目]` | 终止收信守护进程、关闭 tmux 会话；`--dir` 只清理一个项目 |
+| `ic crew down [--dir 项目] [--only a,b]` | 终止收信守护进程、关闭 tmux 会话；`--dir` 只清理一个项目，`--only` 只停点名身份 |
+| `ic crew pause <身份> [--dir 项目] [--note …]` | 暂停该身份的办公室：打断正在跑的 headless，之后的信不再自动触发（直到 resume） |
+| `ic crew resume <身份> [--dir 项目]` | 恢复暂停的办公室与案卷 |
+| `ic crew abort <身份> [--dir 项目]` | 中止该身份名下未封卷案卷（封卷） |
+| `ic crew close <身份> [--dir 项目]` | 办结该身份名下未封卷案卷（封卷） |
 
 ## 给 agent 接入
 
@@ -223,7 +239,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | OpenCode | `opencode mcp` 全局配置 | `opencode` |
 | Cursor | `~/.cursor/mcp.json` | `cursor` |
 
-**九个工具**如下：
+**十个工具**如下：
 
 | 工具 | 作用 |
 | --- | --- |
@@ -234,6 +250,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic_reply` | 回复，沿用线程 |
 | `ic_thread` | 查看自己参与过的回合 |
 | `ic_archive` | 归档自己的那一份 |
+| `ic_case` | 查看一份案卷（办事追踪）：节点与状态；只读 |
 | `ic_agents` | 名单，以及各家的 role / 未读数 / activity |
 | `ic_activity` | 自报一句话状态（开始、切换或完成任务时调用） |
 
@@ -331,7 +348,7 @@ ic crew down      # 收工：停收信守护进程、关 tmux 会话
 
 ```bash
 ic crew up --dir ~/projects/demo --dry-run        # 只打印将执行的命令
-ic crew up --dir ~/projects/demo --only kimi,omp  # 只拉部分
+ic crew up --dir ~/projects/demo --only kimi,pi   # 只拉部分
 ```
 
 ### 收信守护进程
@@ -348,7 +365,7 @@ ic crew up --dir ~/projects/demo --only kimi,omp  # 只拉部分
 | opencode | `opencode run {prompt} --auto` | `--auto` 会自动批准权限 |
 | grok | `grok -p {prompt} --always-approve --output-format plain` | 建议另加独立的 `--leader-socket`，避免与交互会话的进程冲突 |
 | cursor | `cursor-agent -p -f {prompt}` | `-f` 用于免去目录信任确认（不加会被拦截） |
-| omp | `omp -p --auto-approve --no-session {prompt}` | `--no-session` 用于防止自动接续项目的旧会话 |
+| pi | `pi -p --no-session --model qwen3.8-max {prompt}` | pi 无审批；`--no-session` 防止接续项目旧会话 |
 
 ### 心跳：没有信也不停摆
 
@@ -436,12 +453,44 @@ ic sync once --dir ~/Drive/信息中心
 
 本机账本是 `~/.infocenter/federation.sqlite`（可删；删了不影响邮箱，下次按消息 id 重放）和 `~/.infocenter/federation.lock`（同时只允许一个 sync，最多等 30 秒）。
 
+## 窗口 · 案卷 · 管理台（/ui）
+
+除了「信」，信息中心还给每条工作线一个**窗口号**和一份**案卷**，用来回答「这件事谁在办、办到哪了」。
+
+### 窗口与办公室
+
+- 每个会话/Session 有一个内部窗口号：HTTP 走 `X-Window` 请求头；MCP 进程启动时读环境变量 `INFOCENTER_WINDOW`，未设则自动生成 `w-<6 位十六进制>`。
+- 它**不动名字空间**——身份仍是 `grok`/`kimi`…，窗口只是「同一身份下的哪个会话」；同一身份开多个会话互不重叠。
+- **认领按 thread 传播**：谁先读了这条线，就归谁的窗口办，其他窗口不再重复提醒。
+- 办公室＝窗口在服务端的登记行（属于谁、哪个项目、最近活动），用 `ic windows` 查看。
+
+### 案卷（办事追踪）
+
+一个 thread 对应一份案卷，由若干**一行一节点**的进展组成：
+
+```bash
+ic cases --workspace ~/projects/demo           # 本项目所有案卷
+ic case m1a2b3c4                               # 某条线的案卷与节点
+ic case m1a2b3c4 --note "客户端已改，待复测" --status doing
+```
+
+- 状态：**待办 / 在办 / 待谁 / 暂停 / 中止 / 办结**；**封卷后只读**（要改只能重开）。
+- 收局操作走 `ic crew pause|resume|abort|close <身份>`：暂停只打断当前一轮、可恢复；中止 / 办结会封卷。
+- 离场（收信守护进程退出）会**自动中止**该窗口名下未封卷的案卷，并补一行 `[自动]` 节点。
+
+### 管理台 /ui
+
+服务端自带一个单页管理台：浏览器打开 `http://127.0.0.1:8787/ui`，可见**三视图**（办公室 / 案卷 / 项目），并能对案卷执行**暂停 / 恢复 / 中止 / 办结**、设定项目地址、立案。单 HTML + 原生 `fetch`，不引框架、无外链。
+
+> 管理台的写操作走服务端本地接口；服务只监听 `127.0.0.1` 且无鉴权（见[安全与限制](#安全与限制)）。
+
 ## 协作约定
 
 系统并不强制「谁听谁的」，但把规则做成了机器可读的形式（config 的 `role`），并写进每个 agent 的 SKILL 和 kickoff 信：
 
 - **coordinator 优先**：它的分工裁定优先执行；有异议时只回**一条**针对冲突点的信，不许一边争论一边改文件。
 - **单一写者**：每个文件或文档只有一个 owner agent 可以写；其他人只发 diff 建议，由 owner 合入。
+- **单一活跃 coordinator**：同一身份若既跑交互会话、又跑收信守护，改 `PLAN.md` 与发派单**只由一个 actor**执行（默认交互会话），避免两个 actor 抢活。
 - **规划纪律**：`PLAN.md` 由 coordinator 独家维护；成员的进展只写进自己的 `TODO-<名字>.md`；要调整计划就发信。
 - **礼仪**：无新信息不回帖；禁止 `+1` 和纯客套的附议；同一分歧最多讨论两轮，之后交由 coordinator / human 裁定。
 - **kickoff 信**：先回一条信，确认自己认领的分工并更新 activity，再动手。
@@ -497,10 +546,10 @@ ic sync once --dir ~/Drive/信息中心
 运行全量测试：
 
 ```bash
-python3 -m unittest tests.test_infocenter   # 全量测试（33 个，含收信守护端到端）
+python3 -W error::ResourceWarning -m unittest discover -s tests   # 全量测试（118 个，零 ResourceWarning）
 ```
 
-代码结构如下：`infocenter/` 目录下，`server.py`（常驻 HTTP 服务）→ `httpapi.py`（路由）→ `store.py`（SQLite）；`cli.py`、`mcp_server.py`、`client.py` 都是 HTTP 的客户端；`crew.py` 负责团队编排和收信守护进程；`config.py` 管理名单。
+代码结构如下：`infocenter/` 目录下，`server.py`（常驻 HTTP 服务，含 `/ui` 管理台静态路由）→ `httpapi.py`（路由）→ `store.py`（SQLite）；`cli.py`、`mcp_server.py`、`client.py` 都是 HTTP 的客户端；`crew.py` 负责团队编排和收信守护进程；`config.py` 管理名单与联邦配置；`sync.py` 负责跨机联邦；`web/index.html` 是管理台单页。
 
 需求、决策与实测记录见 `需求文档/01-需求整理.md`。
 
