@@ -283,6 +283,29 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `POST` | `/v1/messages/{id}/reply` | 回复，沿用线程 |
 | `GET` | `/v1/threads/{id}` | 只返回自己参与过的回合 |
 
+窗口 / 案卷 / 管理台这一层接口，都可以再带一个请求头 `X-Window: w-xxxxxx` 表明「是哪个会话在办」（不传即保持单窗口兼容行为）：
+
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| `GET` | `/v1/cases` | 列出案卷，可按 `workspace` / `status` / `owner` / `owner_window` / `limit` 过滤 |
+| `POST` | `/v1/cases` | 立案（`title` 必填；可带 `workspace` / `owner_agent` / `note`，带 `to`+`body` 时同时发出始信） |
+| `GET` | `/v1/cases/{id}` | 案卷详情与全部节点流水 |
+| `POST` | `/v1/cases/{id}/nodes` | 写回一行节点（`note` 单行；可带 `status` / `waiting_for`） |
+| `POST` | `/v1/cases/{id}/pause\|resume` | 暂停（不封卷、保留归属）/ 恢复为在办 |
+| `POST` | `/v1/cases/{id}/abort\|close` | 中止 / 办结，两者都会**封卷**；`close` 另释放归属 |
+| `POST` | `/v1/cases/{id}/reopen` | 重开已封卷案卷：状态回 `open`、解除封卷，并留一条 `reopen` 节点（节点只增不删） |
+| `POST` | `/v1/cases/{id}/claim\|transfer` | 认领到当前窗口 / 转办给另一个窗口 |
+| `GET` `POST` | `/v1/windows` | 列出办公室；登记或更新办公室（`window_id` / `workspace` / `activity` / `state`） |
+| `GET` `PUT` `DELETE` | `/v1/windows/{id}` | 查看 / 更新 / 离场一个办公室；另有 `POST /v1/windows/{id}/pause\|resume\|leave` |
+| `GET` `POST` | `/v1/projects` | 列出项目及案卷统计（含 `archived`）；设定项目地址纳入管理（`workspace` 必填，可带 `name` / `archived`） |
+| `GET` | `/v1/activity` | 全局工作痕迹流（`limit` ≤ 100） |
+| `GET` `POST` | `/v1/crew` | 收信守护进程状态 / 网页起停（`action=up\|down\|status`） |
+| `GET` | `/v1/headless`、`/v1/headless/runs`、`/v1/daemons` | 在跑的 headless、headless 运行上下文（提示词与输出尾部）、守护进程实况 |
+| `GET` | `/v1/agents/{name}/messages` | 某个身份的信件往来历史（收发方向、对方、主题、状态） |
+| `POST` | `/v1/restart` | 一键重启：停掉全部守护与服务端，重新 `serve --detach` 并按项目 `crew up`（`dry_run=true` 只预览脚本；日志写 `~/.infocenter/restart.log`） |
+| `POST` | `/v1/open` | 在访达 / 文件管理器里打开一个目录（`path` 必填；非目录 400） |
+| `GET` | `/ui` | 单页管理台（见[窗口 · 案卷 · 管理台](#窗口--案卷--管理台ui)） |
+
 ### 接入名单 config.json
 
 接入名单保存在 `~/.infocenter/config.json`。首次运行时会自动生成默认的五个成员（grok、kimi、opencode、cursor、human），**此后一切以该文件为准**：可以直接编辑，也可以用 `ic agents add/remove` 修改。
@@ -301,6 +324,8 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `heartbeat` | 无信时的心跳间隔（秒），到期会触发一次规划运行；填 0 或不填表示纯信件驱动 |
 | `heartbeat_mode` | 可选：`"idle"`（默认，新信会重置心跳计时）或 `"always"`（严格按间隔调度，新信不重置） |
 | `heartbeat_prompt` | 可选：替代内置的心跳规划提示词（支持 `{agent}` `{project}` 占位符）；不填用内置模板 |
+
+**守护对 config 是热加载的**：收信守护进程每一轮都会重读 `config.json`，所以改 `headless` / `heartbeat_mode` / `heartbeat_prompt`（以及启动时没有用 `--heartbeat` 显式传入的 `heartbeat`）**不需要重启守护**，下一轮即生效；把某个身份的 `headless` 清空，它的守护会在当前轮结束后优雅退出。`poll` 与显式传入的 `--heartbeat` 仍要重启守护才会变。
 
 名单之外的 agent 也可以随时自行注册（`PUT /v1/agents/{name}`），这一入口始终保持开放。
 
@@ -480,7 +505,14 @@ ic case m1a2b3c4 --note "客户端已改，待复测" --status doing
 
 ### 管理台 /ui
 
-服务端自带一个单页管理台：浏览器打开 `http://127.0.0.1:8787/ui`，可见**三视图**（办公室 / 案卷 / 项目），并能对案卷执行**暂停 / 恢复 / 中止 / 办结**、设定项目地址、立案。单 HTML + 原生 `fetch`，不引框架、无外链。
+服务端自带一个单页管理台：浏览器打开 `http://127.0.0.1:8787/ui`。单 HTML + 原生 `fetch`，不引框架、无外链。
+
+- **三栏级联**：点**项目** → 中间只列该项目的**办公室**；点**办公室** → 右边只列该办公室的**案件**；再点一次取消选择。案件栏可按状态筛选，点案件看节点时间线。
+- **写操作都在二级页面**（主界面只留列表）：项目页可**设定项目地址**、**新建项目**、**归档 / 取消归档**、**网页起停收信守护进程**；案卷页可**立案**（不指派＝只建卷；指派＝同时发出始信触发开工）、**暂停 / 恢复 / 中止 / 办结 / 重开**、转办。
+- **干预中枢**：`#human` 视图可发信（含向所有项目广播）、对全局在跑的办公室与未结案卷直接干预、把未读信标为已读；点任一身份可看其信件往来历史。
+- **标题栏**：『重启』按钮＝`POST /v1/restart`（确认后重启服务端与全部在跑的项目守护，并轮询 `/health` 直到恢复）；项目页可『打开项目文件夹』（`POST /v1/open`）。
+- **工作痕迹**：全局痕迹流（可按项目 / 办公室 / 案卷 / 关键词筛选），办公室『实时状态』带进程是否存活；headless 运行中可看到它的提示词与输出尾部。
+- 编号（项目 / 办公室 / 案件）点一下即复制。
 
 > 管理台的写操作走服务端本地接口；服务只监听 `127.0.0.1` 且无鉴权（见[安全与限制](#安全与限制)）。
 
@@ -504,7 +536,9 @@ ic case m1a2b3c4 --note "客户端已改，待复测" --status doing
 | `~/.infocenter/mailbox.db` | SQLite 邮箱（WAL 模式） |
 | `~/.infocenter/config.json` | 接入名单与编排配置 |
 | `~/.infocenter/server.json` | 后台服务的 pid 和 url |
-| `~/.infocenter/crew/` | 收信守护进程的状态：`<名字>.pid` / `.json` / `.cursor` / `.log` |
+| `~/.infocenter/server.log` | 服务端日志 |
+| `~/.infocenter/restart.log` | `/ui` 一键重启（`POST /v1/restart`）的脚本输出 |
+| `~/.infocenter/crew/` | 收信守护进程的状态，按「身份 × 项目」分键 `<名字>--<项目 hash8>`：`.pid`（JSON：`pid` + `started_at`，用于识别 pid 复用）、`.json`（守护 meta：`dir` / `started_at` / `office_registered` / `headless_pid`）、`.cursor`（events 游标）、`.log`（日志）、`.runs.jsonl`（历次 headless 的提示词与输出尾部）、`.prompt`（正在跑的那次提示词） |
 | `~/.infocenter/federation.sqlite` | `ic sync` 的本地账本。删了不影响邮箱，下次按消息 id 重放 |
 | `~/.infocenter/federation.lock` | `ic sync` 的进程锁，最多等待 30 秒 |
 
@@ -531,8 +565,11 @@ ic case m1a2b3c4 --note "客户端已改，待复测" --status doing
 **Q：能把 mailbox.db 放共享网盘给两台机器共用吗？**
 **不能。** 网络文件系统会破坏 SQLite 的锁语义，同步冲突会撕裂数据库。跨机时各留本地库，用 `ic sync` 交换 `<项目>/.infocenter/outbox/` 里的 JSON。见[跨机联邦](#跨机联邦ic-sync)。
 
+**Q：改了 config.json 里的 `headless` / `heartbeat_prompt`，要重启守护吗？**
+不用。守护每轮重读 config，下一轮就用新值（见[接入名单 config.json](#接入名单-configjson)）；清空 `headless` 会让守护自己退出。只有 `poll` 和启动时显式传入的 `--heartbeat` 需要 `ic crew down && ic crew up`。
+
 **Q：服务端口被占用，或者想重启服务怎么办？**
-执行 `ic stop && ic serve --detach` 即可。MCP 进程会自动重连（失败时每 2 秒重试一次）。
+执行 `ic stop && ic serve --detach` 即可；也可以打开 `/ui` 点标题旁的『重启』（`POST /v1/restart`，会连同各项目守护一起重启）。MCP 进程会自动重连（失败时每 2 秒重试一次）。
 
 ## 安全与限制
 
@@ -546,8 +583,12 @@ ic case m1a2b3c4 --note "客户端已改，待复测" --status doing
 运行全量测试：
 
 ```bash
-python3 -W error::ResourceWarning -m unittest discover -s tests   # 全量测试（当前 144 个，零 ResourceWarning）
+python3 -W error::ResourceWarning -m unittest discover -s tests   # 全量测试（当前 156 个，零 ResourceWarning）
 ```
+
+> 在**收信守护派生的会话**里跑测时，环境已注入 `INFOCENTER_AGENT` / `INFOCENTER_WINDOW`，请清掉再跑：
+> `env -u INFOCENTER_AGENT -u INFOCENTER_WINDOW python3 -m unittest discover -s tests`。
+> 否则 MCP 进程会被环境锁定身份，`test_quality_mcp` 里「未锁身份应每个工具都要求 `agent`」那条用例会假红。
 
 代码结构如下：`infocenter/` 目录下，`server.py`（常驻 HTTP 服务，含 `/ui` 管理台静态路由）→ `httpapi.py`（路由）→ `store.py`（SQLite）；`cli.py`、`mcp_server.py`、`client.py` 都是 HTTP 的客户端；`crew.py` 负责团队编排和收信守护进程；`config.py` 管理名单与联邦配置；`sync.py` 负责跨机联邦；`web/index.html` 是管理台单页。
 
