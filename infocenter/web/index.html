@@ -51,6 +51,9 @@ h1 { font-size: 26px; margin-bottom: 24px; }
 .dmon-btn.on { color: #34c759; }
 .dmon-btn.off { color: #8e8e93; }
 .dmon-btn:hover { text-decoration: underline; }
+.run-badge { font-size: 10.5px; background: #eef6ff; color: #007aff; border-radius: 4px; padding: 1px 5px; cursor: pointer; font-weight: 400; margin-left: 6px; }
+.run-badge:hover { background: #dbeaff; }
+.run-badge.bad { background: #fff2e5; color: #ff9500; }
 .agents-wrap { display: flex; align-items: center; gap: 8px; }
 .dir { font-size: 17px; font-weight: 700; }
 .dir.out { color: #007aff; }
@@ -194,7 +197,8 @@ let state = {
   mail: [],
   mailAgent: null,
   headless: [],
-  daemons: []
+  daemons: [],
+  runs: []
 };
 
 async function api(path, opts = {}) {
@@ -245,6 +249,16 @@ async function loadDaemons() {
   try { const data = await api("/v1/daemons"); state.daemons = data.daemons || []; }
   catch (e) { console.error("loadDaemons", e); }
   render();
+}
+async function loadRuns() {
+  try { const data = await api("/v1/headless/runs?limit=50"); state.runs = data.runs || []; }
+  catch (e) { console.error("loadRuns", e); }
+  render();
+}
+function runBadge(r, idx) {
+  const t = String((r && r.end) || "").replace("T", " ").slice(11, 16);
+  const ok = r && r.outcome === "ok";
+  return `<span class="run-badge ${ok ? "ok" : "bad"}" data-run-idx="${idx}" title="最近一轮 headless：${escapeHtml((r && r.agent) || "")} · ${escapeHtml((r && r.outcome) || "")} · ${escapeHtml(t)}（点击看上下文/输出）">&#9889; ${escapeHtml((r && r.agent) || "")} ${escapeHtml((r && r.outcome) || "")} ${escapeHtml(t)}</span>`;
 }
 async function loadActivity() {
   try { const data = await api("/v1/activity?limit=100"); state.activity = data.activity || []; }
@@ -361,9 +375,10 @@ function render() {
       const owner = c.owner_agent || c.owner_window || "";
       const last = c.last_note || (c.last_node && typeof c.last_node === "object" ? (c.last_node.note || c.last_node.line || "") : c.last_node) || "";
       const cid = escapeHtml(c.id);
+      const runIdx = state.runs.findIndex(r => sameWs(r.dir, c.workspace) && (!c.owner_agent || r.agent === c.owner_agent));
       return `
       <div class="item" data-case-id="${cid}">
-        <div class="title">${escapeHtml(c.title)}</div>
+        <div class="title">${escapeHtml(c.title)}${runIdx >= 0 ? runBadge(state.runs[runIdx], runIdx) : ''}</div>
         <div class="meta"><span class="cid copy" data-copy="${cid}" title="点击复制案件编号">${cid}</span> <span class="status ${cls}">${escapeHtml(st)}</span> ${owner ? '主办 ' + escapeHtml(owner) : ''}</div>
         <div class="meta">${escapeHtml(last)}</div>
       </div>`;
@@ -438,6 +453,10 @@ function render() {
     root.querySelectorAll(".dmon-btn").forEach(b => b.addEventListener("click", ev => {
       ev.stopPropagation();
       toggleDaemons(b.dataset.dmonWs);
+    }));
+    root.querySelectorAll(".run-badge").forEach(b => b.addEventListener("click", ev => {
+      ev.stopPropagation();
+      openSettings("run", b.dataset.runIdx);
     }));
   }
 }
@@ -617,10 +636,7 @@ function openSettings(kind, id) {
         <div class="irow block"><span class="grow"><b>${escapeHtml(h.agent)}</b> · ${escapeHtml(String(h.dir).split("/").filter(Boolean).pop() || "")} · pid ${escapeHtml(String(h.pid))} · ${h.alive ? "运行中" : "已退出"}</span>
           ${h.prompt ? `<details><summary>运行时上下文</summary><div class="body-text">${escapeHtml(h.prompt)}</div></details>` : ""}
         </div>`).join("")}
-      <div class="section-title">④ 最近完成的 headless</div>
-      <div id="s-runs"><div class="empty">加载…</div></div>
-
-      <div class="section-title">⑤ 未结案卷（${openCases.length}）· 可直接干预</div>
+      <div class="section-title">④ 未结案卷（${openCases.length}）· 可直接干预</div>
       ${openCases.length === 0 ? '<div class="empty">无</div>' : openCases.map(c => {
         const st = c.status_label || c.status || "";
         const cid = escapeHtml(c.id);
@@ -631,11 +647,10 @@ function openSettings(kind, id) {
         </div>`;
       }).join("")}
 
-      <div class="section-title">⑥ human 的信件往来</div>
+      <div class="section-title">⑤ human 的信件往来</div>
       <div id="s-agent-mail"><div class="empty">加载…</div></div>`;
     overlay.classList.add("show");
     loadAgentMail("human");
-    loadHeadlessRuns();
     return;
   }
 
@@ -661,6 +676,23 @@ function openSettings(kind, id) {
       <div class="kv"><b>案卷</b>${escapeHtml(m.case_title || m.case_id || "—")}</div>
       <hr>
       <div class="body-text">${escapeHtml(m.body || "（无正文）")}</div>`;
+    overlay.classList.add("show");
+    return;
+  }
+
+  if (kind === "run") {
+    const r = (state.runs || [])[Number(id)] || {};
+    titleEl.textContent = "headless 运行 · " + (r.agent || "");
+    bodyEl.innerHTML = `
+      <div class="kv"><b>身份</b>${escapeHtml(r.agent || "")}</div>
+      <div class="kv"><b>项目</b>${escapeHtml(r.dir || "")}</div>
+      <div class="kv"><b>结果</b>${escapeHtml(r.outcome || "")} · ${escapeHtml(String(r.start || "").replace("T", " ").replace("Z", ""))} → ${escapeHtml(String(r.end || "").replace("T", " ").replace("Z", ""))}</div>
+      <hr>
+      <div class="kv"><b>运行时上下文（提示词）</b></div>
+      <div class="body-text">${escapeHtml(r.prompt || "（无）")}</div>
+      <hr>
+      <div class="kv"><b>输出</b></div>
+      <div class="body-text">${escapeHtml(r.tail || "（无）")}</div>`;
     overlay.classList.add("show");
     return;
   }
@@ -970,7 +1002,7 @@ document.getElementById("f-case").addEventListener("change", e => { state.activi
 document.getElementById("f-q").addEventListener("input", e => { state.activityFilters.q = e.target.value.trim(); render(); });
 document.getElementById("f-case-status").addEventListener("change", e => { state.caseStatus = e.target.value; render(); });
 async function refreshAll() {
-  await loadProjects(); await loadWindows(); await loadCases(); await loadAgents(); await loadActivity(); await loadHeadless(); await loadDaemons();
+  await loadProjects(); await loadWindows(); await loadCases(); await loadAgents(); await loadActivity(); await loadHeadless(); await loadDaemons(); await loadRuns();
 }
 document.getElementById("btn-refresh").addEventListener("click", async ev => {
   const b = ev.currentTarget;
@@ -999,6 +1031,7 @@ loadAgents();
 loadActivity();
 loadHeadless();
 loadDaemons();
+loadRuns();
 syncActivityFilters();
 
 // 深链：#human 打开干预中枢，#agent/<名> 打开某 agent 的信件往来
