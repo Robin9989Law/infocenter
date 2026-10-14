@@ -87,7 +87,8 @@ h1 { font-size: 26px; margin-bottom: 24px; }
 hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: none; align-items: center; justify-content: center; z-index: 50; }
 .modal-overlay.show { display: flex; }
-.modal { background: #fff; border-radius: 10px; width: 860px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column; box-shadow: 0 12px 48px rgba(0,0,0,0.3); }
+.modal { background: #fff; border-radius: 10px; width: 720px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column; box-shadow: 0 12px 48px rgba(0,0,0,0.3); }
+.modal.wide { width: 1080px; }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid #eee; }
 .modal-head h2 { font-size: 17px; }
 .modal-close { border: none; background: transparent; font-size: 22px; line-height: 1; cursor: pointer; color: #8e8e93; }
@@ -350,6 +351,8 @@ function openSettings(kind, id) {
   const overlay = document.getElementById("modal-overlay");
   const titleEl = document.getElementById("modal-title");
   const bodyEl = document.getElementById("modal-body");
+  const modalEl = document.querySelector(".modal");
+  if (modalEl) modalEl.classList.toggle("wide", kind === "human" || kind === "agent");
 
   if (kind === "new-project") {
     titleEl.textContent = "新建项目";
@@ -569,6 +572,13 @@ async function saveProject() {
     closeSettings(); await loadProjects();
   } catch (e) { alert("保存失败：" + e.message); }
 }
+async function markRead(id, name) {
+  try {
+    await api("/v1/messages/" + encodeURIComponent(id) + "/read", { method: "POST" });
+    await loadAgentMail(name);
+    await loadAgents();
+  } catch (e) { alert("标为已读失败：" + e.message); }
+}
 async function sendHuman() {
   const sel = document.getElementById("s-msg-to");
   const to = Array.from(sel.selectedOptions).map(o => o.value);
@@ -597,6 +607,10 @@ async function loadAgentMail(name) {
             ? '<span title="发出" class="dir out">&#10145;</span>'
             : '<span title="收到" class="dir in">&#11013;</span>';
           const st = m.direction === "out" ? "" : (m.my_status === "unread" ? "未读" : m.my_status === "read" ? "已读" : m.my_status === "archived" ? "归档" : (m.my_status || ""));
+          const canRead = name === "human" && m.direction === "in" && m.my_status === "unread";
+          const stCell = canRead
+            ? `<button class="btn resume" data-read="${escapeHtml(m.id)}">标为已读</button>`
+            : escapeHtml(st);
           return `<tr>
           <td class="time">${escapeHtml(m.created_at_local || "")}</td>
           <td>${dir}</td>
@@ -605,10 +619,11 @@ async function loadAgentMail(name) {
           <td title="办公室编号">${escapeHtml(m.claimed_by || "—")}</td>
           <td title="${escapeHtml(m.case_title || "")}">${escapeHtml(m.case_id || "—")}</td>
           <td>${escapeHtml(m.subject || "")}</td>
-          <td>${escapeHtml(st)}</td>
+          <td>${stCell}</td>
         </tr>`;
         }).join("")
       + `</tbody></table>`;
+    el.querySelectorAll("[data-read]").forEach(b => b.addEventListener("click", () => markRead(b.dataset.read, name)));
   } catch (e) {
     el.innerHTML = '<div class="empty">加载失败：' + escapeHtml(e.message) + '</div>';
   }
