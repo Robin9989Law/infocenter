@@ -8,3 +8,8 @@ dist/
 .pytest_cache/
 需求文档/*.pdf
 需求文档/*.tex
+
+# 过程文档：只留本地，不入仓库、不推远程
+PLAN.md
+TODO-*.md
+_work/
