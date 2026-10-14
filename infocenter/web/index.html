@@ -28,7 +28,9 @@ h1 { font-size: 26px; margin-bottom: 24px; }
 .tag { font-size: 10px; background: #e5e5ea; color: #666; padding: 1px 6px; border-radius: 4px; vertical-align: middle; font-weight: 400; }
 .panel > div:not(.hint):not(.panel-head) { overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .panel .hint { font-size: 12px; color: #8e8e93; margin: -6px 0 10px; line-height: 1.4; flex: 0 0 auto; min-height: 2.8em; }
-.panel.wide { max-height: 42vh; margin-bottom: 24px; }
+.panel.wide { max-height: 46vh; margin-bottom: 24px; }
+.filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.filters select, .filters input { font-size: 12px; padding: 3px 6px; border: 1px solid #d1d1d6; border-radius: 4px; background: #fff; color: #1d1d1f; }
 .legend { font-size: 12px; color: #8e8e93; font-weight: 400; }
 .dir { font-size: 17px; font-weight: 700; }
 .dir.out { color: #007aff; }
@@ -125,7 +127,15 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 </div>
 
 <div class="panel wide">
-  <h2>工作痕迹 <span class="legend">最近活动：项目 · 办公室 · 案卷 · 节点 · 内容（跨项目、来自案卷节点）</span></h2>
+  <div class="panel-head">
+    <h2>工作痕迹 <span class="legend">最近活动：项目 · 办公室 · 案卷 · 节点 · 内容</span></h2>
+    <div class="filters">
+      <select id="f-proj"><option value="">全部项目</option></select>
+      <select id="f-agent"><option value="">全部办公室</option></select>
+      <select id="f-case"><option value="">全部案卷</option></select>
+      <input id="f-q" placeholder="关键词（内容/节点/案卷）">
+    </div>
+  </div>
   <div id="activity"></div>
 </div>
 
@@ -150,7 +160,8 @@ let state = {
   selectedCase: null,
   settingsTarget: null,
   showArchived: false,
-  activity: []
+  activity: [],
+  activityFilters: { project: "", agent: "", case: "", q: "" }
 };
 
 async function api(path, opts = {}) {
@@ -193,9 +204,21 @@ async function loadAgents() {
   render();
 }
 async function loadActivity() {
-  try { const data = await api("/v1/activity?limit=80"); state.activity = data.activity || []; }
+  try { const data = await api("/v1/activity?limit=200"); state.activity = data.activity || []; }
   catch (e) { console.error("loadActivity", e); }
   render();
+}
+function syncActivityFilters() {
+  const mk = (sel, first, opts, cur) => {
+    const el = document.getElementById(sel);
+    if (!el) return;
+    el.innerHTML = `<option value="">${first}</option>` + opts.map(o => `<option value="${escapeHtml(o.v)}">${escapeHtml(o.t)}</option>`).join("");
+    el.value = cur || "";
+    if (el.value !== (cur || "")) el.value = "";
+  };
+  mk("f-proj", "全部项目", state.projects.map(p => ({ v: p.workspace, t: p.name || p.workspace })), state.activityFilters.project);
+  mk("f-agent", "全部办公室", state.agents.filter(a => a.roster !== false).map(a => ({ v: a.name, t: a.name })), state.activityFilters.agent);
+  mk("f-case", "全部案卷", state.cases.map(c => ({ v: c.id, t: (c.title || c.id).slice(0, 30) })), state.activityFilters.case);
 }
 
 function escapeHtml(s) {
@@ -226,6 +249,7 @@ function selectCase(id) {
 }
 
 function render() {
+  syncActivityFilters();
   // 项目
   const projEl = document.getElementById("projects");
   const shownProjects = state.projects.filter(p => state.showArchived || !p.archived);
@@ -297,11 +321,22 @@ function render() {
   // 工作痕迹
   const actEl = document.getElementById("activity");
   if (actEl) {
-    if (state.activity.length === 0) {
-      actEl.innerHTML = '<div class="empty">暂无活动</div>';
+    const f = state.activityFilters;
+    const acts = state.activity.filter(a => {
+      if (f.project && !sameWs(a.workspace, f.project)) return false;
+      if (f.agent && a.agent !== f.agent) return false;
+      if (f.case && a.case_id !== f.case) return false;
+      if (f.q) {
+        const hay = (a.action || "") + " " + (a.note || "") + " " + (a.case_title || "");
+        if (!hay.includes(f.q)) return false;
+      }
+      return true;
+    });
+    if (acts.length === 0) {
+      actEl.innerHTML = '<div class="empty">无匹配活动</div>';
     } else {
       actEl.innerHTML = `<table class="nodes"><thead><tr><th>时间</th><th>项目</th><th>办公室</th><th>案卷</th><th>节点</th><th>内容</th></tr></thead><tbody>`
-        + state.activity.map(a => {
+        + acts.map(a => {
             const p = state.projects.find(x => sameWs(x.workspace, a.workspace));
             const proj = p ? (p.name || p.workspace) : (a.workspace ? String(a.workspace).split("/").filter(Boolean).pop() : "");
             const office = (a.agent || "") + (a.window_id ? " · " + a.window_id : "");
@@ -758,6 +793,10 @@ document.getElementById("btn-toggle-archived").addEventListener("click", () => {
   render();
 });
 document.getElementById("modal-close").addEventListener("click", closeSettings);
+document.getElementById("f-proj").addEventListener("change", e => { state.activityFilters.project = e.target.value; render(); });
+document.getElementById("f-agent").addEventListener("change", e => { state.activityFilters.agent = e.target.value; render(); });
+document.getElementById("f-case").addEventListener("change", e => { state.activityFilters.case = e.target.value; render(); });
+document.getElementById("f-q").addEventListener("input", e => { state.activityFilters.q = e.target.value.trim(); render(); });
 document.getElementById("modal-overlay").addEventListener("click", ev => { if (ev.target.id === "modal-overlay") closeSettings(); });
 
 // 初始化
@@ -766,6 +805,7 @@ loadWindows();
 loadCases();
 loadAgents();
 loadActivity();
+syncActivityFilters();
 </script>
 </body>
 </html>
