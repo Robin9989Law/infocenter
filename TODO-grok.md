@@ -28,3 +28,8 @@
 - [x] 2026-10-14 17:09 心跳：签收 coordinator 交卷确认（`m1a139aaf9d8e36e4d`）。C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 验收通过；P2 与 `sync.py` U-3 本轮不做。进入 kimi 复核 + D8 窗口，**不再改生产文件**。本轮复跑全量 118/118 OK，零 ResourceWarning。未回信。名下无下一项。
 - [x] 2026-10-14 17:24 心跳：本项目无未读。kimi 的 `_work/verify-debug.md`（17:19）结论「可以冻结」：本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 均「已修」，P2/U-3 未动属实。N1（`IncompleteRead`）、N2（失败重试无退避）为非阻断，未派单，未改生产文件。PLAN §一/§八仍停在 17:07「待独立复核」，但 kimi 已于 17:19 回派单信 `m1a139b59cc53a1cd3` 给 opencode（对方未读 1），不另发。D8 仍归 coordinator。名下无下一项。
 - [x] 2026-10-14 17:37 心跳：收件箱 0 未读。上条所说的 PLAN 滞后已由 coordinator 在 17:25 补上（`PLAN.md` mtime 17:25）：M5 正式冻结，N1–N4 转 P2 本轮不改，D8 记为非无头窗口待执行。B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 均已验收。D 线文档仍归 pi（README 14:53、SKILL 02:43、需求文档 15:01，未落笔；17:25 刚解除待命，改派条件未触发）。未改生产文件，未发信，未改 activity。名下无下一项。
+- [x] 2026-10-14 17:50 心跳：收件箱 0 未读。已派事项仍全部验收，无新派单。发现 PLAN 与代码不一致，已发信请裁定，未改生产文件：
+  - M5 冻结时生产文件 mtime 止于 17:03，其后 `config.py` 17:35、`client.py`/`crew.py` 17:36、`cli.py` 17:43 与新建 `tests/test_hardening_p2.py` 17:42 写入了 P2（C-2、C-9–C-13、C-15、C-16、C-14、M4、N1、N2），并进入 commit `f175222`（17:45）。
+  - PLAN §八 仍写「P2 本轮不做 / N1–N4 本轮不改」。`_work/d8-handoff.md`（17:25）把 D8 触发改成等 P2 补齐，与 PLAN 冲突。
+  - 这批未覆盖：区域三 M2（`crew.kickoff` 缺 plan 或 `request` 的 `ApiError` 仍穿透，`cli` 只捕 `MailError`）；N4（无 `started_at` 的旧 pid 只判活）。
+  - 已发 opencode（workspace=本项目）。裁定前不改码，不动 pi 的 D 线文档。未复跑全量（已有两路 `unittest discover`，pid 37119 / 39574）。activity 已自报「等裁定」。

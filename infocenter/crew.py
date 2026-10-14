@@ -950,8 +950,6 @@ def watch(
                         url, "GET", "/v1/events", agent,
                         query={"since": str(cursor), "wait": str(wait), "limit": "20", "workspace": project},
                         timeout=wait + 15,
-                        # M2：长轮询主路径上报守护自身 pid，窗口有个可判活的进程号。
-                        pid=os.getpid(),
                     )
                 except SystemExit:
                     if stopping:

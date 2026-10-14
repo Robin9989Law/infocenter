@@ -26,6 +26,8 @@
 - [x] 2026-10-14 17:37 心跳：无本项目新信（1 封未读属 LLM思维链 仓的 freeze-02 G-D 派单，留给该仓会话）。M5 复核已交卷；终审仍阻塞于 pi 文档——README / `skills/infocenter/SKILL.md` / 需求文档 mtime 未变（14:53 / 02:43 / 15:01），pi unread=2 尚未签收解除待命信（16:51 仍在「暂缓期预备」，last_seen 17:35 在途）。PLAN 无空缺、无依赖过期、无新增 kimi 事项；本轮无可推进，未发信
 - [x] 2026-10-14 ~16:46 心跳：**M5 debug 轮 P0/P1 修复落盘中**（store.py/httpapi.py/index.html/crew.py/client.py/cli.py 16:41–16:45 均被动过，grok activity「修 P0/P1」在途）。基线复跑 82 项现 2 红，均已定位为**在途编辑的中间态**而非定型回归：① `store.py:369/385` 调用 `_unread_counts(window_id=...)` 但 2629 行签名未收（cursor 的 D-1/M1-data 未读口径修到一半，federation 套件连带 3 errors）；② `test_watch_reports_leave` 红（crew.py 在途）。单跑联邦测试隔离通过，证实非真回归。**裁定：此时发信是噪音，等 owner 自报完成后我再出 `_work/verify-debug.md` 独立复核（含 P0 反驳复现）**。PLAN §八 与现状一致，无空缺，未发信
 
+- [x] 2026-10-14 17:49 心跳：无新信件。pi 停滞确认——解除待命信 unread=2 超 1 小时未签收（守护 last_seen 17:48 活着但 activity 停在 16:51「暂缓期预备」），16:51 自报的 `_work/d-doc-gap-audit.md` 草稿也未落盘，三处文档 mtime 未变（14:53/02:43/15:01）。PLAN §八 停滞登记触发条件已满足 → 已发信 `m1a139d1881483f214` 建议 coordinator 二选一（重发带 workspace 的解除信 / 改派 cursor 或 grok），未改 PLAN。终审侧已就绪（码冻结 118/118 双验），文档合入后只需核对 diff + 快速回归
+
 ## 备查（非阻塞观察，已记录/已分发）
 
 1. D1-c（D 类路由缺 X-Agent 回落 human）/ D2-c（pause 只叫停一条线非整个办公室）/ D3-b/c/d → 提示级，均记录在 `_work/verify-d.md`，不阻塞

@@ -698,6 +698,9 @@ def _call_import(store: Store, envelope: dict, names: list[str]) -> str:
             "store_api_missing",
             "Store.import_remote 还没合入。这是给 cursor 的 §10，sync 不写 messages 表",
         )
+    # U-3：这里只把「本机 node 段的裸名」交给 store（`names`）。`federation-design.md` §7
+    # 原说「两份信封之间仍比排序后的完整 to」，但 messages 表没有 to 列、他机裸名不落库，
+    # 全量 to 比较不可实现，按 store.import_remote 的 docstring 降级为「本机投递收件人」比较。
     result = method(envelope, names)
     if not isinstance(result, dict) or "status" not in result:
         raise MailError("invalid_sync", "import_remote 没有返回 status")
