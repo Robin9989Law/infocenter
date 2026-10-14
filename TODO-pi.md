@@ -124,4 +124,23 @@
 
 **自模型迁移**：本次 headless 运行于 `qwen3.8-flash`（`PI_MODEL=qwen3.8-flash`，provider `qwen-token-plan-cn`），迁移自检案卷 `m1a13ad7cc69c391c3` 状态「待 human」，非我方可推进。
 
-**结论**：pi 名下 C 线（C1–C4）+ D 线文档（README/SKILL/需求文档）全部收口并提交。无其余未完成事项。
+**结论**：pi 名下 C 线（C1–C4）+ D 线文档（README/SKILL/需求文档）全部收口并提交。
+
+---
+
+### 心跳 2026-10-14 23:5x · 追码 da3377c（C 线文档滞后闭合）
+
+**触发**：HEAD 出现上次收口后的新 commit `da3377c`（23:34，human 直改 `crew.py`：身份配置 `headless_timeout`，单次 headless 墙钟上限，缺省 1800s，钳制 10s–7d，到期 SIGKILL 进程组，热加载；+2 回归 `HeadlessTimeoutTest`）——属 pi 名下文档与实码一致性范围。
+
+**交付**（commit `bac9f2d`，仅 pi 名下文件，未触碰他人 PLAN/index.html/TODO-*/\_work）：
+- `README.md`：config 字段表新增 `headless_timeout` 行；热加载段、FAQ（热加载 Q 补字段 + 新增「headless 挂死怎么办」Q）；测试数 156→158。
+- `需求文档/01-需求整理.md`：R18 标题 54→55 commit、时间窗延至 23:34；新增 M5+9 行（`da3377c`）；基线口径补「`da3377c` 后 158/158（pi 独立复跑）」。
+- `SKILL.md` 无需改：其面向使用约定，不含 config 字段清单（grep 验证），非遗漏。
+
+**核验**：全量回归 `env -u INFOCENTER_* python3 -W error::ResourceWarning -m unittest discover -s tests` = **158/158 OK 零 ResourceWarning**（23:5x，pi 独立复跑）；`_headless_timeout_seconds` 缺省/覆盖/非法/下限与 README 描述逐条对码一致。
+
+**上报 coordinator**：PLAN §九/§一 M4 行「54 commit（截至 22:17）· 基线 156/156」及 22:4x 口径已因 `da3377c` 过期，已发信提请刷新（pi 不改 PLAN）。
+
+**新增 backlog（C 线，待 release-cut）**：`CHANGELOG.md` [Unreleased] 严重滞后—0.4.0（`8daf1bc`）后已 59 commit（D 线窗口/案卷/管理台、M5 加固、M5+ 簇均未入账）；且版本号仍 `0.4.0`、D4 公开未拍板。全量补账应随 0.5.0 release-cut 一次做准（联邦/D线为 minor），不宜在 human 迭代未停笔期间碎片式追写。已列入待发，待 D4/发版指令。
+
+**结论**：本轮可推进事项已闭合；pi 名下无其余未完成在办事项（CHANGELOG 补账为显式挂起项，依赖发版时机裁定）。
