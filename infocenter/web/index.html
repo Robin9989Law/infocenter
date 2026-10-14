@@ -300,22 +300,7 @@ function openSettings(kind, id) {
       <div class="form-row"><label>显示名</label><input id="s-proj-name" value="${escapeHtml(p.name || "")}"></div>
       <button class="btn-primary" data-act="save-project">保存</button>
 
-      <div class="section-title">归档</div>
-      <div class="settings-actions">
-        ${p.archived
-          ? '<button class="btn resume" data-act="unarchive-project">取消归档</button>'
-          : '<button class="btn abort" data-act="archive-project">归档此项目</button>'}
-      </div>
-
-      <div class="section-title">守护（让 agent 上线干活）</div>
-      <div class="kv"><b>在跑</b>${wins.filter(w => (w.state_label || w.state) === "在办").length} 间办公室</div>
-      <div class="settings-actions">
-        <button class="btn resume" data-act="crew-up">启动守护</button>
-        <button class="btn abort" data-act="crew-down">停止守护</button>
-      </div>
-      <div class="kv" style="color:#8e8e93">启动只拉起该项目各身份的收信守护（不开 tmux/窗口），等同终端 ic crew up --dir &lt;路径&gt;。</div>
-
-      <div class="section-title">立案（在该项目下新建案卷）</div>
+      <div class="section-title">① 立案（先写清任务，可指派）</div>
       <div class="form-row"><label>案卷标题</label><input id="s-case-title" placeholder="例如：实现联邦同步"></div>
       <div class="form-row"><label>指派给（选了就同时发一封始信，触发对方开工）</label>
         <select id="s-case-assign">
@@ -325,6 +310,21 @@ function openSettings(kind, id) {
       </div>
       <div class="form-row"><label>说明 / 始信正文（可选）</label><textarea id="s-case-body" placeholder="不指派 → 作为案卷开篇节点；指派 → 作为始信正文（留空则用标题）"></textarea></div>
       <button class="btn-primary" data-act="create-case">立案</button>
+
+      <div class="section-title">② 守护（再让 agent 上线接活）</div>
+      <div class="kv"><b>在跑</b>${wins.filter(w => (w.state_label || w.state) === "在办").length} 间办公室</div>
+      <div class="settings-actions">
+        <button class="btn resume" data-act="crew-up">启动守护</button>
+        <button class="btn abort" data-act="crew-down">停止守护</button>
+      </div>
+      <div class="kv" style="color:#8e8e93">先把 ① 立案写好，再 ② 启动守护；启动只拉该项目各身份的收信守护（不开 tmux/窗口），等同终端 ic crew up --dir &lt;路径&gt;。</div>
+
+      <div class="section-title">归档</div>
+      <div class="settings-actions">
+        ${p.archived
+          ? '<button class="btn resume" data-act="unarchive-project">取消归档</button>'
+          : '<button class="btn abort" data-act="archive-project">归档此项目</button>'}
+      </div>
 
       <div class="section-title">该项目的办公室（${wins.length}）</div>
       ${wins.length === 0 ? '<div class="empty">暂无</div>' : wins.map(w => `
@@ -433,6 +433,10 @@ async function saveProject() {
 }
 async function crewAction(action) {
   const id = state.settingsTarget && state.settingsTarget.id;
+  if (action === "up") {
+    const n = state.cases.filter(x => sameWs(x.workspace, id)).length;
+    if (n === 0 && !confirm("该项目还没有案卷（没走 ① 立案）。仍要启动守护吗？")) return;
+  }
   try {
     const r = await api("/v1/crew", { method: "POST", body: { action, dir: id } });
     alert((r.lines || []).join("\n") || "完成");
