@@ -388,13 +388,11 @@ def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
                 actions.append({"agent": agent, "kind": "skip", "command": [], "note": "本项目收信守护已在运行"})
             else:
                 poll = _poll_seconds(item)
-                beat = _heartbeat_seconds(item)
+                # F-1：heartbeat 不再固化到命令行——守护每轮热读 config（改 heartbeat 无需重启）。
                 command = [
                     sys.executable, "-m", "infocenter", "crew", "watch", agent,
                     "--dir", project, "--url", url, "--home", str(home), "--poll", str(poll),
                 ]
-                if beat:
-                    command += ["--heartbeat", str(beat)]
                 actions.append({"agent": agent, "kind": "daemon", "command": command})
         if not (app or launch or headless):
             actions.append({"agent": agent, "kind": "skip", "command": [], "note": "未配置 launch/app/headless"})
