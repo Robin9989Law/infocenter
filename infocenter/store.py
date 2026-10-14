@@ -1958,7 +1958,7 @@ class Store:
         with self._session(readonly=True) as conn:
             rows = conn.execute(
                 """
-                SELECT m.id, m.thread_id, m.from_agent, m.subject, m.created_at, m.workspace,
+                SELECT m.id, m.thread_id, m.from_agent, m.subject, m.created_at, m.workspace, m.body,
                        d.status AS my_status, d.claimed_by AS my_claimed_by,
                        (SELECT c.title FROM cases c WHERE (c.id = m.thread_id OR c.thread_id = m.thread_id) LIMIT 1) AS case_title,
                        (SELECT c.id FROM cases c WHERE (c.id = m.thread_id OR c.thread_id = m.thread_id) LIMIT 1) AS case_id
@@ -1988,6 +1988,7 @@ class Store:
                         "from": row["from_agent"],
                         "to": recips,
                         "subject": row["subject"],
+                        "body": row["body"] or "",
                         "workspace": row["workspace"] or "",
                         "direction": "out" if sent else "in",
                         "other": (", ".join(recips) if sent else row["from_agent"]),

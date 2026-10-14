@@ -14,6 +14,11 @@ h1 { font-size: 26px; margin-bottom: 24px; }
 .refresh { border: none; background: transparent; cursor: pointer; font-size: 20px; line-height: 1; color: #007aff; padding: 4px 7px; border-radius: 6px; }
 .refresh:hover { background: rgba(0,122,255,0.1); }
 .refresh.spin { animation: spin 0.8s linear; }
+.refresh.sm { font-size: 15px; padding: 2px 5px; }
+.head-tools { display: flex; align-items: center; gap: 6px; }
+.subj { color: #007aff; cursor: pointer; text-decoration: none; }
+.subj:hover { text-decoration: underline; }
+.body-text { white-space: pre-wrap; font-size: 13px; line-height: 1.5; word-break: break-word; }
 @keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 .agents { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .chip { background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; color: #1d1d1f; box-shadow: 0 1px 3px rgba(0,0,0,0.08); white-space: nowrap; cursor: pointer; }
@@ -124,12 +129,12 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
     <div id="projects"></div>
   </div>
   <div class="panel">
-    <div class="panel-head"><h2>办公室</h2></div>
+    <div class="panel-head"><h2>办公室</h2><button class="refresh sm" id="btn-r-win" title="刷新">&#8635;</button></div>
     <div class="hint">点一行选中 → 右边过滤；点 ⚙️ → 办公室设置。状态：在办=在线 / 暂停=已叫停 / 离场=已退出</div>
     <div id="windows"></div>
   </div>
   <div class="panel">
-    <div class="panel-head"><h2>案件</h2><select id="f-case-status" class="mini-select"><option value="">全部状态</option></select></div>
+    <div class="panel-head"><h2>案件</h2><span class="head-tools"><select id="f-case-status" class="mini-select"><option value="">全部状态</option></select><button class="refresh sm" id="btn-r-case" title="刷新">&#8635;</button></span></div>
     <div class="hint">点一行 → 直接打开案件设置（节点 / 操作）</div>
     <div id="cases"></div>
   </div>
@@ -143,6 +148,7 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
       <select id="f-agent"><option value="">全部办公室</option></select>
       <select id="f-case"><option value="">全部案卷</option></select>
       <input id="f-q" placeholder="关键词（内容/节点/案卷）">
+      <button class="refresh sm" id="btn-r-act" title="刷新">&#8635;</button>
     </div>
   </div>
   <div id="activity"></div>
@@ -171,7 +177,9 @@ let state = {
   showArchived: false,
   activity: [],
   activityFilters: { project: "", agent: "", case: "", q: "" },
-  caseStatus: ""
+  caseStatus: "",
+  mail: [],
+  mailAgent: null
 };
 
 async function api(path, opts = {}) {
@@ -597,6 +605,24 @@ function openSettings(kind, id) {
     return;
   }
 
+  if (kind === "message") {
+    const m = (state.mail || []).find(x => x.id === id) || {};
+    const p = state.projects.find(x => sameWs(x.workspace, m.workspace));
+    const proj = p ? (p.name || p.workspace) : (m.workspace || "");
+    titleEl.textContent = "信件 · " + (m.subject || id);
+    bodyEl.innerHTML = `
+      <button class="btn resume" data-act="back-mail">← 返回</button>
+      <div class="kv"><b>时间</b>${escapeHtml(m.created_at_local || "")}</div>
+      <div class="kv"><b>方向</b>${m.direction === "out" ? "发出 → " + escapeHtml((m.to || []).join(", ")) : "← 收到 " + escapeHtml(m.other || "")}</div>
+      <div class="kv"><b>项目</b>${escapeHtml(proj)}</div>
+      <div class="kv"><b>办公室</b>${escapeHtml(m.claimed_by || "—")}</div>
+      <div class="kv"><b>案卷</b>${escapeHtml(m.case_title || m.case_id || "—")}</div>
+      <hr>
+      <div class="body-text">${escapeHtml(m.body || "（无正文）")}</div>`;
+    overlay.classList.add("show");
+    return;
+  }
+
   if (kind === "case") {
     const c = state.cases.find(x => x.id === id) || {};
     const raw = c.status || "";
@@ -704,6 +730,8 @@ async function loadAgentMail(name) {
   try {
     const data = await api("/v1/agents/" + encodeURIComponent(name) + "/messages?limit=100");
     const msgs = data.messages || [];
+    state.mail = msgs;
+    state.mailAgent = name;
     el.innerHTML = msgs.length === 0 ? '<div class="empty">暂无信件</div>' : `<table class="nodes"><thead><tr><th>时间</th><th>方向</th><th>对方</th><th>项目</th><th>办公室</th><th>案卷</th><th>主题</th><th>状态</th></tr></thead><tbody>`
       + msgs.map(m => {
           const p = state.projects.find(x => sameWs(x.workspace, m.workspace));
@@ -723,12 +751,13 @@ async function loadAgentMail(name) {
           <td>${escapeHtml(proj)}</td>
           <td title="办公室编号（点击复制）">${m.claimed_by ? '<span class="cid copy" data-copy="' + escapeHtml(m.claimed_by) + '">' + escapeHtml(m.claimed_by) + '</span>' : "—"}</td>
           <td title="${escapeHtml(m.case_title || "")}">${m.case_id ? '<span class="cid copy" data-copy="' + escapeHtml(m.case_id) + '">' + escapeHtml(m.case_id) + '</span>' : "—"}</td>
-          <td>${escapeHtml(m.subject || "")}</td>
+          <td><a class="subj" data-msgid="${escapeHtml(m.id)}" title="点击看正文">${escapeHtml(m.subject || "")}</a></td>
           <td>${stCell}</td>
         </tr>`;
         }).join("")
       + `</tbody></table>`;
     el.querySelectorAll("[data-read]").forEach(b => b.addEventListener("click", () => markRead(b.dataset.read, name)));
+    el.querySelectorAll("[data-msgid]").forEach(a => a.addEventListener("click", ev => { ev.stopPropagation(); openSettings("message", a.dataset.msgid); }));
   } catch (e) {
     el.innerHTML = '<div class="empty">加载失败：' + escapeHtml(e.message) + '</div>';
   }
@@ -846,6 +875,7 @@ document.getElementById("modal-body").addEventListener("click", ev => {
   else if (act === "reopen-case") doCase("reopen", el.dataset.cid);
   else if (act === "refresh-stat") refreshWindowStatus();
   else if (act === "send-human") sendHuman();
+  else if (act === "back-mail") openSettings(state.mailAgent === "human" ? "human" : "agent", state.mailAgent);
   else if (act === "goto-window") {
     const pid = state.settingsTarget && state.settingsTarget.id;
     state.selectedProject = pid || null;
@@ -875,6 +905,18 @@ document.getElementById("btn-refresh").addEventListener("click", async ev => {
   b.classList.add("spin");
   try { await refreshAll(); } finally { setTimeout(() => b.classList.remove("spin"), 800); }
 });
+function spinRefresh(id, fn) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.addEventListener("click", async ev => {
+    const b = ev.currentTarget;
+    b.classList.add("spin");
+    try { await fn(); } finally { setTimeout(() => b.classList.remove("spin"), 700); }
+  });
+}
+spinRefresh("btn-r-win", () => loadWindows());
+spinRefresh("btn-r-case", () => loadCases());
+spinRefresh("btn-r-act", () => loadActivity());
 document.getElementById("modal-overlay").addEventListener("click", ev => { if (ev.target.id === "modal-overlay") closeSettings(); });
 
 // 初始化
