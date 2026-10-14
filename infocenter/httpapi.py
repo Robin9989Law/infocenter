@@ -207,6 +207,16 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         except (TypeError, ValueError):
             limit = 50
         return 200, {"activity": store.recent_activity(limit)}
+
+    if path == "/v1/headless":
+        if method != "GET":
+            raise MailError("method_not_allowed", "只支持 GET", 405)
+        from pathlib import Path as _Path
+        from infocenter import crew as _crew2
+
+        q_dir = query.get("dir", [None])[0]
+        project = str(_Path(q_dir).expanduser().resolve()) if q_dir else None
+        return 200, {"headless": _crew2.running_headless(store.path.parent, project)}
     window_id = _resolve_window(headers, query, body)
     req_pid = _resolve_pid(headers, body)
     raw_agent = headers.get("X-Agent") if headers is not None else None

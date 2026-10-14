@@ -27,6 +27,7 @@ h1 { font-size: 26px; margin-bottom: 24px; }
 .chip .unread { color: #007aff; margin-left: 8px; }
 .chip.coord { box-shadow: 0 0 0 1.5px #007aff inset; }
 .chip.human { box-shadow: 0 0 0 1.5px #34c759 inset; }
+.hd { color: #ff9500; font-size: 11px; }
 .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-bottom: 16px; align-items: stretch; }
 .panel { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; flex-direction: column; height: 78vh; }
 .panel h2 { font-size: 18px; margin-bottom: 12px; color: #1d1d1f; flex: 0 0 auto; }
@@ -179,7 +180,8 @@ let state = {
   activityFilters: { project: "", agent: "", case: "", q: "" },
   caseStatus: "",
   mail: [],
-  mailAgent: null
+  mailAgent: null,
+  headless: []
 };
 
 async function api(path, opts = {}) {
@@ -219,6 +221,11 @@ async function loadCases() {
 async function loadAgents() {
   try { const data = await api("/v1/agents"); state.agents = data.agents || []; }
   catch (e) { console.error("loadAgents", e); }
+  render();
+}
+async function loadHeadless() {
+  try { const data = await api("/v1/headless"); state.headless = data.headless || []; }
+  catch (e) { console.error("loadHeadless", e); }
   render();
 }
 async function loadActivity() {
@@ -385,8 +392,9 @@ function render() {
       .sort((a, b) => (a.name === "human" ? 1 : 0) - (b.name === "human" ? 1 : 0));
     agEl.innerHTML = ordered.map(a => {
       const isHuman = a.name === "human";
+      const hd = state.headless.some(h => h.agent === a.name && h.alive);
       return `<span class="chip ${a.role === "coordinator" ? "coord" : ""} ${isHuman ? "human" : ""}" data-agent="${escapeHtml(a.name)}" title="${escapeHtml(a.activity || "")}">
-        ${isHuman ? "&#128100; " : ""}<b>${escapeHtml(a.name)}</b>${a.role === "coordinator" ? '<span class="role">coord</span>' : ""}<span class="unread">未读 ${a.unread || 0}</span>
+        ${isHuman ? "&#128100; " : ""}<b>${escapeHtml(a.name)}</b>${a.role === "coordinator" ? '<span class="role">coord</span>' : ""}${hd ? ' <span class="hd" title="headless 正在跑">&#9889;</span>' : ""}<span class="unread">未读 ${a.unread || 0}</span>
       </span>`;
     }).join("");
     agEl.querySelectorAll(".chip[data-agent]").forEach(c => c.addEventListener("click", () => openSettings(c.dataset.agent === "human" ? "human" : "agent", c.dataset.agent)));
@@ -579,7 +587,11 @@ function openSettings(kind, id) {
         </div>`;
       }).join("")}
 
-      <div class="section-title">③ 未结案卷（${openCases.length}）· 可直接干预</div>
+      <div class="section-title">③ 在跑 headless（${state.headless.filter(h => h.alive).length}）</div>
+      ${state.headless.length === 0 ? '<div class="empty">无</div>' : state.headless.map(h => `
+        <div class="irow"><span class="grow"><b>${escapeHtml(h.agent)}</b> · ${escapeHtml(String(h.dir).split("/").filter(Boolean).pop() || "")} · pid ${escapeHtml(String(h.pid))} · ${h.alive ? "运行中" : "已退出"}</span></div>`).join("")}
+
+      <div class="section-title">④ 未结案卷（${openCases.length}）· 可直接干预</div>
       ${openCases.length === 0 ? '<div class="empty">无</div>' : openCases.map(c => {
         const st = c.status_label || c.status || "";
         const cid = escapeHtml(c.id);
@@ -590,7 +602,7 @@ function openSettings(kind, id) {
         </div>`;
       }).join("")}
 
-      <div class="section-title">④ human 的信件往来</div>
+      <div class="section-title">⑤ human 的信件往来</div>
       <div id="s-agent-mail"><div class="empty">加载…</div></div>`;
     overlay.classList.add("show");
     loadAgentMail("human");
@@ -898,7 +910,7 @@ document.getElementById("f-case").addEventListener("change", e => { state.activi
 document.getElementById("f-q").addEventListener("input", e => { state.activityFilters.q = e.target.value.trim(); render(); });
 document.getElementById("f-case-status").addEventListener("change", e => { state.caseStatus = e.target.value; render(); });
 async function refreshAll() {
-  await loadProjects(); await loadWindows(); await loadCases(); await loadAgents(); await loadActivity();
+  await loadProjects(); await loadWindows(); await loadCases(); await loadAgents(); await loadActivity(); await loadHeadless();
 }
 document.getElementById("btn-refresh").addEventListener("click", async ev => {
   const b = ev.currentTarget;
@@ -914,10 +926,9 @@ function spinRefresh(id, fn) {
     try { await fn(); } finally { setTimeout(() => b.classList.remove("spin"), 700); }
   });
 }
-spinRefresh("btn-r-win", () => loadWindows());
+spinRefresh("btn-r-win", async () => { await loadWindows(); await loadHeadless(); });
 spinRefresh("btn-r-case", () => loadCases());
-spinRefresh("btn-r-act", () => loadActivity());
-document.getElementById("modal-overlay").addEventListener("click", ev => { if (ev.target.id === "modal-overlay") closeSettings(); });
+spinRefresh("btn-r-act", () => loadActivity());document.getElementById("modal-overlay").addEventListener("click", ev => { if (ev.target.id === "modal-overlay") closeSettings(); });
 
 // 初始化
 loadProjects();
@@ -925,6 +936,7 @@ loadWindows();
 loadCases();
 loadAgents();
 loadActivity();
+loadHeadless();
 syncActivityFilters();
 
 // 深链：#human 打开干预中枢，#agent/<名> 打开某 agent 的信件往来

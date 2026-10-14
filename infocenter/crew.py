@@ -584,6 +584,45 @@ def status(home, project: str | None = None) -> dict:
     return {"sessions": sorted(sessions), "agents": rows, "lines": lines}
 
 
+def running_headless(home, project: str | None = None) -> list[dict]:
+    """列出正在跑的 headless：扫守护 meta 里非空的 headless_pid。"""
+    out = []
+    target = None
+    if project:
+        try:
+            target = str(Path(project).expanduser().resolve())
+        except OSError:
+            target = project
+    for path in sorted(state_dir(home).glob("*.json")):
+        try:
+            meta = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        pid = meta.get("headless_pid")
+        if not pid:
+            continue
+        d = meta.get("dir") or ""
+        if target is not None:
+            try:
+                if str(Path(d).expanduser().resolve()) != target:
+                    continue
+            except OSError:
+                if d != project:
+                    continue
+        try:
+            pid_int = int(pid)
+        except (TypeError, ValueError):
+            continue
+        out.append({
+            "agent": meta.get("agent") or "",
+            "key": meta.get("key") or path.stem,
+            "dir": d,
+            "pid": pid_int,
+            "alive": _pid_alive(pid_int),
+        })
+    return out
+
+
 def down(home, project: str | None = None, only: str = "") -> dict:
     target = _resolve_dir(project)
     wanted = [item["name"] for item in _select(home, only)] if str(only or "").strip() else None
