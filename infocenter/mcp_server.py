@@ -1,12 +1,15 @@
-"""stdio MCP。身份由启动参数固定，工具本身只调用 HTTP。"""
+"""stdio MCP。身份与窗口号由启动参数或环境变量固定，工具本身只调用 HTTP。"""
 
 import json
+import os
+import secrets
 import sys
 import threading
 import time
 
 from infocenter import __version__
 from infocenter.client import ApiError, ensure_server, request
+from infocenter.store import MailError, normalize_name, normalize_window
 
 PROTOCOL = "2024-11-05"
 # None 直到读到第一条消息。现行客户端（OpenCode、Cursor、Grok）用换行 JSON；
@@ -15,25 +18,64 @@ _mode: str | None = None
 _WRITE_LOCK = threading.Lock()
 
 
-def run_mcp(agent: str | None, explicit_url, home, notify: bool = True) -> None:
+def resolve_mcp_window(explicit: str | None = None) -> str:
+    raw = explicit if explicit is not None else os.environ.get("INFOCENTER_WINDOW")
+    win = normalize_window(raw)
+    if win:
+        return win
+    return f"w-{secrets.token_hex(3)}"
+
+
+def run_mcp(
+    agent: str | None,
+    explicit_url,
+    home,
+    notify: bool = True,
+    window_id: str | None = None,
+) -> None:
+    global _mode
+    _mode = None
+    if agent is not None and str(agent).strip():
+        agent = normalize_name(agent)
+    else:
+        agent = None
+    win = resolve_mcp_window(window_id)
     url = ensure_server(explicit_url, home)
-    if agent:
-        request(url, "PUT", f"/v1/agents/{agent}", agent, {})
     watch = None
-    while True:
-        message = _read()
-        if message is None:
-            return
-        response = _dispatch(message, url, agent, watch)
-        if response is not None:
-            _write(response)
-        if watch is None and notify and agent and _mode is not None:
-            # 首帧回包后才启动：通知的帧格式要跟客户端一致
-            watch = _Watch(url, agent)
-            watch.start()
+    registered = False
+    try:
+        if agent:
+            request(
+                url,
+                "PUT",
+                f"/v1/agents/{agent}",
+                agent,
+                {"workspace": os.getcwd(), "pid": os.getpid()},
+                query={"window": win},
+            )
+            registered = True
+        while True:
+            message = _read()
+            if message is None:
+                return
+            response = _dispatch(message, url, agent, watch, window_id=win)
+            if response is not None:
+                _write(response)
+            if watch is None and notify and agent and _mode is not None:
+                # 首帧回包后才启动：通知的帧格式要跟客户端一致
+                watch = _Watch(url, agent, window_id=win)
+                watch.start()
+    except ApiError as exc:
+        raise MailError(exc.code, str(exc), exc.status) from None
+    finally:
+        if agent and win and registered:
+            try:
+                request(url, "POST", f"/v1/windows/{win}/leave", agent, {}, timeout=2)
+            except Exception:
+                pass
 
 
-def _dispatch(message: dict, url: str, locked: str | None, watch):
+def _dispatch(message: dict, url: str, locked: str | None, watch, window_id: str | None = None):
     method = message.get("method")
     msg_id = message.get("id")
     if msg_id is None:
@@ -45,7 +87,7 @@ def _dispatch(message: dict, url: str, locked: str | None, watch):
         return _result(msg_id, {
             "protocolVersion": version,
             "capabilities": {"tools": {}, "logging": {}},
-            "serverInfo": {"name": "infocenter", "version": __version__},
+            "serverInfo": {"name": "infocenter", "version": __version__, "window_id": window_id or ""},
         })
     if method == "ping":
         return _result(msg_id, {})
@@ -53,7 +95,17 @@ def _dispatch(message: dict, url: str, locked: str | None, watch):
         return _result(msg_id, {"tools": _tools(locked)})
     if method == "tools/call":
         params = message.get("params") or {}
-        return _result(msg_id, _call_tool(url, locked, params.get("name"), params.get("arguments") or {}, watch))
+        return _result(
+            msg_id,
+            _call_tool(
+                url,
+                locked,
+                params.get("name"),
+                params.get("arguments") or {},
+                watch,
+                window_id=window_id,
+            ),
+        )
     return _error(msg_id, -32601, f"未知方法 {method}")
 
 
@@ -61,11 +113,13 @@ class _Watch:
     """后台长轮询 /v1/events。新信到达时推 logging 通知，提醒 agent 读信回帖。
 
     首轮 since=0：启动前积压的未读也会立刻提醒一次。
+    带 window_id 时，服务端按窗口过滤已被同身份其它窗口认领或已封卷的线程。
     """
 
-    def __init__(self, url: str, agent: str):
+    def __init__(self, url: str, agent: str, window_id: str | None = None):
         self.url = url
         self.agent = agent
+        self.window_id = window_id
         self.unread = 0
         self.cursor = 0
 
@@ -75,13 +129,18 @@ class _Watch:
     def _run(self) -> None:
         while True:
             try:
+                query = {"since": str(self.cursor), "wait": "25", "limit": "10"}
+                if self.window_id:
+                    query["window"] = self.window_id
                 payload = request(
                     self.url,
                     "GET",
                     "/v1/events",
                     self.agent,
-                    query={"since": str(self.cursor), "wait": "25", "limit": "10"},
+                    query=query,
                     timeout=40,
+                    # M2：长轮询上报 MCP 进程自身 pid，窗口崩溃后可被惰性判死。
+                    pid=os.getpid(),
                 )
                 self.unread = int(payload.get("unread_total") or 0)
                 self.cursor = max(self.cursor, int(payload.get("cursor") or 0))
@@ -153,8 +212,11 @@ def _tools(locked: str | None) -> list[dict]:
         },
         {
             "name": "ic_read",
-            "description": "读取一封信，并把自己的那一份标成已读。别人的副本不受影响。" + who,
-            "inputSchema": schema({"id": {"type": "string"}}, ["id"]),
+            "description": "读取一封信，并把自己的那一份标成已读（同时由当前窗口认领该线程并立案）。别人的副本不受影响。" + who,
+            "inputSchema": schema({
+                "id": {"type": "string"},
+                "force": {"type": "boolean", "description": "已被同身份其它窗口认领时，设为 true 可强制接手"},
+            }, ["id"]),
         },
         {
             "name": "ic_send",
@@ -188,50 +250,101 @@ def _tools(locked: str | None) -> list[dict]:
             "description": "把自己的那一份归档。" + who,
             "inputSchema": schema({"id": {"type": "string"}}, ["id"]),
         },
+        {
+            "name": "ic_case",
+            "description": "查看案卷（办事状态与单行节点流水）。传 id 查看单个案卷详情，不传 id 列出案卷。" + who,
+            "inputSchema": schema({
+                "id": {"type": "string", "description": "案卷 ID（即 thread_id），不传则列出案卷"},
+                "status": {"type": "string", "enum": ["open", "waiting", "paused", "aborted", "done", "active", "all"]},
+                "workspace": {"type": "string"},
+                "limit": {"type": "integer"},
+            }, []),
+        },
     ]
 
 
-def _call_tool(url: str, locked: str | None, name: str, arguments: dict, watch=None) -> dict:
+def _call_tool(
+    url: str,
+    locked: str | None,
+    name: str,
+    arguments: dict,
+    watch=None,
+    window_id: str | None = None,
+) -> dict:
     if not isinstance(arguments, dict):
         return _tool_text("参数必须是对象", True)
     agent = locked or str(arguments.get("agent") or "").strip()
     if not agent:
         return _tool_text("缺少 agent", True)
+    win_query = {"window": window_id} if window_id else None
     try:
         if name == "ic_agents":
-            payload = request(url, "GET", "/v1/agents", agent)
+            payload = request(url, "GET", "/v1/agents", agent, query=win_query)
         elif name == "ic_activity":
-            payload = request(url, "PUT", f"/v1/agents/{agent}", agent, {"activity": arguments.get("activity") or ""})
+            payload = request(
+                url,
+                "PUT",
+                f"/v1/agents/{agent}",
+                agent,
+                {"activity": arguments.get("activity") or ""},
+                query=win_query,
+            )
         elif name == "ic_inbox":
-            payload = request(url, "GET", "/v1/inbox", agent, query={
+            q = {
                 "status": arguments.get("status") or "unread",
                 "limit": str(arguments.get("limit") or 20),
                 "full": "1" if arguments.get("full") else "0",
-            })
+            }
+            if window_id:
+                q["window"] = window_id
+            payload = request(url, "GET", "/v1/inbox", agent, query=q)
         elif name == "ic_peek":
-            payload = request(url, "GET", f"/v1/messages/{arguments['id']}", agent)
+            payload = request(url, "GET", f"/v1/messages/{arguments['id']}", agent, query=win_query)
         elif name == "ic_read":
-            payload = request(url, "POST", f"/v1/messages/{arguments['id']}/read", agent, {})
+            q = dict(win_query or {})
+            if arguments.get("force"):
+                q["force"] = "1"
+            payload = request(url, "POST", f"/v1/messages/{arguments['id']}/read", agent, {}, query=q or None)
         elif name == "ic_archive":
-            payload = request(url, "POST", f"/v1/messages/{arguments['id']}/archive", agent, {})
+            payload = request(url, "POST", f"/v1/messages/{arguments['id']}/archive", agent, {}, query=win_query)
         elif name == "ic_send":
-            payload = request(url, "POST", "/v1/messages", agent, {
-                "to": arguments.get("to"),
-                "subject": arguments.get("subject"),
-                "body": arguments.get("body"),
-                "priority": arguments.get("priority") or "normal",
-                "workspace": arguments.get("workspace"),
-                "reply_to": arguments.get("reply_to"),
-            })
+            payload = request(
+                url,
+                "POST",
+                "/v1/messages",
+                agent,
+                {
+                    "to": arguments.get("to"),
+                    "subject": arguments.get("subject"),
+                    "body": arguments.get("body"),
+                    "priority": arguments.get("priority") or "normal",
+                    "workspace": arguments.get("workspace"),
+                    "reply_to": arguments.get("reply_to"),
+                },
+                query=win_query,
+            )
         elif name == "ic_reply":
             body = {"body": arguments.get("body")}
             if arguments.get("subject"):
                 body["subject"] = arguments["subject"]
             if arguments.get("to"):
                 body["to"] = arguments["to"]
-            payload = request(url, "POST", f"/v1/messages/{arguments['id']}/reply", agent, body)
+            payload = request(url, "POST", f"/v1/messages/{arguments['id']}/reply", agent, body, query=win_query)
         elif name == "ic_thread":
-            payload = request(url, "GET", f"/v1/threads/{arguments['id']}", agent)
+            payload = request(url, "GET", f"/v1/threads/{arguments['id']}", agent, query=win_query)
+        elif name == "ic_case":
+            case_id = arguments.get("id")
+            if case_id:
+                payload = request(url, "GET", f"/v1/cases/{case_id}", agent, query=win_query)
+            else:
+                q = {
+                    "status": arguments.get("status"),
+                    "workspace": arguments.get("workspace"),
+                    "limit": str(arguments.get("limit") or 20),
+                }
+                if window_id:
+                    q["window"] = window_id
+                payload = request(url, "GET", "/v1/cases", agent, query=q)
         else:
             return _tool_text(f"未知工具 {name}", True)
     except ApiError as exc:
@@ -244,7 +357,21 @@ def _call_tool(url: str, locked: str | None, name: str, arguments: dict, watch=N
         if name == "ic_inbox" and (arguments.get("status") or "unread") == "unread":
             watch.unread = int(payload.get("count") or 0)
         elif name in {"ic_read", "ic_archive"}:
-            watch.unread = max(0, watch.unread - 1)
+            # U-6：不能无条件自减（已读信会低估）。用服务端该身份的未读数校准，
+            # 拿不到时才退回保守自减。
+            try:
+                agents = request(url, "GET", "/v1/agents", agent, query=win_query)
+                current = next(
+                    (
+                        int(item.get("unread") or 0)
+                        for item in (agents.get("agents") or [])
+                        if item.get("name") == agent
+                    ),
+                    None,
+                )
+                watch.unread = current if current is not None else max(0, watch.unread - 1)
+            except (ApiError, SystemExit, OSError, ValueError, KeyError):
+                watch.unread = max(0, watch.unread - 1)
         if watch.unread > 0 and name != "ic_inbox":
             return _tool_text(
                 json.dumps(payload, ensure_ascii=False, indent=2)

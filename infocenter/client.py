@@ -1,5 +1,6 @@
 """CLI 和 MCP 共用的 HTTP 客户端。"""
 
+import http.client
 import json
 import os
 import subprocess
@@ -78,6 +79,8 @@ def request(
     body: dict | None = None,
     query: dict | None = None,
     timeout: float = 30,
+    window: str | None = None,
+    pid: int | None = None,
 ):
     target = url.rstrip("/") + path
     if query:
@@ -89,6 +92,12 @@ def request(
     data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(target, data=data, method=method)
     req.add_header("X-Agent", agent)
+    office = _window_header(window)
+    if office:
+        req.add_header("X-Window", office)
+    # M2：显式给出进程号时带上 X-Pid，补齐「窗口触达路径上报 pid」的客户端一环。
+    if pid is not None:
+        req.add_header("X-Pid", str(pid))
     req.add_header("Accept", "application/json")
     if data is not None:
         req.add_header("Content-Type", "application/json; charset=utf-8")
@@ -102,6 +111,14 @@ def request(
         exc.close()
     except urllib.error.URLError as exc:
         raise SystemExit(f"连不上信息中心：{exc.reason}") from exc
+    except OSError as exc:
+        # TimeoutError、RemoteDisconnected 等都是 OSError，不是 URLError。
+        # 不包住的话每个 CLI 命令都会裸 traceback，退出码还是 1。
+        raise ApiError(0, {"error": "transport", "message": f"连不上信息中心：{exc}"}) from exc
+    except http.client.HTTPException as exc:
+        # N1：IncompleteRead/BadStatusLine 等只继承 HTTPException（不是 OSError），
+        # 之前会逃逸成裸 traceback；这里一并包成 ApiError。
+        raise ApiError(0, {"error": "transport", "message": f"连不上信息中心：{exc}"}) from exc
     if not raw:
         payload = {}
     else:
@@ -114,12 +131,19 @@ def request(
     return payload
 
 
-def call(explicit, agent: str, method: str, path: str, body=None, query=None, home=None):
+def call(explicit, agent: str, method: str, path: str, body=None, query=None, home=None, window: str | None = None, pid: int | None = None):
     url = ensure_server(explicit, home)
     try:
-        return request(url, method, path, agent, body, query)
+        return request(url, method, path, agent, body, query, window=window, pid=pid)
     except ApiError as exc:
         raise MailError(exc.code, str(exc), exc.status) from exc
+
+
+def _window_header(window: str | None) -> str:
+    """显式窗口号优先。没传时用 INFOCENTER_WINDOW；都没有则匿名，不发 X-Window。"""
+    if window is None:
+        window = os.environ.get("INFOCENTER_WINDOW", "")
+    return str(window or "").strip()
 
 
 def running_meta(home=None):

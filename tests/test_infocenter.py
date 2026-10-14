@@ -236,6 +236,9 @@ class HubTest(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
+            for f in (proc.stdin, proc.stdout, proc.stderr):
+                if f is not None:
+                    f.close()
         self.assertEqual(request(self.url, "GET", "/v1/inbox", "kimi")["messages"][0]["subject"], "MCP")
 
     def test_mcp_newline_framing(self):
@@ -268,6 +271,9 @@ class HubTest(unittest.TestCase):
             if proc.poll() is None:
                 proc.kill()
                 proc.wait(timeout=5)
+            for f in (proc.stdin, proc.stdout, proc.stderr):
+                if f is not None:
+                    f.close()
 
     def test_detach_and_stop(self):
         home = self.home / "daemon"
@@ -346,6 +352,9 @@ class HubTest(unittest.TestCase):
         finally:
             proc.kill()
             proc.wait(timeout=5)
+            for f in (proc.stdin, proc.stdout, proc.stderr):
+                if f is not None:
+                    f.close()
         proc = subprocess.Popen(
             [sys.executable, IC, "mcp", "--agent", "kimi", "--no-notify"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -368,6 +377,9 @@ class HubTest(unittest.TestCase):
         finally:
             proc.kill()
             proc.wait(timeout=5)
+            for f in (proc.stdin, proc.stdout, proc.stderr):
+                if f is not None:
+                    f.close()
 
     def test_crew_kickoff_dryrun_status_down(self):
         home = self.home / "crew"

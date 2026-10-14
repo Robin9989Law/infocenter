@@ -2,3 +2,9 @@ __pycache__/
 *.pyc
 .DS_Store
 *.egg-info/
+.infocenter/
+dist/
+*.orig
+.pytest_cache/
+需求文档/*.pdf
+需求文档/*.tex

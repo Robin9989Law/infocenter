@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>信息中心 · 管理台</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f7; color: #1d1d1f; padding: 20px; }
+h1 { font-size: 28px; margin-bottom: 24px; }
+.grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+.panel { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+.panel h2 { font-size: 18px; margin-bottom: 12px; color: #1d1d1f; }
+.item { padding: 10px; margin: 8px 0; background: #f9f9f9; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
+.item:hover { background: #e8e8e8; }
+.item.active { background: #007aff; color: white; }
+.item .title { font-weight: 500; }
+.item .meta { font-size: 12px; color: #666; margin-top: 4px; }
+.item.active .meta { color: rgba(255,255,255,0.8); }
+.status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+.status.在办, .status.open, .status.doing { background: #34c759; color: white; }
+.status.待谁, .status.待办, .status.waiting, .status.pending { background: #007aff; color: white; }
+.status.暂停, .status.paused { background: #ff9500; color: white; }
+.status.中止, .status.离场, .status.aborted, .status.left { background: #8e8e93; color: white; }
+.status.办结, .status.done { background: #5856d6; color: white; }
+.actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
+.btn { padding: 4px 10px; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; transition: opacity 0.2s; }
+.btn:hover { opacity: 0.8; }
+.btn.pause { background: #ff9500; color: white; }
+.btn.resume { background: #34c759; color: white; }
+.btn.abort { background: #8e8e93; color: white; }
+.btn.close { background: #5856d6; color: white; }
+.btn.disable { background: #ff3b30; color: white; }
+.detail { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 24px; }
+.detail h2 { font-size: 18px; margin-bottom: 12px; }
+.node { padding: 8px; margin: 6px 0; background: #f9f9f9; border-left: 3px solid #007aff; font-size: 13px; }
+.node.auto { border-left-color: #8e8e93; font-style: italic; }
+.node .time { color: #666; font-size: 11px; }
+.node .actor { font-weight: 500; }
+.form-section { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 24px; }
+.form-section h2 { font-size: 18px; margin-bottom: 12px; }
+.form-row { margin: 12px 0; }
+.form-row label { display: block; font-size: 13px; margin-bottom: 4px; color: #666; }
+.form-row input, .form-row textarea { width: 100%; padding: 8px; border: 1px solid #d1d1d6; border-radius: 4px; font-size: 14px; }
+.form-row textarea { resize: vertical; min-height: 60px; }
+.btn-primary { background: #007aff; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }
+.btn-primary:hover { opacity: 0.9; }
+.empty { text-align: center; padding: 20px; color: #8e8e93; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>信息中心 · 管理台</h1>
+
+<div class="grid">
+  <div class="panel">
+    <h2>项目</h2>
+    <div id="projects"></div>
+  </div>
+  <div class="panel">
+    <h2>办公室</h2>
+    <div id="windows"></div>
+  </div>
+  <div class="panel">
+    <h2>案件</h2>
+    <div id="cases"></div>
+  </div>
+</div>
+
+<div id="case-detail" class="detail" style="display:none;">
+  <h2 id="case-title"></h2>
+  <div id="case-nodes"></div>
+</div>
+
+<div class="form-section">
+  <h2>设定项目地址</h2>
+  <div class="form-row">
+    <label>本地目录路径</label>
+    <input type="text" id="project-path" placeholder="/Users/xxx/project">
+  </div>
+  <button class="btn-primary" id="btn-add-project">纳入管理</button>
+</div>
+
+<div class="form-section">
+  <h2>立案</h2>
+  <div class="form-row">
+    <label>项目</label>
+    <input type="text" id="case-project" placeholder="项目路径或名称">
+  </div>
+  <div class="form-row">
+    <label>案卷标题</label>
+    <input type="text" id="case-title-input" placeholder="例如：实现联邦同步">
+  </div>
+  <div class="form-row">
+    <label>开篇节点（可选）</label>
+    <textarea id="case-body" placeholder="写成案卷的第一行节点（不发信；发文请用 CLI ic send）"></textarea>
+  </div>
+  <button class="btn-primary" id="btn-create-case">立案</button>
+</div>
+
+<script>
+// D3 应用管理台 · 真实 API 版
+// 后端默认回退 human，浏览器直接 fetch
+
+let state = {
+  projects: [],
+  windows: [],
+  cases: [],
+  selectedCase: null,
+  caseDetail: null
+};
+
+async function api(path, opts = {}) {
+  const { method = "GET", body } = opts;
+  const headers = { "X-Agent": "human" };
+  if (body || method !== "GET") {
+    headers["Content-Type"] = "application/json";
+  }
+  const res = await fetch(path, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : (method !== "GET" ? "{}" : undefined)
+  });
+  if (!res.ok) {
+    let msg = res.statusText;
+    try { const e = await res.json(); msg = e.error || e.message || msg; } catch (_) {}
+    throw new Error(msg);
+  }
+  return res.json();
+}
+
+async function loadProjects() {
+  try {
+    const data = await api("/v1/projects");
+    state.projects = data.projects || [];
+  } catch (e) { console.error("loadProjects", e); }
+  render();
+}
+
+async function loadWindows() {
+  try {
+    const data = await api("/v1/windows");
+    state.windows = data.windows || [];
+  } catch (e) { console.error("loadWindows", e); }
+  render();
+}
+
+async function loadCases() {
+  try {
+    const data = await api("/v1/cases");
+    state.cases = data.cases || [];
+  } catch (e) { console.error("loadCases", e); }
+  render();
+}
+
+function render() {
+  const projEl = document.getElementById("projects");
+  if (state.projects.length === 0) {
+    projEl.innerHTML = '<div class="empty">暂无项目</div>';
+  } else {
+    projEl.innerHTML = state.projects.map(p => `
+      <div class="item">
+        <div class="title">${escapeHtml(p.name || p.workspace)}</div>
+        <div class="meta">${p.case_count || 0}案 ${(p.active_cases != null ? p.active_cases : (p.counts && p.counts.active) || 0)}在办</div>
+      </div>
+    `).join("");
+  }
+
+  const winEl = document.getElementById("windows");
+  if (state.windows.length === 0) {
+    winEl.innerHTML = '<div class="empty">暂无办公室</div>';
+  } else {
+    winEl.innerHTML = state.windows.map(w => {
+      const st = w.state_label || w.state || "";
+      const cls = st.replace(/[^a-zA-Z\u4e00-\u9fa5]/g, "");
+      const wid = escapeHtml(w.window_id || w.id);
+      return `
+      <div class="item" data-window-id="${wid}">
+        <div class="title">${escapeHtml(w.agent)} · ${wid}</div>
+        <div class="meta"><span class="status ${cls}">${escapeHtml(st)}</span> 最近 ${escapeHtml(w.last_seen_local || "")}</div>
+        <div class="meta">${w.activity ? escapeHtml(w.activity) : (w.case_count || 0) + " 案"}</div>
+        <div class="actions">
+          ${st === "在办" ? `<button class="btn pause" data-action="pause-window" data-window-id="${wid}">暂停</button>` : ""}
+          ${st !== "在办" && st !== "离场" && st !== "离线" ? `<button class="btn resume" data-action="resume-window" data-window-id="${wid}">恢复</button>` : ""}
+          <button class="btn disable" data-action="disable-window" data-window-id="${wid}">离场并封卷</button>
+        </div>
+      </div>`;
+    }).join("");
+    winEl.querySelectorAll("button[data-action]").forEach(btn => {
+      btn.addEventListener("click", event => {
+        const wid = btn.dataset.windowId;
+        const action = btn.dataset.action;
+        if (action === "pause-window") pauseWindow(event, wid);
+        else if (action === "resume-window") resumeWindow(event, wid);
+        else if (action === "disable-window") disableWindow(event, wid);
+      });
+    });
+  }
+
+  const caseEl = document.getElementById("cases");
+  if (state.cases.length === 0) {
+    caseEl.innerHTML = '<div class="empty">暂无案件</div>';
+  } else {
+    caseEl.innerHTML = state.cases.map(c => {
+      const rawStatus = c.status || "";
+      const st = c.status_label || rawStatus;
+      const cls = (rawStatus || st).replace(/[^a-zA-Z\u4e00-\u9fa5]/g, "");
+      const owner = c.owner_agent || c.owner_window || "";
+      const last = c.last_note || (c.last_node && typeof c.last_node === "object" ? (c.last_node.note || c.last_node.line || "") : c.last_node) || "";
+      const cid = escapeHtml(c.id);
+      const canPause = ["open", "doing", "pending", "waiting"].includes(rawStatus) || (!rawStatus && st === "在办");
+      const canResume = rawStatus === "paused" || (!rawStatus && st === "暂停");
+      const isSealed = Boolean(c.sealed) || ["aborted", "done"].includes(rawStatus) || st === "中止" || st === "办结";
+      return `
+      <div class="item ${state.selectedCase === c.id ? 'active' : ''}" data-case-id="${cid}">
+        <div class="title">${escapeHtml(c.title)}</div>
+        <div class="meta">
+          <span class="status ${cls}">${escapeHtml(st)}</span>
+          ${owner ? '主办 ' + escapeHtml(owner) : ''}
+        </div>
+        <div class="meta">${escapeHtml(last)}</div>
+        <div class="actions">
+          ${canPause ? `<button class="btn pause" data-action="pause-case" data-case-id="${cid}">暂停</button>` : ""}
+          ${canResume ? `<button class="btn resume" data-action="resume-case" data-case-id="${cid}">恢复</button>` : ""}
+          ${!isSealed ? `<button class="btn abort" data-action="abort-case" data-case-id="${cid}">中止</button>` : ""}
+          ${!isSealed ? `<button class="btn close" data-action="close-case" data-case-id="${cid}">办结</button>` : ""}
+        </div>
+      </div>`;
+    }).join("");
+    caseEl.querySelectorAll(".item[data-case-id]").forEach(item => {
+      item.addEventListener("click", () => selectCase(item.dataset.caseId));
+    });
+    caseEl.querySelectorAll(".actions").forEach(act => {
+      act.addEventListener("click", event => event.stopPropagation());
+    });
+    caseEl.querySelectorAll("button[data-action]").forEach(btn => {
+      btn.addEventListener("click", event => {
+        const cid = btn.dataset.caseId;
+        const action = btn.dataset.action;
+        if (action === "pause-case") pauseCase(event, cid);
+        else if (action === "resume-case") resumeCase(event, cid);
+        else if (action === "abort-case") abortCase(event, cid);
+        else if (action === "close-case") closeCase(event, cid);
+      });
+    });
+  }
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+}
+
+async function selectCase(id) {
+  state.selectedCase = id;
+  render();
+  await showCaseDetail(id);
+}
+
+async function showCaseDetail(id) {
+  // U-5：请求令牌。快速点两卷时，晚回来的旧响应不得覆盖当前选中卷的详情。
+  const token = id;
+  try {
+    const c = await api("/v1/cases/" + encodeURIComponent(id));
+    if (state.selectedCase !== token) return;
+    state.caseDetail = c;
+    document.getElementById("case-title").textContent = c.title || id;
+    const nodes = c.nodes || [];
+    document.getElementById("case-nodes").innerHTML = nodes.length === 0
+      ? '<div class="empty">暂无节点</div>'
+      : nodes.map(n => `
+        <div class="node ${n.auto ? 'auto' : ''}">
+          <span class="time">${escapeHtml(n.created_at_local || "")}</span> ·
+          <span class="actor">${escapeHtml(n.agent || "")}</span> ·
+          ${escapeHtml(n.action || "")}${n.note ? " · " + escapeHtml(n.note) : ""}${n.auto ? ' [自动]' : ''}
+        </div>
+      `).join("");
+    document.getElementById("case-detail").style.display = "block";
+  } catch (e) {
+    if (state.selectedCase !== token) return;
+    console.error("showCaseDetail", e);
+    alert("加载案件详情失败：" + e.message);
+  }
+}
+
+async function pauseCase(event, id) {
+  if (event && event.stopPropagation) event.stopPropagation();
+  try { await api("/v1/cases/" + encodeURIComponent(id) + "/pause", { method: "POST" }); await loadCases(); }
+  catch (e) { alert("暂停失败：" + e.message); }
+}
+async function resumeCase(event, id) {
+  if (event && event.stopPropagation) event.stopPropagation();
+  try { await api("/v1/cases/" + encodeURIComponent(id) + "/resume", { method: "POST" }); await loadCases(); }
+  catch (e) { alert("恢复失败：" + e.message); }
+}
+async function abortCase(event, id) {
+  if (event && event.stopPropagation) event.stopPropagation();
+  try { await api("/v1/cases/" + encodeURIComponent(id) + "/abort", { method: "POST" }); await loadCases(); }
+  catch (e) { alert("中止失败：" + e.message); }
+}
+async function closeCase(event, id) {
+  if (event && event.stopPropagation) event.stopPropagation();
+  try { await api("/v1/cases/" + encodeURIComponent(id) + "/close", { method: "POST" }); await loadCases(); }
+  catch (e) { alert("办结失败：" + e.message); }
+}
+async function pauseWindow(event, id) {
+  if (event && event.stopPropagation) event.stopPropagation();
+  try { await api("/v1/windows/" + encodeURIComponent(id) + "/pause", { method: "POST" }); await loadWindows(); }
+  catch (e) { alert("暂停失败：" + e.message); }
+}
+async function resumeWindow(event, id) {
+  if (event && event.stopPropagation) event.stopPropagation();
+  try { await api("/v1/windows/" + encodeURIComponent(id) + "/resume", { method: "POST" }); await loadWindows(); }
+  catch (e) { alert("恢复失败：" + e.message); }
+}
+async function disableWindow(event, id) {
+  if (event && event.stopPropagation) event.stopPropagation();
+  if (!confirm("确定要停用办公室 " + id + " 吗？停用将上报离场，并自动中止且封卷该窗口名下全部未封卷案卷。")) return;
+  try { await api("/v1/windows/" + encodeURIComponent(id) + "/leave", { method: "POST" }); await loadWindows(); await loadCases(); }
+  catch (e) { alert("停用失败：" + e.message); }
+}
+async function addProject() {
+  const path = document.getElementById("project-path").value.trim();
+  if (!path) { alert("请填写目录路径"); return; }
+  try {
+    await api("/v1/projects", { method: "POST", body: { workspace: path } });
+    document.getElementById("project-path").value = "";
+    await loadProjects();
+  } catch (e) { alert("纳入失败：" + e.message); }
+}
+async function createCase() {
+  const project = document.getElementById("case-project").value.trim();
+  const title = document.getElementById("case-title-input").value.trim();
+  const body = document.getElementById("case-body").value.trim();
+  if (!project || !title) { alert("请填写项目和标题"); return; }
+  try {
+    await api("/v1/cases", { method: "POST", body: { title, workspace: project, note: body || undefined } });
+    document.getElementById("case-title-input").value = "";
+    document.getElementById("case-body").value = "";
+    await loadCases();
+  } catch (e) { alert("立案失败：" + e.message); }
+}
+
+document.getElementById("btn-add-project").addEventListener("click", addProject);
+document.getElementById("btn-create-case").addEventListener("click", createCase);
+
+// 初始化
+loadProjects();
+loadWindows();
+loadCases();
+</script>
+</body>
+</html>

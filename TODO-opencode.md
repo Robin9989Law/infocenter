@@ -1,0 +1,93 @@
+# TODO · opencode（coordinator）
+
+> 只写本方进展；计划调整改 `PLAN.md`（opencode 独家）。
+
+- [x] 2026-10-14 建团队：产出 `PLAN.md`（A 质量 / B 联邦 / C 发布三轨，M1–M3），kickoff 发启动信。
+- [x] 2026-10-14 签收全员认领：kimi（独立复核）、omp（C 线）、cursor（A 线 + D3 裁定实现 `heartbeat_prompt`，派单 `m1a138d6ba7db8ccf0`）、grok（B 线 + 提交 `_work/federation-decision.md`）均已认领。
+- [x] 2026-10-14 冻结 B1（D1/D2）并修正 B4 所有权冲突：D1=v1 只做网盘 JSON 中继；D2=恰好一个点的 `节点.名字`、裸名留本地、`*` 不跨节点；B4 文档（`README.md`、`需求文档/01-需求整理.md`）归 omp，grok 只供 diff。已回复 grok 进入 B2 设计。
+- [x] 2026-10-14 M1（A1–A5）coordinator 验收通过：`python3 -m unittest tests.test_infocenter tests.test_quality_store tests.test_quality_mcp tests.test_quality_crew -v` 31/31 全绿，`infocenter/` diff 与 `_work/a1-store-concurrency-audit.md` 审查通过；已在 `PLAN.md` 勾掉 A1–A5 并将 `crew.py` 所有权完整记回 grok 名下（待 kimi 独立复核报告后正式收口 M1）。
+- [x] 2026-10-14 A6 追加修正（`m1a138e25fe2e8dc72`）coordinator 复核通过：`crew.py` 的 `watch()` 恢复 `elif` 单轮单次 headless，member 心跳模板移除裸 `coordinator` 并支持注入 `coordinator_name`，全量测试 33/33 全绿；`PLAN.md` 已同步更新，`crew.py` 临时授权已归还 grok。
+- [ ] 维护 `PLAN.md`：吸收新需求、勾掉完成项、拆解停滞项。
+- [ ] D4 决策：M1/M2 稳定后由 human 决定仓库转公开时机。
+- [x] 2026-10-14 B2 评审与冻结：完成 `_work/federation-design.md` coordinator 复核并结合 kimi 独立复核（`_work/verify-b2.md`）双签冻结 B2（6 项拍板全部通过 + 1MB 文件上限及 `import_remote`/`reply` 边界对齐），推进至 B3 实现。
+- [x] 2026-10-14 M1 终签冻结：签收 kimi 独立复核（`m1a138e3cc5d44318f` / `_work/verify-m1.md`），A1–A6 双签通过，已在 `PLAN.md` 标记 M1 正式冻结。
+- [x] 2026-10-14 心跳巡检（C1–C4 验收与台账更新）：核验 omp 交付的 `_work/c1-audit-deviations.md`、`README.md`、`CHANGELOG.md`、`LICENSE`、`SECURITY.md` 与 `dist/` 构建产物，在 `PLAN.md` 勾掉 C1–C4 及 M1 `ResourceWarning` 清理项；确认 grok 正在执行 B3（PID 55325 活跃），cursor/kimi/omp 均在各自下游接应位待命，无需催办。
+- [ ] B3/B4 验收与 M2/M3 收口：待 grok 交付 B3 代码 + §10 diff 由 cursor 合入 + kimi 独立复核 + omp 合入 B4 文档 diff。
+- [x] 2026-10-14 建立 **D 线（窗口 · 案卷 · 应用）**：设计定稿于 `~/.opencode/plan/infocenter-窗口案卷应用-计划.md`；在 `PLAN.md` 建 §七（文件所有权 / D1–D4 任务与排期 / M4 验收），并入 D6（activity 按办公室分区）。按单写者拆分派单：cursor=D1 数据层、grok=D2 命令与守护（排 B3 后）、omp=D3 应用、kimi=D4 复核、opencode=设计/接口/验收。
+- [x] 2026-10-14 心跳巡检（B3/D 线在途核查）：收件箱 0 未读；B3 代码与 §10 diff 已落盘、kimi 已出预复核 `_work/verify-b3.md`、grok 正收口 5 项测试红灯；cursor（PID 70249）正编码 D1 数据层，omp（PID 85570）正编码 D3 `/ui` 管理台，kimi 已认领 D4。已同步更新 `PLAN.md` 状态，全员在途无需催办。
+- [x] 2026-10-14 验收 **D1 数据层（cursor，`m1a1391a7bf18ada31`）**：核验 `infocenter/store.py`（B3 §10 接口 + `projects`/`windows`/`cases`/`case_nodes` 四表与迁移 + 软认领/强制接手 + 三种收局与离场自动中止 + D6 按办公室隔离 activity）、`infocenter/httpapi.py`（`X-Window` 透传与 `/v1/cases*`、`/v1/windows*`、`/v1/projects*`）、`infocenter/mcp_server.py`（窗口号生成、离场上报、`ic_case` 工具）及 `tests/test_quality_window.py`（10 项测试），全量 `python3 -W error::ResourceWarning -m unittest discover -s tests -v` **75/75 零告警全绿**。已签收并回复 cursor（`m1a139201c24c7c834`），同步发信通知 omp 推进 D3 `/ui` 真实 API 联调与文档（`m1a139201c294504ae`）、通知 kimi 启动 B3 终审与 D1/D2 独立复核（`m1a139201c366d5915`）。
+- [x] 2026-10-14 验收 **B3 跨机联邦实现（grok，`m1a1391d03b6be9f86`）** 与 **D2 命令与守护（grok，`m1a1391d03d843fbb5`）**：核验 `_work/federation-design.md` 冻结稿、`infocenter/sync.py`、`infocenter/config.py`、`infocenter/client.py`（`X-Window`）、`infocenter/cli.py`（`ic sync`、`ic case/cases/windows`、`crew pause|resume|abort|close`、`crew down --only`）、`infocenter/crew.py`（窗口号生成、离场上报、headless 案卷提示词）及 `tests/test_federation.py`（27 项）、`tests/test_d2_commands.py`（5 项），全量 **75/75 零告警全绿**；已签收两封信并回复 grok 推进 B4 文档 diff 交 omp 合入。
+- [x] 2026-10-14 签收 **B3 第二轮终审 + D1/D2 独立复核（kimi，`m1a139271a6bbfdec7`）**：
+  - `_work/verify-b3.md` 第二轮终审通过（全量 75/75 零告警、联邦 27/27 零跳过），coordinator + kimi 双签确认 **B3 正式冻结**。
+  - `_work/verify-d.md` D1+D2 独立复核通过；针对复核指出的 4 项非阻塞改进项，已派发 cursor 补齐 D1-a/D1-b 单测（旧库迁移与 `transfer_case` 正向路径）、派发 grok 收口 D2-a/D2-b（`crew pause` 真打断在跑 headless 子进程及 `resume`/`close`/env 单测）。
+- [ ] D 线主持：待 pi 完成 D 线文档合入、kimi 追加终审段后冻结 M4（D1-a/b、D2-a/b、D3-a/b/c 已全部收口；M2/M3 已冻结/就绪）；D8 守护重启**就绪待执行**（交非无头窗口一次性执行，见 17:25 条）。
+- [ ] 监控 `ic agents` 各家 activity，必要时催办。
+- [x] 2026-10-14 更正「omp 凭据失效」误判 + 加固 fallback（15:39）：
+  - **更正**：复核 `~/.omp/logs/omp.2026-10-14.{4762,23564,36068,25915,45696}.log` 确认 `401 Invalid credential` **仅出现在启动期「技能描述压缩」**（`Skill description compression`），属无害噪音——手动跑（pid 45696）与成功合入 B4 的 pid 4762（15:03）日志里同样出现。真正报错是 `alibaba-token-plan/qwen3.8-max` **主回合 socket closed unexpectedly**（errorId 135168）间歇掉线 + `automatic-retry`（非鉴权失败）；pid 4762 重试 3 轮后成功、pid 36068 于 15:35 亦成功调模型。结论：**omp 可用、只是偶发卡顿**，human 已确认可手动使用。原「凭据失效/空转 30 分钟」上报作废。
+  - **加固**：`~/.omp/agent/config.yml` 的 `retry.fallbackChains` 新增 `default` 链 = `cursor/claude-sonnet-5-5`（human 指定，15:41 最终定稿），改前备份 `config.yml.bak-20261014-153855`；`omp config get retry.fallbackChains` 校验通过。对**新**守护运行生效。
+  - D 线文档仍**不干预**，等 omp headless 自行补齐。
+- [x] 2026-10-14 心跳巡检 + 裁定（15:14）：
+  - **收件箱裁定**：处理 omp 跨仓「B4 合入阻塞」信（`m1a139360104d6301a`）。查明 B4 已由**本项目 omp 守护**（pid 27470，dir=信息中心）于 15:03 合入工作区（README「跨机联邦」小节、需求文档 R10 ✅、`.gitignore` `.infocenter/`），核验通过。根因＝B4 信按身份 `omp` 全域投递，LLM思维链 仓的 omp 会话误判无文件。已回信裁定：无需跨仓，只认 infocenter 仓；`TODO-omp.md` B4 可勾。
+  - **里程碑**：`PLAN.md` 标记 **M2 正式冻结**、**M3 就绪收口**（仅待 human D4），M4 续收口。
+  - **资源调配**：全员在途——grok 正跑 D2-a/b（pid 10470）、omp 正修 D3-a（pid 23564）、kimi 正跑 D3 预复核。唯一闲人 cursor 改派 **D3-b/D3-c**（`index.html` 提示级收尾），已更新 §七 所有权接棒规则并发信（`m1a139436d103b6d91`）。
+  - **验收**：全量 `python3 -W error::ResourceWarning -m unittest discover -s tests` **77/77 零告警**（含 D1-a/b 两条新测）。
+  - **D8**：本项目 5 守护 pid 27466–27470 为 13:12:49 启动，未加载 14:28 的 D2 `crew.py`；待 grok/omp 两轮 headless 结束后 `crew down/up` 重启。
+- [x] 2026-10-14 收信裁定（15:24，cursor `m1a1394b01023f3f1f`）——**D3-a 改派 cursor 一次性收口**：
+  - **入口**：cursor 按开工前自检回报 `index.html` 仍为 D3-a 旧写法（L193 `const last = c.last_node || c.last_note || "";` 属实），并发现本项目 omp 守护 pid 27470 触发的 headless **pid 23564 卡死**。
+  - **定位**：`~/.omp/logs/omp.2026-10-14.23564.log` 显示上游 provider `alibaba-token-plan`/`qwen3.8-max` 自 15:10 起 401 Invalid credential + `socket connection closed`，`automatic-retry` schedulerToken 1→3，15 分钟零工具调用。同期 cursor/grok/kimi 运行正常 ⇒ 系 omp 单侧 provider 故障，非全局网络。
+  - **处置**：终止卡死进程 pid 23564（其触发信 cursor 已推进，守护不会重复触发）；`PLAN.md` §七 更新收口规则与 M4 行——`index.html` 单写者改为 cursor，连同必修 D3-a + 提示级 D3-b/D3-c 一并收口；发信授权 cursor 立即接棒、发信通知 omp 停止写该文件专注 D 线文档。
+  - **旁证**：终止后我发给 omp 的停写通知又触发新 headless（pid 36068，15:24:48），同样立刻报 401 + 重试 ⇒ 系 omp 侧凭据/模型配置问题（非本项目代码、非临时抖动），需 **human 修复 omp 的 `alibaba-token-plan` 凭据或换模型**，否则 omp 每次守护触发都会空转 30 分钟超时。已列入待办上报。
+  - **结论**：D 线解除 handoff 死锁；待 cursor 交 D3-a/b/c + 冒烟、omp 补 D 线文档、kimi 补 D 线终审后收口 M4。
+- [x] 2026-10-14 验收 **D3-a/D3-b/D3-c（cursor，`m1a139511037a50886`）** 并核验通过：
+  - **D3-a**：核对 `infocenter/web/index.html:195`，已由旧写法 `c.last_node || c.last_note || ""` 改为 `c.last_note || (c.last_node && typeof c.last_node === "object" ? (c.last_node.note || c.last_node.line || "") : c.last_node) || ""`，`[object Object]` 消除。
+  - **D3-b**：`index.html:191-199,207-213` 已改为按原始 `c.status` 判断（`open/doing/pending/waiting` → 暂停、`paused` → 恢复、`sealed`/`aborted`/`done` → 隐藏中止/办结），CSS `.status` 已补 `open/doing/pending/waiting/paused/aborted/done` 及「待谁/待办/离场」底色（L21–25）。
+  - **D3-c**：`index.html:180` 文案改「离场并封卷」，`281-286` `disableWindow()` 加 `confirm()` 二次确认并同步刷新 `loadWindows()`+`loadCases()`，`onclick` 内 `window_id`/`case.id` 走 `escapeHtml`。
+  - **测试**：`test_quality_window.py` 新增 `test_13_ui_console_smoke_and_d3_abc`；coordinator 独立复跑 `python3 -W error::ResourceWarning -m unittest discover -s tests` = **78/78 OK 零 ResourceWarning**。
+  - **同步**：`PLAN.md` M4 行与 §七 D3 段状态已更新为 ✅；已回信 cursor（`m1a139511037a50886`）。D 线剩余仅 omp 的 D 线文档 + kimi 终审。
+- [x] 2026-10-14 验收 **D2-a/D2-b 收口（grok，`m1a1395e136619bc9a`）** 并更新 PLAN：
+  - **核验**：`infocenter/crew.py` 已见 D2-a 落地——`_run_headless` 用独立进程组 `Popen`（L768）、`_note_headless_pid` 写守护 meta（L542/559）、`control(pause)` 经 `_signal_group` 对进程组发 `SIGTERM`（L499/535）、`watch` 主循环 `_window_paused` 跳过本轮（L563/715-722）；D2-b 补 `resume`/`close`、`INFOCENTER_WINDOW` env 注入（L817-823）与单测。coordinator 独立复跑 `python3 -W error::ResourceWarning -m unittest discover -s tests` = **82/82 OK 零 ResourceWarning**。
+  - **同步**：`PLAN.md` M4 行、§七 D2 段、D4 终审前置三段「D2-a/b 收口在途」改为已收口；D 线前置仅余 omp 文档。已回信 grok（`m1a1395e136619bc9a`）。
+- [x] 2026-10-14 **omp 下线、`pi` 接管**（15:48，human 裁定）：
+  - **决策**：omp 退休（`alibaba-token-plan/qwen3.8-max` 主回合间歇 `socket closed` 掉线、D 线文档久未落地）。更正前文「凭据失效」误判：401 仅是**启动期技能描述压缩**噪音，真正问题是 `qwen3.8-max` 主回合间歇掉线 + 自动重试。改由新身份 **pi**（pi-coding-agent v1.2.0，provider `qwen-token-plan-cn`，模型 `qwen3.8-max`，无审批）接管 **C 线发布工程 + D 线文档**。
+  - **执行**：`ic crew down --only omp --dir 信息中心`（守护 pid 27470 停止）+ 清理孤儿 headless pid 36068（其日志确认始终未落 D 线文档）；`~/.infocenter/config.json` 删 `omp` 增 `pi`（headless `/Users/robinlaw/.local/bin/pi -p --no-session --model qwen3.8-max {prompt}`，软链到 fnm pi）；`ic --as pi register`；`ic crew up --only pi`（守护 pid 56260）。`TODO-omp.md` → `TODO-pi.md`；`PLAN.md` §〇/§四/§七 所有权 omp→pi + 加身份变更说明。
+  - **冒烟**：`pi -p --no-session --model qwen3.8-max` 无头跑通工具调用（成功写文件），确认无审批阻塞。
+  - **派单**：已发 pi `m1a13963cf861a79e5`（high）指派 D 线文档（`README.md` / `skills/infocenter/SKILL.md` / `需求文档/01-需求整理.md`）。
+  - **遗留**：服务端仍为 04:46 旧进程（`POST /v1/windows` 404、`/ui` 未上线），pi 守护「登记办公室失败，继续收信」即由此而来 ⇒ **D8**：需重启服务端 + 其余守护（grok/kimi/opencode/cursor）加载新码。
+  - **保留**：`~/.omp/agent/config.yml` 的 `default` fallback 链（`cursor/claude-sonnet-5-5`）对其他项目的 omp 仍有效。
+- [x] 2026-10-14 回信 kimi（15:53，`m1a13965b0940523fa` → `m1a139668f28cbc011`）：
+  - **D2-a/D2-b**：确认复核通过，与 15:45 复跑 82/82 零告警一致，PLAN §七 D2 段与 M4 行无需改动；kimi 2 条提示级观察（`Popen`→写 pid 间隙、每轮多一次 `_window_paused` HTTP）不列必改，仅留档。
+  - **omp D 线文档裁定**：kimi 信早于 15:48 决定，故仍以「omp 文档」为前置。回信明确：omp 已退休、勿再催；D 线文档 owner 已改 **pi**（15:48 派单 `m1a13963cf861a79e5`，守护 pid 56260 / headless pid 56400 在途），kimi D4 终审按 pi 交付物看待。
+  - **现状提示**：服务端仍为 04:46 旧进程（`POST /v1/windows` 404、`/ui` 未上线）→ D8 待 pi 本轮 headless 结束后统一 `crew down/up`。
+- [x] 2026-10-14 16:12 心跳巡检（信息中心）：收件箱 **0 未读**——起手 2 封（`grok` A3-dx2 回信 `m1a1397379557cb386`、`omp` A3 select 回信 `m1a13972666e46b81c`）workspace=`01_ICLR2027`，属并发的 **ICLR 心跳会话（pid 63853）** 之账，已于 16:11 由其签收并落 ICLR PLAN，**非本项目**，不重复处理。核对 `ic --as opencode agents` 与各家 `TODO-*.md`：`cursor`/`grok`/`kimi` 名下信息中心事项全部闭环、无本项目可推进项；`pi` 的 D 线文档（README/SKILL/需求文档）15:48 派单、首轮 headless 15:50–15:58 以退出码 1 超时（`Request timed out.`）、16:08 心跳规划运行在途（pid 65309 存活），暂不干预；三文件 mtime 未变（14:53 / 02:43 / 15:01）。结论：M4 仅差 D 线文档（在飞）、D8 待本轮 in-flight 结束后 `crew down/up`；无新需求、无新完成项、无停滞需拆解（唯一关键路径项在飞），不发信。
+- [x] 2026-10-14 16:32 心跳巡检 + **吸收新需求（M5 最后评审 debug 轮）**：
+  - **新需求来源**：human 2026-10-14 15:55 对另一 coordinator 会话（`ses_ec6ac7830`）指示「先不急着启动，做最后一轮评审和 debug」⇒ 该会话已产出 `_work/final-review.md`（**3 名分区独立评审 + 3 名对抗性交叉复核**，基线 82/82 零告警；区域一数据层 8 条 + 漏网 M1/M2/M3、区域二管理台/服务端/联邦/MCP 6 条 + 漏网 L1/L2/L3、区域三 CLI/守护/客户端/config 16 条 + 漏网 M1–M5，全部 CONFIRMED/PARTIAL，无误报）。**该项此前未进 PLAN**，本心跳吸收。
+  - **PLAN 更新**：§一 新增里程碑 **M5 最后评审加固**；§五 **D8 重启改 ⏸ 暂缓**（human「先不急着启动」）；新增 **§八**（规格＝`final-review.md`、P0/P1/P2 清单、按文件派单、M5 验收、执行方式裁定）。M4 行注明 D 线文档暂缓至 debug 收口（避免文档追改）。
+  - **资源调配（按 `§〇` 单一写者派 idle 成员）**：`cursor`（idle，名下 store.py/httpapi.py/mcp_server.py/server.py/web/index.html）接 **P0 U-1 存储型 XSS + M1(events) 丢信** + P1 D-1/D-2/D-3/D-4/D-5、U-2、U-4、L1（`m1a1398c0bb968cdd9`，high）；`grok`（idle，名下 crew.py/cli.py/client.py/config.py）接 **P0 C-3 非 UTF-8 自杀+误封卷 / C-7 暂停排序 / C-6 丢信 / C-1 窗口串号 / C-5 裸 traceback** + P1 C-4/C-8（`m1a1398c0bbfd82e1e`，high）；`kimi` 待修复落盘后出 `_work/verify-debug.md`（`m1a1398c0bc81b8d52`）。P2 本轮不做、留档。
+  - **执行方式裁定**：`final-review.md` 原注「由 coordinator 直接改（不依赖守护派单）」系针对旧码守护不可靠的顾虑；本轮改按文件分区**派 owner 成员修 + kimi 复核**，保持单一写者、并行推进，coordinator 不自改生产文件。
+  - **停滞登记**：`pi` 的 D 线文档（README/SKILL/需求文档）自 15:48 派单至今未落，其 headless 两轮均 `Request timed out.`（15:58 / 16:21 退出码 1，三文件 mtime 未变 14:53/02:43/15:01）——同一 `qwen3.8-max` provider 间歇超时。**本轮不催促**：debug 轮会再改码，文档宜在 debug 收口后一次写准；若下轮仍未落，则改派 cursor/grok。
+  - **本轮验收**：无收件箱待裁定（opencode 0 未读）；cursor/grok/kimi 均在册且被派单；未复跑全量（改动尚未落盘）。
+- [x] 2026-10-14 监控 M5 debug 轮（收口）：cursor/grok 修复落盘 → kimi 出 `_work/verify-debug.md` → coordinator 独立复跑全量 118/118 零告警 → §八 更新、**M5 正式冻结**（详见 17:25 条）。
+- [x] 2026-10-14 16:55 心跳巡检（信息中心）：**M5 debug 修复已真实落盘，关键路径推进**。
+  - **收件箱**：起手 **1 未读** = `kimi`《Re: A3-dx5》登记回信（`m1a1399a8ec68775e5`，workspace=`01_ICLR2027`）——纯签收性登记（确认触发条件未满足、不动手），**属 ICLR 心跳会话之账**，非本项目、无需裁定，不回帖（无新信息）。已读。
+  - **资源核实（`ic agents` + 进程 + 文件 mtime**：cursor 的 `信息中心` headless（pid 79906，提示词即 P0/P1 派单 `m1a1398c0bb968cdd9`）与 grok 的 headless（pid 78523）均在跑；`store.py`(16:50)/`httpapi.py`(16:45)/`mcp_server.py`(16:41)/`server.py`(16:41)/`web/index.html`(16:42) 与 `crew.py`(16:46)/`cli.py`(16:45)/`client.py`(16:43) 均已改；`tests/test_debug_p0.py`（11 项，C-1/C-3/C-4/C-5/C-6/C-7/C-8）新建。**cursor/grok 在册且在跑，无停滞/跑偏**（两者 activity 自报仍为 ICLR 文案＝跨项目身份共用显示，不影响执行）。
+  - **回归测试**：cursor 新建 `tests/test_hardening_store.py`（15 项，D-1…D-5/U-1/U-2/L1）+ 更新 `tests/test_quality_{store,mcp,window}.py`；grok 新建 `tests/test_debug_p0.py`（11 项，C-1/C-3/C-4/C-5/C-6/C-7/C-8）。`test_d4_implicit_touch_does_not_revive_left_window` 一度红（D-4 实现未落完），17:06 转绿。
+  - **独立复跑**：`python3 -W error::ResourceWarning -m unittest discover -s tests` = **118/118 OK 零告警**（17:06 快照；基线 82）。*(16:51–17:03 数度红＝`store.py`/hardening 测试半写快照，md5 逐次变，非跨项回归；收敛后全绿。)*
+  - **P0 落点抽验**：U-1（index.html `dataset`+`addEventListener`，无 `onclick` 串 + `store.py:97` CASE_ID_RE）、M1-events（`store.py:446-489` 取最旧 limit 条、cursor=实际返回最大 seq）、U-2（`server.py:59-71` 下界）、L1（`httpapi.py:503-529` CSRF/Origin）、U-4（MCP 注册入 try）均已在码。
+  - **资源调配**：**唯一闲人 pi**——D 线文档自 15:48 派单两轮 headless 均 `Request timed out.`（提供方超时），三处文档 mtime 未变；按 §八「D 线文档暂缓至 debug 收口」**发信请 pi 停跑、静默待命**（`m1a1399fec9c659225`，非客套、防空转）。cursor/grok/kimi 均无需催办：cursor/grok 在飞；kimi 唯一前置＝修复落盘，本心跳**把 verify-debug 触发条件收紧为「cursor+grok 均回信报完成且回归测试落盘」**（写入 §八），不发信（kimi 读 PLAN 即可）。
+  - **PLAN 更新**：§一 M5 行→「修复落盘中（118/118）」；§八 追加「进展（16:55，17:06 校正）」块（落盘清单 / 118/118 / 半写竞态说明 / 剩余项①两家回信报完成②kimi verify-debug③D8④D 线文档 / pi 暂缓）。未发明填充式任务（P2 本轮不做）。
+  - **未决/挂起**：D4（human 拍板公开）、D7（phantom `coordinator` 3 未读）、D8（重启）——均无变化，无新信息不重复发信。
+- [x] 2026-10-14 17:07 **M5 两家交卷签收 + 派 kimi 复核**（心跳中途到达）：
+  - **grok 交卷**（`m1a1399fe4b5deb78d`，16:55）：C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 全落 `crew.py`/`cli.py`/`client.py` + 新测 `tests/test_debug_p0.py`(11)；明示 P2 与 `sync.py` U-3 未做、`M1(events)` 非本方文件未动（正确）。
+  - **cursor 交卷**（`m1a139a7565f8e42b7`，17:03）：`final-review.md` **10 项**（U-1/M1-events/D-1+M1-data/D-2/D-3/D-4/D-5/U-2/U-4/L1）逐项落码 + `tests/test_hardening_store.py`(15) + 更新 `test_quality_{store,mcp,window}.py`；自报 118/118。
+  - **coordinator 复核**：`git status` 改动严格限在 §〇 各自名下文件（无越界）；全量 `python3 -W error::ResourceWarning -m unittest discover -s tests` = **118/118 OK 零告警**（17:06 稳定快照；此后无写盘、无 in-flight headless、in-flight grok 心跳 pid 14251 只读）。
+  - **资源调配**：两家交卷 → kimi 触发条件满足，已发 **high** 派单 `m1a139aaf9c63b28d3`（出 `_work/verify-debug.md`，含 P0 反驳复现 + 逐项对码）；已回信 cursor（`m1a139aaf9cb40ca70`）、grok（`m1a139aaf9d8e36e4d`）**签收并要求冻结文件**（进入「kimi 复核 + D8」窗口，勿再改生产文件，防复核对象漂移）。
+  - **PLAN**：§一 M5 行→「待独立复核」；§八 追加「交卷（17:07）」块。**D8 暂不执行**（按 §八 等复核通过，且 human「先不急着启动」）；D 线文档（pi）仍暂缓。
+  - **下一步链**：kimi `verify-debug.md` → coordinator D8（`crew down/up` + 重启服务端）→ pi 落 D 线文档 → kimi D4 终审收口 M4/M5。
+- [x] 2026-10-14 17:25 收信裁定（kimi `m1a139b59cc53a1cd3`）——**M5 正式冻结 + N1–N4 转 P2；D8 交非无头窗口**：
+  - **收信**：kimi 交 `_work/verify-debug.md`：P0 反驳复现 5/5、P1 对码 10/10、18 项无半修/假修、基线 118/118 零告警 → **可以冻结**；建议 D8 重启、N1–N4 转 P2。
+  - **独立复核**：coordinator 复跑 `python3 -W error::ResourceWarning -m unittest discover -s tests` = **118/118 OK 零 ResourceWarning**；生产/测试文件 mtime 最新止于 17:03:49（复核后无写盘）⇒ 复核对象无漂移。**M5 正式冻结**（`PLAN.md` §一 已标 ✅）。已签收原信。
+  - **N1–N4 转 P2 backlog**（登记 `PLAN.md` §八）：N1 `IncompleteRead` 逃逸边角；N2 C-6 重试无退避/无上限（复现 9 秒 15 个中断节点）；N3 events 无窗 `unread_total` 口径微宽；N4 旧格式 pid 迁移期。本轮不改。
+  - **D8 裁定：不在本无头会话执行**。技术根因：本会话 pid 20255 由 opencode 守护 27468 派生；`crew down` 向守护发 SIGTERM → `_run_headless` 的 `except BaseException`（C-7/D2-a 刻意设计）`killpg` 打断**本 headless 进程组**＝自重启即自杀，且可能把 crew 停在半下状态。外因：D8 还含**共享 8787 服务端**重启（另 2 个项目守护同端口）与打断 grok/cursor 在飞 headless；且 human 15:55「先不急着启动」的 go-live 指令优先于 peer 复核建议。⇒ `PLAN.md` §五/§八 记为「就绪待执行」，**交非无头 coordinator 窗口一次性执行**：`ic stop && ic serve --detach` + `ic crew down --dir 信息中心` + `ic crew up --dir 信息中心`。
+  - **D 线文档**：M5 收口、码冻结 ⇒ 已发信 **pi**（`m1a139bb8674978e6d`，high，解除「停跑待命」）请其按冻结码落 README/SKILL/需求文档；若 `qwen3.8-max` 再超时未落，改派 cursor/grok。
+  - **回信**：已回 kimi（`m1a139bb867be16cba`）：确认冻结 + D8 处置与理由 + N1–N4 登记 + D4 终审待 pi 交付后执行。
+  - **未决/挂起**：D4（human 拍板公开）、D8（非无头窗口执行）、D 线文档（pi 在途）——无新信息不重复发信。

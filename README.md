@@ -34,6 +34,7 @@
   - [kickoff 与项目规划（WBS）](#kickoff-与项目规划wbs)
   - [状态自报与资源调配](#状态自报与资源调配)
   - [多项目并行](#多项目并行)
+- [跨机联邦：ic sync](#跨机联邦ic-sync)
 - [协作约定](#协作约定)
 - [数据与文件位置](#数据与文件位置)
 - [故障排查 FAQ](#故障排查-faq)
@@ -281,6 +282,8 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `headless` | 无人值守命令模板，其中的 `{prompt}` 会被替换为收信或规划指令；**配置了它才会启用收信守护进程** |
 | `poll` | 收信守护进程长轮询的等待上限（秒），默认 300 |
 | `heartbeat` | 无信时的心跳间隔（秒），到期会触发一次规划运行；填 0 或不填表示纯信件驱动 |
+| `heartbeat_mode` | 可选：`"idle"`（默认，新信会重置心跳计时）或 `"always"`（严格按间隔调度，新信不重置） |
+| `heartbeat_prompt` | 可选：替代内置的心跳规划提示词（支持 `{agent}` `{project}` 占位符）；不填用内置模板 |
 
 名单之外的 agent 也可以随时自行注册（`PUT /v1/agents/{name}`），这一入口始终保持开放。
 
@@ -392,6 +395,47 @@ ic crew status                           # 全局：每个身份列出它在哪�
 ic crew down --dir ~/projects/alpha      # 只收工项目甲
 ```
 
+## 跨机联邦：ic sync
+
+两台以上机器可以各跑一份本地服务，用项目目录里的 JSON 文件交换留言。**SQLite 邮箱仍然只在本机**，不进网盘。没写 `node` 时，`ic send` 等命令与单机时一样；只有 `ic sync` 会拒绝运行。
+
+在 `~/.infocenter/config.json` 的**顶层**（与 `agents` 并列，不是某一家的字段）写本机节点：
+
+| 顶层字段 | 作用 |
+| --- | --- |
+| `node` | 本机节点段，如 `robin`。缺省、空、null 表示联邦关闭。`ic agents add/remove` 会保留这个键 |
+| `peers` | 只从这些节点目录导入。缺省或 `[]` 表示发现 outbox 下每一个合法节点，并跳过自己 |
+| `outbox_dir` | 绝对路径，或相对 `--dir` 的路径。缺省是 `<项目>/.infocenter/outbox`。多项目不要设它 |
+
+线上身份是恰好一个点的 `节点.名字`（如 `robin.grok`）。裸名 `grok` 只留在本机，不导出。`*` 仍只展开本机名单，不跨节点。发给他机时，本机把裸名写成 `<node>.<裸名>`。
+
+```bash
+# 两台机器把同一项目放在同一份网盘上，然后各自执行
+ic sync once --dir ~/Drive/信息中心
+```
+
+| 命令 | 作用 |
+| --- | --- |
+| `ic sync export --dir <项目>` | 把本机发出、且收件人含他机线上名字的信，以及本机签收产生的回执，写到自己的节点目录 |
+| `ic sync import --dir <项目>` | 从其他节点的目录导入信件和回执 |
+| `ic sync once --dir <项目>` | 先导出，再导入。不需要 `--as`，也不拉起服务 |
+
+成功时退出码 0。普通输出是一行计数：`exported`、`imported`、`receipts_out`、`receipts_in`、`skipped`、`rejected`、`conflict`。`--json` 输出同一份计数。未配置 `node`、节点名不合法，或 `--dir` 不是目录时，退出码 2，不建目录、不改库。
+
+目录只当传输带。一个节点只写自己的子目录：
+
+    <项目>/.infocenter/outbox/<节点>/<message_id>.json
+    <项目>/.infocenter/outbox/<节点>/receipts/<message_id>--<裸名>.json
+
+- 延迟等于网盘同步周期（秒到分钟）。至少送达一次，按消息 id 去重。同一 id 内容不同时留下先到的那封，并计入 `conflict`。
+- 导入时把 `workspace` 改写为本机这次 `--dir` 的绝对路径，收件箱过滤和守护都能命中。没有 `workspace` 的信不导出。
+- 签收（read）会在下次导出时写出回执；发信方下次导入后，把对应的那一份标成已读。归档不跨节点。
+- 单个 JSON 上限 1 MB。超过的不写入，导入时也不读进内存。
+- 同一个 `node` 不要两台机器同时用。v1 不加密、不自动清理旧文件，也不在 `ic crew` 里调用 sync。网盘成员都能读到这些 JSON，敏感信息不要走这里。
+- 把 `.infocenter/` 放进 `.gitignore`。网盘仍会同步这个目录，git 不应提交它。
+
+本机账本是 `~/.infocenter/federation.sqlite`（可删；删了不影响邮箱，下次按消息 id 重放）和 `~/.infocenter/federation.lock`（同时只允许一个 sync，最多等 30 秒）。
+
 ## 协作约定
 
 系统并不强制「谁听谁的」，但把规则做成了机器可读的形式（config 的 `role`），并写进每个 agent 的 SKILL 和 kickoff 信：
@@ -412,6 +456,8 @@ ic crew down --dir ~/projects/alpha      # 只收工项目甲
 | `~/.infocenter/config.json` | 接入名单与编排配置 |
 | `~/.infocenter/server.json` | 后台服务的 pid 和 url |
 | `~/.infocenter/crew/` | 收信守护进程的状态：`<名字>.pid` / `.json` / `.cursor` / `.log` |
+| `~/.infocenter/federation.sqlite` | `ic sync` 的本地账本。删了不影响邮箱，下次按消息 id 重放 |
+| `~/.infocenter/federation.lock` | `ic sync` 的进程锁，最多等待 30 秒 |
 
 ## 故障排查 FAQ
 
@@ -434,7 +480,7 @@ ic crew down --dir ~/projects/alpha      # 只收工项目甲
 `ic agents add --role` 会同时写入 config 并 PUT 到服务，立即生效。但**手动编辑 config.json，不会把对已存在 agent 的改动同步到服务**（服务启动时的 seed 用的是 INSERT OR IGNORE）。要改 role，请使用命令，或执行 `curl -X PUT .../v1/agents/<名字> -d '{"role":"coordinator"}'`。
 
 **Q：能把 mailbox.db 放共享网盘给两台机器共用吗？**
-**不能。** 网络文件系统会破坏 SQLite 的锁语义，同步冲突会撕裂数据库。跨机方案（网盘中继 / Tailscale）见需求文档 R10，尚待决策。
+**不能。** 网络文件系统会破坏 SQLite 的锁语义，同步冲突会撕裂数据库。跨机时各留本地库，用 `ic sync` 交换 `<项目>/.infocenter/outbox/` 里的 JSON。见[跨机联邦](#跨机联邦ic-sync)。
 
 **Q：服务端口被占用，或者想重启服务怎么办？**
 执行 `ic stop && ic serve --detach` 即可。MCP 进程会自动重连（失败时每 2 秒重试一次）。
@@ -444,14 +490,14 @@ ic crew down --dir ~/projects/alpha      # 只收工项目甲
 - 服务只监听 `127.0.0.1:8787`，**没有鉴权**，请不要把它暴露到局域网以外（例如通过端口转发或反向代理映射到公网）。
 - 本机上任何知道地址的进程，都能以任意身份发信；信任边界就是你的用户账户。
 - 信件内容以明文保存在 SQLite 中，敏感信息请不要通过信息中心传递。
-- 跨机联邦（多人多机的大团队）目前还停留在愿景阶段，详见 `需求文档/01-需求整理.md` 的 R10。
+- 跨机走网盘上的明文 JSON（`ic sync`，见[跨机联邦](#跨机联邦ic-sync)）。没配置 `node` 时没有这条路径。不要用它传敏感信息，也不要把 `mailbox.db` 放进网盘。
 
 ## 开发
 
 运行全量测试：
 
 ```bash
-python3 -m unittest tests.test_infocenter   # 全量测试（14 个，含收信守护端到端）
+python3 -m unittest tests.test_infocenter   # 全量测试（33 个，含收信守护端到端）
 ```
 
 代码结构如下：`infocenter/` 目录下，`server.py`（常驻 HTTP 服务）→ `httpapi.py`（路由）→ `store.py`（SQLite）；`cli.py`、`mcp_server.py`、`client.py` 都是 HTTP 的客户端；`crew.py` 负责团队编排和收信守护进程；`config.py` 管理名单。

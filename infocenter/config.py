@@ -82,6 +82,62 @@ def save(home, config: dict) -> None:
     os.replace(tmp, path)
 
 
+def _read_document(home) -> dict:
+    path = config_path(home)
+    if not path.exists():
+        load(home)
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MailError("invalid_config", f"{path} 不是合法 JSON：{exc}") from exc
+    if not isinstance(raw, dict):
+        raise MailError("invalid_config", f'{path} 需要形如 {{"agents": [...]}}')
+    return raw
+
+
+def _save_agents(home, agents: list[dict]) -> None:
+    """写回 agents，保留 node、peers、outbox_dir 以及其他顶层键。"""
+    raw = _read_document(home)
+    raw["agents"] = agents
+    save(home, raw)
+
+
+def federation_settings(home) -> dict:
+    """读 node / peers / outbox_dir。不创建 config.json。
+
+    node 会去掉空白并 lower；空和 null 变成 None。load() 仍然只返回 agents。
+    """
+    path = config_path(home)
+    if not path.exists():
+        return {"node": None, "peers": [], "outbox_dir": None}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MailError("invalid_config", f"{path} 不是合法 JSON：{exc}") from exc
+    if not isinstance(raw, dict):
+        raise MailError("invalid_config", f'{path} 需要形如 {{"agents": [...]}}')
+    peers = raw.get("peers")
+    return {
+        "node": _federation_node(raw.get("node")),
+        "peers": [] if peers is None else peers,
+        "outbox_dir": _federation_path(raw.get("outbox_dir")),
+    }
+
+
+def _federation_node(value):
+    if isinstance(value, str):
+        text = value.strip().lower()
+        return text or None
+    return value
+
+
+def _federation_path(value):
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    return value
+
+
 def seed_pairs(home) -> list[tuple[str, str, str]]:
     return [
         (item["name"], item.get("description", ""), str(item.get("role") or ""))
@@ -104,35 +160,73 @@ def coordinator(home) -> str | None:
     return None
 
 
+def _raw_agent_name(item) -> str | None:
+    """从原始条目（字符串或对象）取出归一化名字，取不到返回 None。"""
+    if isinstance(item, str):
+        raw = item
+    elif isinstance(item, dict):
+        raw = str(item.get("name") or "")
+    else:
+        return None
+    try:
+        return normalize_name(raw)
+    except MailError:
+        return None
+
+
+def _entry_view(target: dict) -> dict:
+    """把补丁后的原始条目归一化成调用方要用的视图（name + description + 已知可选字段）。"""
+    view: dict = {"name": target["name"], "description": str(target.get("description") or "")}
+    for key in _KNOWN_KEYS - {"name", "description"}:
+        if key in target:
+            view[key] = target[key]
+    return view
+
+
 def add(home, name: str, description: str = "", role: str = "", **extra) -> dict:
+    """C-14：按 name 对原始 config 做最小补丁，不整表归一化回写，保留其它条目的未知字段。"""
     name = normalize_name(name)
-    config = load(home)
-    for item in config["agents"]:
-        if item["name"] == name:
-            if description:
-                item["description"] = description
-            if role:
-                item["role"] = role
-            for key, value in extra.items():
-                if value not in (None, ""):
-                    item[key] = value
-            save(home, config)
-            return item
-    entry_dict = {"name": name, "description": description or ""}
+    raw = _read_document(home)
+    entries = raw.get("agents")
+    if not isinstance(entries, list):
+        entries = []
+    patch = {key: value for key, value in extra.items() if value not in (None, "")}
     if role:
-        entry_dict["role"] = role
-    entry_dict.update({key: value for key, value in extra.items() if value not in (None, "")})
-    config["agents"].append(entry_dict)
-    save(home, config)
-    return entry_dict
+        patch["role"] = role
+    target: dict | None = None
+    for index, item in enumerate(entries):
+        if _raw_agent_name(item) != name:
+            continue
+        if isinstance(item, dict):
+            target = item
+        else:
+            # 字符串条目升级为对象，仅补本次要写的字段，其余保持默认。
+            target = {"name": name}
+            entries[index] = target
+        break
+    if target is None:
+        target = {"name": name, "description": description or ""}
+        target.update(patch)
+        entries.append(target)
+    else:
+        if description:
+            target["description"] = description
+        target.update(patch)
+    raw["agents"] = entries
+    save(home, raw)
+    return _entry_view(target)
 
 
 def remove(home, name: str) -> bool:
+    """C-14：按 name 从原始 config 删除，保留其余条目的未知字段。"""
     name = normalize_name(name)
-    config = load(home)
-    kept = [item for item in config["agents"] if item["name"] != name]
-    if len(kept) == len(config["agents"]):
+    raw = _read_document(home)
+    entries = raw.get("agents")
+    if not isinstance(entries, list):
         return False
-    config["agents"] = kept
-    save(home, config)
+    kept = [item for item in entries if _raw_agent_name(item) != name]
+    if len(kept) == len(entries):
+        return False
+    raw["agents"] = kept
+    save(home, raw)
     return True

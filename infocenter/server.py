@@ -12,6 +12,16 @@ from infocenter.httpapi import MAX_BODY, handle
 from infocenter.paths import home_dir
 from infocenter.store import MailError, Store
 
+_WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
+_MIME = {
+    ".html": "text/html; charset=utf-8",
+    ".css": "text/css; charset=utf-8",
+    ".js": "application/javascript; charset=utf-8",
+    ".json": "application/json; charset=utf-8",
+    ".png": "image/png",
+    ".svg": "image/svg+xml",
+}
+
 _LOCK = None
 
 
@@ -42,14 +52,26 @@ def make_handler(store: Store):
             sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
         def _go(self):
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-            except ValueError:
+            # /ui 静态文件：直接返回，不走 JSON 路由
+            if self.command == "GET" and self.path.startswith("/ui"):
+                self._serve_ui()
+                return
+            raw_len = self.headers.get("Content-Length")
+            if raw_len is None or not str(raw_len).strip():
                 length = 0
+            else:
+                try:
+                    length = int(raw_len)
+                except ValueError:
+                    self._json(400, {"error": "invalid_content_length", "message": "Content-Length 必须是非负整数"})
+                    return
+            if length < 0:
+                self._json(400, {"error": "invalid_content_length", "message": "Content-Length 不能为负数"})
+                return
             if length > MAX_BODY:
                 self._json(413, {"error": "too_large", "message": "请求体太大"})
                 return
-            raw = self.rfile.read(length) if length else b""
+            raw = self.rfile.read(length) if length > 0 else b""
             try:
                 status, payload = handle(self.command, self.path, self.headers, raw, store)
             except MailError as exc:
@@ -58,6 +80,48 @@ def make_handler(store: Store):
                 sys.stderr.write(f"infocenter: {exc}\n")
                 status, payload = 500, {"error": "internal", "message": "服务器内部错误"}
             self._json(status, payload)
+        def _serve_ui(self):
+            # /ui → index.html；/ui/xxx → web/xxx
+            from urllib.parse import unquote, urlsplit
+            target = unquote(urlsplit(self.path).path)
+            if target == "/ui" or target == "/ui/":
+                rel = "index.html"
+            elif target.startswith("/ui/"):
+                rel = target[4:]
+            else:
+                self._text(404, "Not Found")
+                return
+            # 防止路径穿越
+            if ".." in rel or rel.startswith("/"):
+                self._text(400, "Bad Request")
+                return
+            full = os.path.join(_WEB_DIR, rel)
+            if not os.path.isfile(full):
+                self._text(404, "Not Found")
+                return
+            ext = os.path.splitext(full)[1].lower()
+            ctype = _MIME.get(ext, "application/octet-stream")
+            try:
+                with open(full, "rb") as f:
+                    data = f.read()
+            except OSError:
+                self._text(500, "read error")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _text(self, status: int, text: str):
+            data = text.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(data)
 
         def _json(self, status: int, payload: dict):
             data = json.dumps(payload, ensure_ascii=False).encode("utf-8")

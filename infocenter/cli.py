@@ -10,6 +10,63 @@ from infocenter.server import read_meta, serve, stop
 from infocenter.store import MailError, normalize_name
 
 
+# C-16：全局参数分两段处理。
+# - 子命令之前的全局参数由 `_peel_globals` 只在「遇到子命令前」剥离，不再在任意位置无脑
+#   剥离（旧实现会把「值恰为 --json/--as/--url/--home」的实参也吞掉）。
+# - 子命令之后的全局参数交给 argparse 的 parent parser，写在子命令前/后都认，保持
+#   README 里「全局参数可以写在任何位置」的约定。
+_GLOBAL = argparse.ArgumentParser(add_help=False)
+_GLOBAL.add_argument("--as", dest="agent", default=None, help="以某个身份操作（默认取 INFOCENTER_AGENT，否则 human）")
+_GLOBAL.add_argument("--url", default=None, help="信息中心地址")
+_GLOBAL.add_argument("--home", default=None, help="信息中心主目录")
+_GLOBAL.add_argument("--json", action="store_true", help="JSON 输出")
+
+
+class _SubParser(argparse.ArgumentParser):
+    """所有（含嵌套）子命令都带上全局参数，使子命令之后的 `--as/--url/--home/--json` 可用。"""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("parents", [_GLOBAL])
+        super().__init__(*args, **kwargs)
+
+
+def _peel_globals(argv: list[str]):
+    """只在子命令之前剥离全局参数。
+
+    返回 (剩余 argv, agent, url, home, json)。遇到第一个非全局 token（即子命令）立即停止，
+    后面的内容原样交给 argparse（子命令带 parent parser，会自己认全局参数）。
+    """
+    agent = url = home = None
+    as_json = False
+    index = 0
+    while index < len(argv):
+        item = argv[index]
+        if item == "--json":
+            as_json = True
+        elif item in {"--as", "--url", "--home"}:
+            index += 1
+            if index >= len(argv):
+                raise SystemExit(f"{item} 需要一个值")
+            if item == "--as":
+                agent = argv[index]
+            elif item == "--url":
+                url = argv[index]
+            else:
+                home = argv[index]
+        elif item.startswith("--as=") or item.startswith("--url=") or item.startswith("--home="):
+            key, value = item.split("=", 1)
+            if key == "--as":
+                agent = value
+            elif key == "--url":
+                url = value
+            else:
+                home = value
+        else:
+            break
+        index += 1
+    return argv[index:], agent, url, home, as_json
+
+
 def main(argv=None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     argv, agent_arg, url_arg, home_arg, as_json = _peel_globals(raw)
@@ -19,7 +76,7 @@ def main(argv=None) -> int:
         epilog="全局参数可以写在任何位置：--as 名字、--url、--home、--json",
     )
     parser.add_argument("--version", action="version", version=__version__)
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(dest="cmd", required=True, parser_class=_SubParser)
 
     serve_p = sub.add_parser("serve", help="启动 HTTP 服务")
     serve_p.add_argument("--host", default=DEFAULT_HOST)
@@ -69,6 +126,22 @@ def main(argv=None) -> int:
     thread = sub.add_parser("thread", help="查看自己参与过的回合")
     thread.add_argument("id")
 
+    case = sub.add_parser("case", help="查看或续写一份案卷（办事追踪）")
+    case.add_argument("id", help="案卷编号或线程 id")
+    case.add_argument("--note", default=None, help="写回一行节点")
+    case.add_argument("--status", default=None, help="顺手改案卷状态")
+
+    cases = sub.add_parser("cases", help="列出案卷")
+    cases.add_argument("--workspace", default=None)
+    cases.add_argument("--status", default=None)
+    cases.add_argument("--owner", default=None, help="主办身份")
+    cases.add_argument("--limit", type=int, default=20)
+
+    windows = sub.add_parser("windows", help="列出办公室")
+    windows.add_argument("--agent", dest="window_agent", default=None)
+    windows.add_argument("--workspace", default=None)
+    windows.add_argument("--state", default=None)
+
     mcp = sub.add_parser("mcp", help="以 stdio MCP 运行")
     mcp.add_argument("--agent", dest="mcp_agent", default=None, help="固定身份。不写则每个工具调用自己带 agent")
     mcp.add_argument("--no-notify", action="store_true", help="不推送到信提醒，工具结果也不带未读尾巴（工作会话用）")
@@ -88,17 +161,41 @@ def main(argv=None) -> int:
     crew_status.add_argument("--dir", default=None, help="只看某个项目")
     crew_down = crew_sub.add_parser("down", help="杀守护进程、关 tmux 会话")
     crew_down.add_argument("--dir", default=None, help="只清理某个项目")
+    crew_down.add_argument("--only", default="", help="只停这些身份，逗号分隔，和 up --only 对称")
+    for action, help_text in (
+        ("pause", "暂停该身份的办公室和未封卷案卷"),
+        ("resume", "恢复该身份已暂停的办公室和案卷"),
+        ("abort", "中止该身份名下未封卷案卷"),
+        ("close", "办结该身份名下未封卷案卷"),
+    ):
+        crew_action = crew_sub.add_parser(action, help=help_text)
+        crew_action.add_argument("name", help="身份")
+        crew_action.add_argument("--dir", default=None, help="只处理这个项目")
+        crew_action.add_argument("--note", default=None, help="写进案卷的一行说明")
     crew_watch = crew_sub.add_parser("watch", help="（内部）收信守护进程，由 crew up 派生")
     crew_watch.add_argument("name")
     crew_watch.add_argument("--dir", required=True)
     crew_watch.add_argument("--poll", type=int, default=300)
     crew_watch.add_argument("--heartbeat", type=int, default=None, help="无信心跳间隔秒；不写则读 config")
+    crew_watch.add_argument("--window", default=None, help="显式窗口号；不传则新开，不继承 INFOCENTER_WINDOW")
+
+    sync_p = sub.add_parser("sync", help="经共享目录的 JSON 文件交换留言，不启动服务")
+    sync_sub = sync_p.add_subparsers(dest="sync_cmd", required=True)
+    for name, help_text in (
+        ("export", "把本机信和回执写到自己的 outbox"),
+        ("import", "从其他节点的 outbox 导入"),
+        ("once", "先导出，再导入"),
+    ):
+        sync_cmd = sync_sub.add_parser(name, help=help_text)
+        sync_cmd.add_argument("--dir", required=True, help="项目目录")
 
     args = parser.parse_args(argv)
-    args.agent = agent_arg
-    args.url = url_arg
-    args.json = as_json
-    home = Path(home_arg).expanduser() if home_arg else home_dir()
+    # 子命令之后给的全局参数由 parent parser 填进 args；之前给的由 _peel_globals 取出。
+    args.agent = args.agent if args.agent is not None else agent_arg
+    args.url = args.url if args.url is not None else url_arg
+    args.home = args.home if args.home is not None else home_arg
+    args.json = args.json or as_json
+    home = Path(args.home).expanduser() if args.home else home_dir()
     try:
         if args.cmd == "serve":
             return serve(args.host, args.port, home, args.detach)
@@ -111,6 +208,8 @@ def main(argv=None) -> int:
             return 0
         if args.cmd == "crew":
             return _crew(args, home)
+        if args.cmd == "sync":
+            return _sync(args, home)
         agent = args.agent or _env_agent()
         if args.cmd == "status":
             return _status(args, home, agent)
@@ -190,6 +289,41 @@ def main(argv=None) -> int:
             payload = call(args.url, agent, "POST", f"/v1/messages/{args.id}/reply", body, home=home)
         elif args.cmd == "thread":
             payload = call(args.url, agent, "GET", f"/v1/threads/{args.id}", home=home)
+        elif args.cmd == "case":
+            if args.note:
+                body = {"note": args.note, "action": "note"}
+                if args.status:
+                    body["status"] = args.status
+                payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/nodes", body, home=home)
+            else:
+                payload = call(args.url, agent, "GET", f"/v1/cases/{args.id}", home=home)
+        elif args.cmd == "cases":
+            payload = call(
+                args.url,
+                agent,
+                "GET",
+                "/v1/cases",
+                query={
+                    "workspace": args.workspace,
+                    "status": args.status,
+                    "owner": args.owner,
+                    "limit": str(args.limit),
+                },
+                home=home,
+            )
+        elif args.cmd == "windows":
+            payload = call(
+                args.url,
+                agent,
+                "GET",
+                "/v1/windows",
+                query={
+                    "agent": args.window_agent,
+                    "workspace": args.workspace,
+                    "state": args.state,
+                },
+                home=home,
+            )
         else:
             parser.error("未知命令")
             return 2
@@ -198,39 +332,6 @@ def main(argv=None) -> int:
         return 1
     _emit(args.json, args.cmd, payload)
     return 0
-
-
-def _peel_globals(argv: list[str]):
-    agent = url = home = None
-    as_json = False
-    rest: list[str] = []
-    index = 0
-    while index < len(argv):
-        item = argv[index]
-        if item == "--json":
-            as_json = True
-        elif item in {"--as", "--url", "--home"}:
-            index += 1
-            if index >= len(argv):
-                raise SystemExit(f"{item} 需要一个值")
-            if item == "--as":
-                agent = argv[index]
-            elif item == "--url":
-                url = argv[index]
-            else:
-                home = argv[index]
-        elif item.startswith("--as=") or item.startswith("--url=") or item.startswith("--home="):
-            key, value = item.split("=", 1)
-            if key == "--as":
-                agent = value
-            elif key == "--url":
-                url = value
-            else:
-                home = value
-        else:
-            rest.append(item)
-        index += 1
-    return rest, agent, url, home, as_json
 
 
 def _mcp_identity(args) -> str | None:
@@ -298,12 +399,29 @@ def _crew(args, home: Path) -> int:
     try:
         if args.crew_cmd == "watch":
             url = resolve_url(args.url, home)
-            crew.watch(home, args.name, str(Path(args.dir).expanduser().resolve()), url, args.poll, args.heartbeat)
-            return 0
+            return crew.watch(
+                home,
+                args.name,
+                str(Path(args.dir).expanduser().resolve()),
+                url,
+                args.poll,
+                args.heartbeat,
+                window=args.window,
+            )
         if args.crew_cmd == "status":
             payload = crew.status(home, str(Path(args.dir).expanduser().resolve()) if args.dir else None)
         elif args.crew_cmd == "down":
-            payload = crew.down(home, str(Path(args.dir).expanduser().resolve()) if args.dir else None)
+            payload = crew.down(
+                home,
+                str(Path(args.dir).expanduser().resolve()) if args.dir else None,
+                args.only,
+            )
+        elif args.crew_cmd in {"pause", "resume", "abort", "close"}:
+            project = str(Path(args.dir).expanduser().resolve()) if args.dir else None
+            if project and not Path(project).is_dir():
+                raise MailError("no_dir", f"没有这个目录：{project}")
+            url = ensure_server(args.url, home)
+            payload = crew.control(home, url, args.crew_cmd, args.name, project, args.note)
         else:
             project = str(Path(args.dir).expanduser().resolve())
             if not Path(project).is_dir():
@@ -320,6 +438,39 @@ def _crew(args, home: Path) -> int:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         print("\n".join(payload.get("lines") or []))
+    return 0
+
+
+_SYNC_EXIT_2 = {
+    "node_not_configured",
+    "invalid_node",
+    "invalid_dir",
+    "invalid_peers",
+    "invalid_outbox",
+}
+_SYNC_COUNT_KEYS = (
+    "exported",
+    "imported",
+    "receipts_out",
+    "receipts_in",
+    "skipped",
+    "rejected",
+    "conflict",
+)
+
+
+def _sync(args, home: Path) -> int:
+    from infocenter.sync import run_sync
+
+    try:
+        payload = run_sync(home, args.dir, args.sync_cmd)
+    except MailError as exc:
+        sys.stderr.write(f"{exc.code}: {exc.message}\n")
+        return 2 if exc.code in _SYNC_EXIT_2 else 1
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+    else:
+        print(" ".join(f"{key}={payload[key]}" for key in _SYNC_COUNT_KEYS))
     return 0
 
 
@@ -341,6 +492,10 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             print(f"{item['name']}{role}  未读 {item.get('unread', 0)}  最后活动 {item.get('last_seen_local', '')}{desc}")
             if item.get("activity"):
                 print(f"    正在: {item['activity']}  [{item.get('activity_at_local', '')}]")
+            for office in item.get("windows") or []:
+                label = office.get("state_label") or office.get("state") or ""
+                where = office.get("workspace") or ""
+                print(f"    办公室 {office.get('window_id')}  {label}  {where}".rstrip())
         return
     if as_json or cmd in {"agents", "thread"}:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -366,6 +521,29 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
                 print(f"  {message['preview']}")
             elif message.get("body"):
                 print(f"  {message['body']}")
+        return
+    if cmd == "case" and not as_json:
+        title = payload.get("title") or payload.get("subject")
+        if title:
+            print(title)
+        print(payload.get("text") or json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    if cmd == "cases" and not as_json:
+        rows = payload.get("cases") or []
+        print(f"案卷 {payload.get('count', len(rows))} 份")
+        for item in rows:
+            owner = item.get("owner_agent") or item.get("owner") or "未认领"
+            print(f"{item.get('id')}  {item.get('status_label') or item.get('status')}  {owner}  {item.get('title')}")
+        return
+    if cmd == "windows" and not as_json:
+        rows = payload.get("windows") or []
+        print(f"办公室 {payload.get('count', len(rows))} 间")
+        for item in rows:
+            label = item.get("state_label") or item.get("state") or ""
+            print(
+                f"{item.get('window_id')}  {item.get('agent')}  {label}  "
+                f"在办 {item.get('case_count', 0)}  {item.get('workspace') or ''}".rstrip()
+            )
         return
     if cmd in {"peek", "read", "archive"}:
         print(f"{payload['id']}  {payload['delivery_status'] or '发出'}  来自 {payload['from']}")
