@@ -1929,19 +1929,31 @@ class Store:
         with self._session(immediate=True) as conn:
             _upsert_project(conn, ws, proj_name, now, archived=archived)
             projects = _collect_projects(conn)
+        ws_bare = Path(ws).name == ws
         for item in projects:
-            if item["workspace"] == ws:
+            anchor = item["workspace"]
+            if anchor == ws or (
+                ws_bare and Path(anchor).is_absolute() and (Path(anchor).name or anchor) == ws
+            ):
                 return item
         return {
             "workspace": ws,
             "name": proj_name,
+            "archived": bool(archived),
             "case_count": 0,
             "total_cases": 0,
+            "cases_total": 0,
             "active_cases": 0,
             "doing_cases": 0,
+            "cases_active": 0,
             "paused_cases": 0,
             "closed_cases": 0,
             "active_windows": 0,
+            "window_count": 0,
+            "counts": {
+                "open": 0, "doing": 0, "waiting": 0, "paused": 0,
+                "aborted": 0, "done": 0, "total": 0,
+            },
             "created_at": now,
             "updated_at": now,
         }
@@ -2619,7 +2631,9 @@ def _collect_projects(conn: sqlite3.Connection) -> list[dict]:
         key = _canonical(ws)
         if key in proj_rows:
             continue
-        meta = raw_rows.get(ws) or raw_rows.get(key)
+        # 优先用「锚点」（绝对路径）那一行的元数据，避免裸目录名那行把 name/archived 覆盖掉。
+        # 旧写法 raw_rows.get(ws) 先取，集合遍历顺序不定 → archived/name 会随 PYTHONHASHSEED 翻转。
+        meta = raw_rows.get(key) or raw_rows.get(ws)
         proj_rows[key] = meta or {
             "workspace": key,
             "name": Path(key).name or key,

@@ -193,6 +193,10 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         if not project:
             raise MailError("invalid_dir", "需要 dir（项目目录）", 400)
         project_path = str(_Path(project).expanduser().resolve())
+        if action == "up" and not _Path(project_path).is_dir():
+            # 守护要以项目目录为 cwd 启动；目录不存在会在 Popen 时抛 OSError → 500。
+            # 在路由层先判成客户端错误。
+            raise MailError("invalid_dir", f"项目目录不存在：{project_path}", 400)
         if action == "up":
             return 200, _crew.up(home, url, project_path, only)
         if action == "down":

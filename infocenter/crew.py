@@ -598,6 +598,8 @@ def running_headless(home, project: str | None = None) -> list[dict]:
             meta = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
+        if not isinstance(meta, dict):
+            continue
         pid = meta.get("headless_pid")
         if not pid:
             continue
@@ -646,6 +648,10 @@ def _record_run(home, key: str, rec: dict) -> None:
 def headless_runs(home, project: str | None = None, limit: int = 30) -> list[dict]:
     """最近完成的 headless 运行（含提示词上下文与输出尾部）。"""
     target = _resolve_dir(project) if project else None
+    try:
+        limit = max(0, int(limit))
+    except (TypeError, ValueError):
+        limit = 30
     out: list[dict] = []
     for path in sorted(state_dir(home).glob("*.runs.jsonl")):
         try:
@@ -656,6 +662,10 @@ def headless_runs(home, project: str | None = None, limit: int = 30) -> list[dic
             try:
                 rec = json.loads(line)
             except ValueError:
+                continue
+            # 半写/被外部改坏的日志可能是合法 JSON 但非对象（如 null、[]、数字）——
+            # 直接跳过，避免一条坏行让整个端点 500。
+            if not isinstance(rec, dict):
                 continue
             d = rec.get("dir") or ""
             if target and (_resolve_dir(d) if d else None) != target:
@@ -672,6 +682,8 @@ def running_daemons(home) -> list[dict]:
         try:
             meta = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict):
             continue
         try:
             pid_int = int(meta.get("pid"))
@@ -1189,7 +1201,14 @@ def _substitute_prompt(template: str, prompt: str) -> str:
         before = template[j - 1] if j > 0 else ""
         after_index = j + len(_PROMPT_MARKER)
         after = template[after_index] if after_index < len(template) else ""
-        if before and before == after and before in {"'", '"'}:
+        # 只有「这对引号确实包住 {prompt} 本身」（左引号不在别的引号里）才去掉外壳。
+        # 否则形如 `'"{prompt}"'` 的模板会被误当作整段引号，丢掉外层 `'` 后留下可注入的 shell 语句。
+        if (
+            before
+            and before == after
+            and before in {"'", '"'}
+            and not _inside_quotes(template, j - 1)
+        ):
             out.append(template[i : j - 1])
             out.append(quoted)
             i = after_index + 1
