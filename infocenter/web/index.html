@@ -37,7 +37,7 @@ h1 { font-size: 28px; margin-bottom: 24px; }
 .nodes-title { font-size: 13px; color: #8e8e93; margin: 4px 0 6px; }
 .form-row { margin: 12px 0; }
 .form-row label { display: block; font-size: 13px; margin-bottom: 4px; color: #666; }
-.form-row input, .form-row textarea { width: 100%; padding: 8px; border: 1px solid #d1d1d6; border-radius: 4px; font-size: 14px; }
+.form-row input, .form-row textarea, .form-row select { width: 100%; padding: 8px; border: 1px solid #d1d1d6; border-radius: 4px; font-size: 14px; background: #fff; }
 .form-row textarea { resize: vertical; min-height: 60px; }
 .btn { padding: 5px 12px; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; margin-right: 6px; transition: opacity 0.2s; }
 .btn:hover { opacity: 0.85; }
@@ -103,6 +103,7 @@ let state = {
   projects: [],
   windows: [],
   cases: [],
+  agents: [],
   selectedProject: null,
   selectedWindow: null,
   selectedCase: null,
@@ -142,6 +143,10 @@ async function loadCases() {
   try { const data = await api("/v1/cases"); state.cases = data.cases || []; }
   catch (e) { console.error("loadCases", e); }
   render();
+}
+async function loadAgents() {
+  try { const data = await api("/v1/agents"); state.agents = data.agents || []; }
+  catch (e) { console.error("loadAgents", e); }
 }
 
 function escapeHtml(s) {
@@ -269,7 +274,13 @@ function openSettings(kind, id) {
 
       <div class="section-title">立案（在该项目下新建案卷）</div>
       <div class="form-row"><label>案卷标题</label><input id="s-case-title" placeholder="例如：实现联邦同步"></div>
-      <div class="form-row"><label>开篇节点（可选）</label><textarea id="s-case-body" placeholder="案卷第一行节点（不发信）"></textarea></div>
+      <div class="form-row"><label>指派给（选了就同时发一封始信，触发对方开工）</label>
+        <select id="s-case-assign">
+          <option value="">不指派（只建案卷，不发信）</option>
+          ${state.agents.filter(a => a.name !== "human").map(a => `<option value="${escapeHtml(a.name)}">${escapeHtml(a.name)}${a.role === "coordinator" ? "（coordinator）" : ""}</option>`).join("")}
+        </select>
+      </div>
+      <div class="form-row"><label>说明 / 始信正文（可选）</label><textarea id="s-case-body" placeholder="不指派 → 作为案卷开篇节点；指派 → 作为始信正文（留空则用标题）"></textarea></div>
       <button class="btn-primary" data-act="create-case">立案</button>
 
       <div class="section-title">该项目的办公室（${wins.length}）</div>
@@ -380,10 +391,14 @@ async function saveProject() {
 async function createCaseFromSettings() {
   const id = state.settingsTarget && state.settingsTarget.id;
   const title = document.getElementById("s-case-title").value.trim();
-  const body = document.getElementById("s-case-body").value.trim();
+  const text = document.getElementById("s-case-body").value.trim();
+  const assign = document.getElementById("s-case-assign").value;
   if (!title) { alert("请填写案卷标题"); return; }
+  const payload = { title, workspace: id };
+  if (assign) { payload.to = assign; payload.body = text || title; } // 立案并同时发始信
+  else { payload.note = text || undefined; }                         // 只建案卷
   try {
-    await api("/v1/cases", { method: "POST", body: { title, workspace: id, note: body || undefined } });
+    await api("/v1/cases", { method: "POST", body: payload });
     closeSettings(); await loadCases(); await loadProjects();
   } catch (e) { alert("立案失败：" + e.message); }
 }
@@ -436,6 +451,7 @@ document.getElementById("modal-overlay").addEventListener("click", ev => { if (e
 loadProjects();
 loadWindows();
 loadCases();
+loadAgents();
 </script>
 </body>
 </html>
