@@ -172,7 +172,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         or path == "/v1/projects"
         or path.startswith("/v1/projects/")
     )
-    _check_write_security(method, headers, raw, is_d_route or path in ("/v1/crew", "/v1/restart"))
+    _check_write_security(method, headers, raw, is_d_route or path in ("/v1/crew", "/v1/restart", "/v1/open"))
     body = _json_object(raw)
 
     if path == "/v1/crew":
@@ -281,6 +281,32 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         except OSError as exc:
             raise MailError("restart_failed", f"无法启动重启脚本：{exc}", 500)
         return 200, {"ok": True, "projects": dirs, "log": str(log)}
+
+    if path == "/v1/open":
+        if method != "POST":
+            raise MailError("method_not_allowed", "只支持 POST", 405)
+        import os as _os
+        import subprocess as _subprocess
+        import sys as _sys
+
+        target = _opt_str(body, "path") or _opt_str(body, "dir")
+        if not target:
+            raise MailError("invalid_path", "需要 path", 400)
+        d = _os.path.expanduser(target)
+        if not _os.path.isdir(d):
+            raise MailError("invalid_path", "目录不存在", 400)
+        opener = "open" if _sys.platform == "darwin" else ("explorer" if _os.name == "nt" else "xdg-open")
+        try:
+            _subprocess.Popen(
+                [opener, d],
+                start_new_session=True,
+                stdin=_subprocess.DEVNULL,
+                stdout=_subprocess.DEVNULL,
+                stderr=_subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise MailError("open_failed", f"打开失败：{exc}", 500)
+        return 200, {"ok": True, "path": d}
     window_id = _resolve_window(headers, query, body)
     req_pid = _resolve_pid(headers, body)
     raw_agent = headers.get("X-Agent") if headers is not None else None
