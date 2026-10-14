@@ -6,9 +6,9 @@
 <title>信息中心 · 管理台</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f7; color: #1d1d1f; padding: 20px; }
-h1 { font-size: 28px; margin-bottom: 24px; }
-.topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f7; color: #1d1d1f; padding: 12px 14px; }
+h1 { font-size: 26px; margin-bottom: 24px; }
+.topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .topbar h1 { margin-bottom: 0; }
 .agents { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .chip { background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; color: #1d1d1f; box-shadow: 0 1px 3px rgba(0,0,0,0.08); white-space: nowrap; cursor: pointer; }
@@ -17,8 +17,8 @@ h1 { font-size: 28px; margin-bottom: 24px; }
 .chip .unread { color: #007aff; margin-left: 8px; }
 .chip.coord { box-shadow: 0 0 0 1.5px #007aff inset; }
 .chip.human { box-shadow: 0 0 0 1.5px #34c759 inset; }
-.grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-bottom: 24px; align-items: stretch; }
-.panel { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; flex-direction: column; height: 72vh; }
+.grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; margin-bottom: 16px; align-items: stretch; }
+.panel { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; flex-direction: column; height: 78vh; }
 .panel h2 { font-size: 18px; margin-bottom: 12px; color: #1d1d1f; flex: 0 0 auto; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; min-height: 28px; margin-bottom: 12px; flex: 0 0 auto; }
 .panel-head h2 { margin-bottom: 0; }
@@ -30,7 +30,9 @@ h1 { font-size: 28px; margin-bottom: 24px; }
 .panel .hint { font-size: 12px; color: #8e8e93; margin: -6px 0 10px; line-height: 1.4; flex: 0 0 auto; min-height: 2.8em; }
 .panel.wide { max-height: 42vh; margin-bottom: 24px; }
 .legend { font-size: 12px; color: #8e8e93; font-weight: 400; }
-.dir { font-size: 15px; }
+.dir { font-size: 17px; font-weight: 700; }
+.dir.out { color: #007aff; }
+.dir.in { color: #34c759; }
 .item { position: relative; padding: 10px 48px 10px 10px; margin: 8px 0; background: #f9f9f9; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
 .item:hover { background: #e8e8e8; }
 .item.active { background: #007aff; color: white; }
@@ -592,8 +594,8 @@ async function loadAgentMail(name) {
           const p = state.projects.find(x => sameWs(x.workspace, m.workspace));
           const proj = p ? (p.name || p.workspace) : (m.workspace ? String(m.workspace).split("/").filter(Boolean).pop() : "");
           const dir = m.direction === "out"
-            ? '<span title="发出" class="dir">&#128228;</span>'
-            : '<span title="收到" class="dir">&#128229;</span>';
+            ? '<span title="发出" class="dir out">&#10145;</span>'
+            : '<span title="收到" class="dir in">&#11013;</span>';
           const st = m.direction === "out" ? "" : (m.my_status === "unread" ? "未读" : m.my_status === "read" ? "已读" : m.my_status === "archived" ? "归档" : (m.my_status || ""));
           return `<tr>
           <td class="time">${escapeHtml(m.created_at_local || "")}</td>
