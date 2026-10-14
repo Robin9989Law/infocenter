@@ -386,7 +386,9 @@ function openSettings(kind, id) {
         ${canResume ? '<button class="btn resume" data-act="resume-case">恢复</button>' : ""}
         ${!isSealed ? '<button class="btn abort" data-act="abort-case">中止</button>' : ""}
         ${!isSealed ? '<button class="btn close" data-act="close-case">办结</button>' : ""}
+        ${isSealed ? '<button class="btn resume" data-act="reopen-case">重开此案卷</button>' : ""}
       </div>
+      ${isSealed ? '<div class="kv" style="color:#8e8e93">已封卷（只读）。要接着办，请「重开」。</div>' : ""}
       <hr>
       <div class="nodes-title">节点时间线</div>
       <div id="s-case-nodes"><div class="empty">加载节点…</div></div>`;
@@ -518,6 +520,7 @@ document.getElementById("modal-body").addEventListener("click", ev => {
   else if (act === "resume-case") doCase("resume");
   else if (act === "abort-case") doCase("abort");
   else if (act === "close-case") doCase("close");
+  else if (act === "reopen-case") doCase("reopen");
   else if (act === "goto-window") {
     const pid = state.settingsTarget && state.settingsTarget.id;
     state.selectedProject = pid || null;
