@@ -39,6 +39,9 @@ h1 { font-size: 26px; margin-bottom: 24px; }
 .item .title { font-weight: 500; }
 .item .meta { font-size: 12px; color: #666; margin-top: 4px; }
 .cid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: #8e8e93; }
+.copy { cursor: pointer; }
+.copy:hover { text-decoration: underline; }
+.copy.copied { color: #34c759 !important; }
 .item.active .meta { color: rgba(255,255,255,0.85); }
 .gear { position: absolute; top: 6px; right: 4px; border: none; background: transparent; cursor: pointer; font-size: 19.5px; line-height: 1; padding: 4px 6px; border-radius: 4px; opacity: 0.45; }
 .gear:hover { opacity: 1; background: rgba(0,0,0,0.08); }
@@ -257,7 +260,7 @@ function render() {
         <button class="stat" data-stat-window="${wid}" title="实时状态 / 历史痕迹">&#128202;</button>
         <button class="gear" data-gear="window" data-gear-id="${wid}" title="办公室设置">&#9881;</button>
         <div class="title">${escapeHtml(w.agent)}${proj ? " · " + escapeHtml(proj) : ""}</div>
-        <div class="meta"><span class="status ${cls}">${escapeHtml(st)}</span> · 窗口 ${wid} · 最近 ${escapeHtml(w.last_seen_local || "")}</div>
+        <div class="meta"><span class="status ${cls}">${escapeHtml(st)}</span> · 窗口 <span class="cid copy" data-copy="${wid}" title="点击复制窗口号">${wid}</span> · 最近 ${escapeHtml(w.last_seen_local || "")}</div>
         <div class="meta">${w.activity ? escapeHtml(w.activity) : (w.case_count || 0) + " 案"}</div>
       </div>`;
     }).join("");
@@ -284,7 +287,7 @@ function render() {
       return `
       <div class="item" data-case-id="${cid}">
         <div class="title">${escapeHtml(c.title)}</div>
-        <div class="meta"><span class="cid">${cid}</span> <span class="status ${cls}">${escapeHtml(st)}</span> ${owner ? '主办 ' + escapeHtml(owner) : ''}</div>
+        <div class="meta"><span class="cid copy" data-copy="${cid}" title="点击复制案件编号">${cid}</span> <span class="status ${cls}">${escapeHtml(st)}</span> ${owner ? '主办 ' + escapeHtml(owner) : ''}</div>
         <div class="meta">${escapeHtml(last)}</div>
       </div>`;
     }).join("");
@@ -306,7 +309,7 @@ function render() {
             <td class="time">${escapeHtml(a.created_at_local || "")}</td>
             <td>${escapeHtml(proj)}</td>
             <td>${escapeHtml(office)}</td>
-            <td title="${escapeHtml(a.case_title || "")}">${escapeHtml(a.case_id || "—")}</td>
+            <td title="${escapeHtml(a.case_title || "")}">${a.case_id ? '<span class="cid copy" data-copy="' + escapeHtml(a.case_id) + '">' + escapeHtml(a.case_id) + '</span>' : "—"}</td>
             <td class="action">${escapeHtml(a.action || "")}${a.auto ? ' [自动]' : ''}</td>
             <td class="note">${escapeHtml(a.note || "")}</td>
           </tr>`;
@@ -425,7 +428,7 @@ function openSettings(kind, id) {
     bodyEl.innerHTML = `
       <div class="section-title">概览</div>
       <div class="kv"><b>身份</b>${escapeHtml(w.agent || "")}</div>
-      <div class="kv"><b>窗口</b>${escapeHtml(id)}</div>
+      <div class="kv"><b>窗口</b><span class="cid copy" data-copy="${escapeHtml(id)}" title="点击复制">${escapeHtml(id)}</span></div>
       <div class="kv"><b>项目</b>${escapeHtml(w.workspace || "—")}</div>
       <div class="kv"><b>状态</b>${escapeHtml(st)}</div>
       <div class="kv"><b>最近活动</b>${escapeHtml(w.activity_at_local || w.last_seen_local || "")}</div>
@@ -457,7 +460,7 @@ function openSettings(kind, id) {
     titleEl.textContent = "办公室实时状态 · " + (w.agent || "") + " · " + id;
     bodyEl.innerHTML = `
       <div class="section-title">实时状态</div>
-      <div class="kv"><b>身份 / 窗口</b>${escapeHtml(w.agent || "")} · ${escapeHtml(id)}</div>
+      <div class="kv"><b>身份 / 窗口</b>${escapeHtml(w.agent || "")} · <span class="cid copy" data-copy="${escapeHtml(id)}" title="点击复制">${escapeHtml(id)}</span></div>
       <div class="kv"><b>项目</b>${escapeHtml(w.workspace || "—")}</div>
       <div class="kv"><b>状态</b>${escapeHtml(st)} · ${alive === null ? "无进程记录" : (alive ? "进程存活 ✓" : "进程已不在 ✗")}</div>
       <div class="kv"><b>进程 pid</b>${w.pid != null ? escapeHtml(String(w.pid)) : "—"}</div>
@@ -517,7 +520,7 @@ function openSettings(kind, id) {
     const canResume = raw === "paused" || (!raw && st === "暂停");
     titleEl.textContent = "案件设置 · " + (c.title || id);
     bodyEl.innerHTML = `
-      <div class="kv"><b>案件编号</b><span class="cid">${escapeHtml(id)}</span></div>
+      <div class="kv"><b>案件编号</b><span class="cid copy" data-copy="${escapeHtml(id)}" title="点击复制">${escapeHtml(id)}</span></div>
       <div class="kv"><b>标题</b>${escapeHtml(c.title || "")}</div>
       <div class="kv"><b>状态</b>${escapeHtml(st)}</div>
       <div class="kv"><b>主办</b>${escapeHtml(c.owner_agent || c.owner_window || "—")}</div>
@@ -618,8 +621,8 @@ async function loadAgentMail(name) {
           <td>${dir}</td>
           <td>${escapeHtml(m.other || "")}</td>
           <td>${escapeHtml(proj)}</td>
-          <td title="办公室编号">${escapeHtml(m.claimed_by || "—")}</td>
-          <td title="${escapeHtml(m.case_title || "")}">${escapeHtml(m.case_id || "—")}</td>
+          <td title="办公室编号（点击复制）">${m.claimed_by ? '<span class="cid copy" data-copy="' + escapeHtml(m.claimed_by) + '">' + escapeHtml(m.claimed_by) + '</span>' : "—"}</td>
+          <td title="${escapeHtml(m.case_title || "")}">${m.case_id ? '<span class="cid copy" data-copy="' + escapeHtml(m.case_id) + '">' + escapeHtml(m.case_id) + '</span>' : "—"}</td>
           <td>${escapeHtml(m.subject || "")}</td>
           <td>${stCell}</td>
         </tr>`;
@@ -704,6 +707,19 @@ async function doCase(action) {
     closeSettings(); await loadCases(); await loadProjects(); await loadActivity();
   } catch (e) { alert("操作失败：" + e.message); }
 }
+
+// 点击编号复制（捕获阶段，先于所在行的点击行为）
+document.addEventListener("click", ev => {
+  const cel = ev.target && ev.target.closest ? ev.target.closest(".copy") : null;
+  if (!cel) return;
+  ev.stopPropagation();
+  ev.preventDefault();
+  const text = cel.dataset.copy || (cel.textContent || "").trim();
+  if (!text || text === "—") return;
+  try { if (navigator.clipboard) navigator.clipboard.writeText(text); } catch (_) {}
+  cel.classList.add("copied");
+  setTimeout(() => cel.classList.remove("copied"), 900);
+}, true);
 
 document.getElementById("modal-body").addEventListener("click", ev => {
   const el = ev.target.closest("[data-act]");
