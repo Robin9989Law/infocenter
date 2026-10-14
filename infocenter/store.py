@@ -2495,20 +2495,43 @@ def _upsert_project(conn: sqlite3.Connection, workspace: str, name: str | None, 
 
 def _collect_projects(conn: sqlite3.Connection) -> list[dict]:
     now = utcnow()
-    proj_rows = {
+    # 汇总所有出现过的 workspace（projects 表 + cases/windows/messages）
+    raw_rows = {
         row["workspace"]: dict(row)
         for row in conn.execute("SELECT * FROM projects ORDER BY updated_at DESC, workspace ASC").fetchall()
     }
+    mentioned = set(raw_rows)
     for table in ("cases", "windows", "messages"):
-        for r in conn.execute(f"SELECT DISTINCT workspace FROM {table} WHERE workspace IS NOT NULL AND workspace != ''"):
-            ws = r["workspace"]
-            if ws not in proj_rows:
-                proj_rows[ws] = {
-                    "workspace": ws,
-                    "name": Path(ws).name or ws,
-                    "created_at": now,
-                    "updated_at": now,
-                }
+        for r in conn.execute(
+            f"SELECT DISTINCT workspace FROM {table} WHERE workspace IS NOT NULL AND workspace != ''"
+        ):
+            mentioned.add(r["workspace"])
+
+    # 同一项目可能以「绝对路径」和「目录名」两种写法出现（messages 里常见裸目录名）。
+    # 以绝对路径为锚，把同名裸目录名归并到同一项，避免 /ui 项目列表出现重复。
+    absolutes = sorted(w for w in mentioned if Path(w).is_absolute())
+
+    def _canonical(ws: str) -> str:
+        if Path(ws).is_absolute():
+            return ws
+        for abs_ws in absolutes:
+            if (Path(abs_ws).name or abs_ws) == ws:
+                return abs_ws
+        return ws
+
+    proj_rows: dict[str, dict] = {}
+    for ws in mentioned:
+        key = _canonical(ws)
+        if key in proj_rows:
+            continue
+        meta = raw_rows.get(ws) or raw_rows.get(key)
+        proj_rows[key] = meta or {
+            "workspace": key,
+            "name": Path(key).name or key,
+            "created_at": now,
+            "updated_at": now,
+        }
+        proj_rows[key].setdefault("workspace", key)
 
     cases = conn.execute("SELECT workspace, status, sealed FROM cases WHERE workspace IS NOT NULL").fetchall()
     wins = conn.execute("SELECT workspace, state FROM windows WHERE workspace IS NOT NULL").fetchall()
