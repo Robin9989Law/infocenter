@@ -36,6 +36,7 @@ h1 { font-size: 26px; margin-bottom: 24px; }
 .panel.wide { max-height: 46vh; margin-bottom: 24px; }
 .filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .filters select, .filters input { font-size: 12px; padding: 3px 6px; border: 1px solid #d1d1d6; border-radius: 4px; background: #fff; color: #1d1d1f; }
+.mini-select { font-size: 12px; padding: 3px 6px; border: 1px solid #d1d1d6; border-radius: 4px; background: #fff; color: #1d1d1f; }
 .legend { font-size: 12px; color: #8e8e93; font-weight: 400; }
 .dir { font-size: 17px; font-weight: 700; }
 .dir.out { color: #007aff; }
@@ -125,7 +126,7 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
     <div id="windows"></div>
   </div>
   <div class="panel">
-    <div class="panel-head"><h2>案件</h2></div>
+    <div class="panel-head"><h2>案件</h2><select id="f-case-status" class="mini-select"><option value="">全部状态</option></select></div>
     <div class="hint">点一行 → 直接打开案件设置（节点 / 操作）</div>
     <div id="cases"></div>
   </div>
@@ -166,7 +167,8 @@ let state = {
   settingsTarget: null,
   showArchived: false,
   activity: [],
-  activityFilters: { project: "", agent: "", case: "", q: "" }
+  activityFilters: { project: "", agent: "", case: "", q: "" },
+  caseStatus: ""
 };
 
 async function api(path, opts = {}) {
@@ -298,11 +300,18 @@ function render() {
 
   // 案件
   const caseEl = document.getElementById("cases");
+  const caseStatusSel = document.getElementById("f-case-status");
+  if (caseStatusSel) {
+    const labels = [...new Set(state.cases.map(c => c.status_label || c.status).filter(Boolean))];
+    caseStatusSel.innerHTML = '<option value="">全部状态</option>' + labels.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join("");
+    caseStatusSel.value = state.caseStatus || "";
+  }
   const selWin = state.selectedWindow ? state.windows.find(w => (w.window_id || w.id) === state.selectedWindow) : null;
-  const shownCases = state.selectedWindow
+  let shownCases = state.selectedWindow
     ? state.cases.filter(c => c.owner_window === state.selectedWindow
         || (!c.owner_window && selWin && c.owner_agent === selWin.agent))
     : (state.selectedProject ? state.cases.filter(c => sameWs(c.workspace, state.selectedProject)) : state.cases);
+  if (state.caseStatus) shownCases = shownCases.filter(c => (c.status_label || c.status) === state.caseStatus);
   if (shownCases.length === 0) {
     caseEl.innerHTML = `<div class="empty">${state.selectedWindow ? "该办公室暂无案件" : (state.selectedProject ? "该项目暂无案件" : "暂无案件")}</div>`;
   } else {
@@ -812,6 +821,7 @@ document.getElementById("f-proj").addEventListener("change", e => { state.activi
 document.getElementById("f-agent").addEventListener("change", e => { state.activityFilters.agent = e.target.value; render(); });
 document.getElementById("f-case").addEventListener("change", e => { state.activityFilters.case = e.target.value; render(); });
 document.getElementById("f-q").addEventListener("input", e => { state.activityFilters.q = e.target.value.trim(); render(); });
+document.getElementById("f-case-status").addEventListener("change", e => { state.caseStatus = e.target.value; render(); });
 async function refreshAll() {
   await loadProjects(); await loadWindows(); await loadCases(); await loadAgents(); await loadActivity();
 }
