@@ -324,8 +324,9 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `heartbeat` | 无信时的心跳间隔（秒），到期会触发一次规划运行；填 0 或不填表示纯信件驱动 |
 | `heartbeat_mode` | 可选：`"idle"`（默认，新信会重置心跳计时）或 `"always"`（严格按间隔调度，新信不重置） |
 | `heartbeat_prompt` | 可选：替代内置的心跳规划提示词（支持 `{agent}` `{project}` 占位符）；不填用内置模板 |
+| `headless_timeout` | 可选：单次 headless 的墙钟上限（秒），缺省 1800（30 分钟），钳制在 10 秒～7 天。挂死的 headless 到期即被 SIGKILL，守护随即可继续收信，不再整轮停摆 |
 
-**守护对 config 是热加载的**：收信守护进程每一轮都会重读 `config.json`，所以改 `headless` / `heartbeat_mode` / `heartbeat_prompt`（以及启动时没有用 `--heartbeat` 显式传入的 `heartbeat`）**不需要重启守护**，下一轮即生效；把某个身份的 `headless` 清空，它的守护会在当前轮结束后优雅退出。`poll` 与显式传入的 `--heartbeat` 仍要重启守护才会变。
+**守护对 config 是热加载的**：收信守护进程每一轮都会重读 `config.json`，所以改 `headless` / `heartbeat_mode` / `heartbeat_prompt` / `headless_timeout`（以及启动时没有用 `--heartbeat` 显式传入的 `heartbeat`）**不需要重启守护**，下一轮即生效；把某个身份的 `headless` 清空，它的守护会在当前轮结束后优雅退出。`poll` 与显式传入的 `--heartbeat` 仍要重启守护才会变。
 
 名单之外的 agent 也可以随时自行注册（`PUT /v1/agents/{name}`），这一入口始终保持开放。
 
@@ -565,8 +566,11 @@ ic case m1a2b3c4 --note "客户端已改，待复测" --status doing
 **Q：能把 mailbox.db 放共享网盘给两台机器共用吗？**
 **不能。** 网络文件系统会破坏 SQLite 的锁语义，同步冲突会撕裂数据库。跨机时各留本地库，用 `ic sync` 交换 `<项目>/.infocenter/outbox/` 里的 JSON。见[跨机联邦](#跨机联邦ic-sync)。
 
-**Q：改了 config.json 里的 `headless` / `heartbeat_prompt`，要重启守护吗？**
+**Q：改了 config.json 里的 `headless` / `heartbeat_prompt` / `headless_timeout`，要重启守护吗？**
 不用。守护每轮重读 config，下一轮就用新值（见[接入名单 config.json](#接入名单-configjson)）；清空 `headless` 会让守护自己退出。只有 `poll` 和启动时显式传入的 `--heartbeat` 需要 `ic crew down && ic crew up`。
+
+**Q：headless 挂死了怎么办？**
+不用管：单次 headless 有墙钟上限（身份配置 `headless_timeout`，缺省 1800 秒），到期进程组被 SIGKILL，守护记一轮 `timeout` 后继续正常收信。挂 provider 反复重试这类场景，可把该身份的 `headless_timeout` 调小（如 600）。
 
 **Q：服务端口被占用，或者想重启服务怎么办？**
 执行 `ic stop && ic serve --detach` 即可；也可以打开 `/ui` 点标题旁的『重启』（`POST /v1/restart`，会连同各项目守护一起重启）。MCP 进程会自动重连（失败时每 2 秒重试一次）。
@@ -583,7 +587,7 @@ ic case m1a2b3c4 --note "客户端已改，待复测" --status doing
 运行全量测试：
 
 ```bash
-python3 -W error::ResourceWarning -m unittest discover -s tests   # 全量测试（当前 156 个，零 ResourceWarning）
+python3 -W error::ResourceWarning -m unittest discover -s tests   # 全量测试（当前 158 个，零 ResourceWarning）
 ```
 
 > 在**收信守护派生的会话**里跑测时，环境已注入 `INFOCENTER_AGENT` / `INFOCENTER_WINDOW`，请清掉再跑：
