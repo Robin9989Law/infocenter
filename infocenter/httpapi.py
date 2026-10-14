@@ -224,7 +224,11 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         store.touch(agent, window_id=window_id, pid=req_pid)
 
     if method == "GET" and path == "/v1/agents":
-        return 200, {"agents": store.list_agents(window_id=window_id)}
+        agents = store.list_agents(window_id=window_id)
+        roster = {a.get("name") for a in config.load(store.path.parent).get("agents", [])}
+        for a in agents:
+            a["roster"] = a.get("name") in roster
+        return 200, {"agents": agents}
 
     if method == "PUT" and path.startswith("/v1/agents/"):
         name = normalize_name(_one(path, "/v1/agents/"))

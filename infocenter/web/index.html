@@ -312,7 +312,7 @@ function render() {
   // 顶部 agent 状态
   const agEl = document.getElementById("agents");
   if (agEl) {
-    agEl.innerHTML = state.agents.map(a => `<span class="chip ${a.role === "coordinator" ? "coord" : ""}" title="${escapeHtml(a.activity || "")}">
+    agEl.innerHTML = state.agents.filter(a => a.roster !== false).map(a => `<span class="chip ${a.role === "coordinator" ? "coord" : ""}" title="${escapeHtml(a.activity || "")}">
       <b>${escapeHtml(a.name)}</b>${a.role === "coordinator" ? '<span class="role">coord</span>' : ""}<span class="unread">未读 ${a.unread || 0}</span>
     </span>`).join("");
   }
