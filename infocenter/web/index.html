@@ -15,6 +15,9 @@ h1 { font-size: 26px; margin-bottom: 24px; }
 .refresh:hover { background: rgba(0,122,255,0.1); }
 .refresh.spin { animation: spin 0.8s linear; }
 .refresh.sm { font-size: 15px; padding: 2px 5px; }
+.restart-btn { background: #ff3b30; color: #fff; border: none; border-radius: 6px; font-size: 12px; padding: 4px 10px; cursor: pointer; }
+.restart-btn:hover { opacity: 0.9; }
+.restart-btn:disabled { background: #c7c7cc; cursor: default; }
 .head-tools { display: flex; align-items: center; gap: 6px; }
 .subj { color: #007aff; cursor: pointer; text-decoration: none; }
 .subj:hover { text-decoration: underline; }
@@ -134,7 +137,7 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 </head>
 <body>
 <div class="topbar">
-  <div class="brand"><h1>信息中心 · 管理台</h1><button class="refresh" id="btn-refresh" title="刷新全部">&#8635;</button></div>
+  <div class="brand"><h1>信息中心 · 管理台</h1><button class="refresh" id="btn-refresh" title="刷新全部">&#8635;</button><button class="restart-btn" id="btn-restart" title="一键重启：服务端 + 全部运行中的项目守护">重启</button></div>
   <div class="agents-wrap"><button class="refresh sm" id="btn-r-agents" title="刷新 agent 状态">&#8635;</button><div id="agents" class="agents"></div></div>
 </div>
 
@@ -1021,7 +1024,32 @@ function spinRefresh(id, fn) {
 spinRefresh("btn-r-win", async () => { await loadWindows(); await loadHeadless(); });
 spinRefresh("btn-r-case", () => loadCases());
 spinRefresh("btn-r-act", () => loadActivity());
-spinRefresh("btn-r-agents", async () => { await loadAgents(); await loadHeadless(); await loadDaemons(); });document.getElementById("modal-overlay").addEventListener("click", ev => { if (ev.target.id === "modal-overlay") closeSettings(); });
+spinRefresh("btn-r-agents", async () => { await loadAgents(); await loadHeadless(); await loadDaemons(); });
+async function waitHealthy() {
+  for (let i = 0; i < 40; i++) {
+    await new Promise(r => setTimeout(r, 1500));
+    try { const res = await fetch("/health", { cache: "no-store" }); if (res.ok) return true; } catch (_) {}
+  }
+  return false;
+}
+document.getElementById("btn-restart").addEventListener("click", async ev => {
+  if (!confirm("一键重启：服务端 + 全部运行中的项目守护。\n\n会打断正在跑的 headless，并按其契约中止+封卷相关未结案卷。确定？")) return;
+  const b = ev.currentTarget;
+  b.disabled = true;
+  b.textContent = "重启中…";
+  try {
+    const r = await api("/v1/restart", { method: "POST", body: {} });
+    alert("已下发重启：服务端 + " + ((r.projects || []).length) + " 个项目守护。\n页面会短暂不可用，正在等待恢复…");
+    await waitHealthy();
+    await refreshAll();
+    alert("重启完成。");
+  } catch (e) {
+    alert("重启失败：" + e.message);
+  } finally {
+    b.disabled = false;
+    b.textContent = "重启";
+  }
+});document.getElementById("modal-overlay").addEventListener("click", ev => { if (ev.target.id === "modal-overlay") closeSettings(); });
 
 // 初始化
 loadProjects();

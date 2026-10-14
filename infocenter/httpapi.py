@@ -172,7 +172,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         or path == "/v1/projects"
         or path.startswith("/v1/projects/")
     )
-    _check_write_security(method, headers, raw, is_d_route or path == "/v1/crew")
+    _check_write_security(method, headers, raw, is_d_route or path in ("/v1/crew", "/v1/restart"))
     body = _json_object(raw)
 
     if path == "/v1/crew":
@@ -238,6 +238,49 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         from infocenter import crew as _crew4
 
         return 200, {"daemons": _crew4.running_daemons(store.path.parent)}
+
+    if path == "/v1/restart":
+        if method != "POST":
+            raise MailError("method_not_allowed", "只支持 POST", 405)
+        import os as _os
+        import shlex as _shlex
+        import subprocess as _subprocess
+        import sys as _sys
+        from infocenter import __file__ as _initfile
+        from infocenter import crew as _crew5
+
+        root = _os.path.dirname(_os.path.dirname(_os.path.abspath(_initfile)))
+        env = _os.environ.copy()
+        pp = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = root + (_os.pathsep + pp if pp else "")
+        dirs = sorted({d.get("dir") for d in _crew5.running_daemons(store.path.parent) if d.get("dir")})
+        py = _sys.executable
+        log = store.path.parent / "restart.log"
+        parts = [
+            "sleep 0.5",
+            f'"{py}" -m infocenter crew down',
+            f'"{py}" -m infocenter stop',
+            f'"{py}" -m infocenter serve --detach',
+            "sleep 1",
+        ]
+        for d in dirs:
+            parts.append(f'"{py}" -m infocenter crew up --dir {_shlex.quote(d)}')
+        script = "{ " + " ; ".join(parts) + " ; } >> " + _shlex.quote(str(log)) + " 2>&1"
+        if body.get("dry_run"):
+            return 200, {"ok": True, "dry_run": True, "projects": dirs, "log": str(log), "script": script}
+        try:
+            _subprocess.Popen(
+                ["/bin/sh", "-c", script],
+                cwd=root,
+                env=env,
+                start_new_session=True,
+                stdin=_subprocess.DEVNULL,
+                stdout=_subprocess.DEVNULL,
+                stderr=_subprocess.DEVNULL,
+            )
+        except OSError as exc:
+            raise MailError("restart_failed", f"无法启动重启脚本：{exc}", 500)
+        return 200, {"ok": True, "projects": dirs, "log": str(log)}
     window_id = _resolve_window(headers, query, body)
     req_pid = _resolve_pid(headers, body)
     raw_agent = headers.get("X-Agent") if headers is not None else None
