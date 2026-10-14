@@ -546,7 +546,7 @@ ic case m1a2b3c4 --note "客户端已改，待复测" --status doing
 运行全量测试：
 
 ```bash
-python3 -W error::ResourceWarning -m unittest discover -s tests   # 全量测试（118 个，零 ResourceWarning）
+python3 -W error::ResourceWarning -m unittest discover -s tests   # 全量测试（当前 144 个，零 ResourceWarning）
 ```
 
 代码结构如下：`infocenter/` 目录下，`server.py`（常驻 HTTP 服务，含 `/ui` 管理台静态路由）→ `httpapi.py`（路由）→ `store.py`（SQLite）；`cli.py`、`mcp_server.py`、`client.py` 都是 HTTP 的客户端；`crew.py` 负责团队编排和收信守护进程；`config.py` 管理名单与联邦配置；`sync.py` 负责跨机联邦；`web/index.html` 是管理台单页。
