@@ -9,45 +9,55 @@
 body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f5f5f7; color: #1d1d1f; padding: 20px; }
 h1 { font-size: 28px; margin-bottom: 24px; }
 .grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-bottom: 24px; align-items: start; }
-.panel { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; flex-direction: column; max-height: 60vh; }
+.panel { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); display: flex; flex-direction: column; max-height: 72vh; }
 .panel h2 { font-size: 18px; margin-bottom: 12px; color: #1d1d1f; flex: 0 0 auto; }
 .panel > div:not(.hint) { overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .panel .hint { font-size: 12px; color: #8e8e93; margin: -6px 0 10px; line-height: 1.4; flex: 0 0 auto; }
-.item { padding: 10px; margin: 8px 0; background: #f9f9f9; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
+.item { position: relative; padding: 10px 40px 10px 10px; margin: 8px 0; background: #f9f9f9; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
 .item:hover { background: #e8e8e8; }
 .item.active { background: #007aff; color: white; }
 .item .title { font-weight: 500; }
 .item .meta { font-size: 12px; color: #666; margin-top: 4px; }
-.item.active .meta { color: rgba(255,255,255,0.8); }
+.item.active .meta { color: rgba(255,255,255,0.85); }
+.gear { position: absolute; top: 7px; right: 5px; border: none; background: transparent; cursor: pointer; font-size: 15px; line-height: 1; padding: 4px 6px; border-radius: 4px; opacity: 0.45; }
+.gear:hover { opacity: 1; background: rgba(0,0,0,0.08); }
+.item.active .gear { color: white; opacity: 0.85; }
 .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
 .status.在办, .status.open, .status.doing { background: #34c759; color: white; }
 .status.待谁, .status.待办, .status.waiting, .status.pending { background: #007aff; color: white; }
 .status.暂停, .status.paused { background: #ff9500; color: white; }
 .status.中止, .status.离场, .status.aborted, .status.left { background: #8e8e93; color: white; }
 .status.办结, .status.done { background: #5856d6; color: white; }
-.actions { margin-top: 8px; display: flex; gap: 6px; flex-wrap: wrap; }
-.btn { padding: 4px 10px; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; transition: opacity 0.2s; }
-.btn:hover { opacity: 0.8; }
+.node { padding: 8px; margin: 6px 0; background: #f9f9f9; border-left: 3px solid #007aff; font-size: 13px; }
+.node.auto { border-left-color: #8e8e93; font-style: italic; }
+.node .time { color: #666; font-size: 11px; }
+.node .actor { font-weight: 500; }
+.form-row { margin: 12px 0; }
+.form-row label { display: block; font-size: 13px; margin-bottom: 4px; color: #666; }
+.form-row input, .form-row textarea { width: 100%; padding: 8px; border: 1px solid #d1d1d6; border-radius: 4px; font-size: 14px; }
+.form-row textarea { resize: vertical; min-height: 60px; }
+.btn { padding: 5px 12px; border: none; border-radius: 4px; font-size: 12px; cursor: pointer; margin-right: 6px; transition: opacity 0.2s; }
+.btn:hover { opacity: 0.85; }
 .btn.pause { background: #ff9500; color: white; }
 .btn.resume { background: #34c759; color: white; }
 .btn.abort { background: #8e8e93; color: white; }
 .btn.close { background: #5856d6; color: white; }
 .btn.disable { background: #ff3b30; color: white; }
-.detail { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 24px; }
-.detail h2 { font-size: 18px; margin-bottom: 12px; }
-.node { padding: 8px; margin: 6px 0; background: #f9f9f9; border-left: 3px solid #007aff; font-size: 13px; }
-.node.auto { border-left-color: #8e8e93; font-style: italic; }
-.node .time { color: #666; font-size: 11px; }
-.node .actor { font-weight: 500; }
-.form-section { background: white; border-radius: 8px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 24px; }
-.form-section h2 { font-size: 18px; margin-bottom: 12px; }
-.form-row { margin: 12px 0; }
-.form-row label { display: block; font-size: 13px; margin-bottom: 4px; color: #666; }
-.form-row input, .form-row textarea { width: 100%; padding: 8px; border: 1px solid #d1d1d6; border-radius: 4px; font-size: 14px; }
-.form-row textarea { resize: vertical; min-height: 60px; }
-.btn-primary { background: #007aff; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }
+.btn-primary { background: #007aff; color: white; padding: 8px 16px; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; margin-top: 8px; }
 .btn-primary:hover { opacity: 0.9; }
 .empty { text-align: center; padding: 20px; color: #8e8e93; font-size: 13px; }
+.kv { font-size: 13px; margin: 6px 0; }
+.kv b { color: #8e8e93; font-weight: 500; margin-right: 8px; }
+.settings-actions { margin: 14px 0 4px; }
+hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: none; align-items: center; justify-content: center; z-index: 50; }
+.modal-overlay.show { display: flex; }
+.modal { background: #fff; border-radius: 10px; width: 560px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column; box-shadow: 0 12px 48px rgba(0,0,0,0.3); }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid #eee; }
+.modal-head h2 { font-size: 17px; }
+.modal-close { border: none; background: transparent; font-size: 22px; line-height: 1; cursor: pointer; color: #8e8e93; }
+.modal-close:hover { color: #1d1d1f; }
+.modal-body { padding: 16px 18px; overflow-y: auto; }
 </style>
 </head>
 <body>
@@ -56,54 +66,30 @@ h1 { font-size: 28px; margin-bottom: 24px; }
 <div class="grid">
   <div class="panel">
     <h2>项目</h2>
-    <div class="hint">点一个项目 → 中间列出它的办公室</div>
+    <div class="hint">点一行选中 → 中间过滤；点 ⚙️ → 项目设置</div>
     <div id="projects"></div>
   </div>
   <div class="panel">
     <h2>办公室</h2>
-    <div class="hint">点一间 → 右边列出它的案件。「离场并封卷」会中止其未结案卷，慎用。</div>
+    <div class="hint">点一行选中 → 右边过滤；点 ⚙️ → 办公室设置</div>
     <div id="windows"></div>
   </div>
   <div class="panel">
     <h2>案件</h2>
-    <div class="hint">点一条 → 下方显示节点时间线</div>
+    <div class="hint">点一行选中；点 ⚙️ → 节点 / 操作</div>
     <div id="cases"></div>
   </div>
 </div>
 
-<div id="case-detail" class="detail" style="display:none;">
-  <h2 id="case-title"></h2>
-  <div id="case-nodes"></div>
-</div>
-
-<div class="form-section">
-  <h2>设定项目地址</h2>
-  <div class="form-row">
-    <label>本地目录路径</label>
-    <input type="text" id="project-path" placeholder="/Users/xxx/project">
+<div id="modal-overlay" class="modal-overlay">
+  <div class="modal">
+    <div class="modal-head"><h2 id="modal-title"></h2><button class="modal-close" id="modal-close" title="关闭">&times;</button></div>
+    <div class="modal-body" id="modal-body"></div>
   </div>
-  <button class="btn-primary" id="btn-add-project">纳入管理</button>
-</div>
-
-<div class="form-section">
-  <h2>立案</h2>
-  <div class="form-row">
-    <label>项目</label>
-    <input type="text" id="case-project" placeholder="项目路径或名称">
-  </div>
-  <div class="form-row">
-    <label>案卷标题</label>
-    <input type="text" id="case-title-input" placeholder="例如：实现联邦同步">
-  </div>
-  <div class="form-row">
-    <label>开篇节点（可选）</label>
-    <textarea id="case-body" placeholder="写成案卷的第一行节点（不发信；发文请用 CLI ic send）"></textarea>
-  </div>
-  <button class="btn-primary" id="btn-create-case">立案</button>
 </div>
 
 <script>
-// D3 应用管理台 · 真实 API 版
+// D3 应用管理台 · 三栏级联 + 设置弹窗
 // 后端默认回退 human，浏览器直接 fetch
 
 let state = {
@@ -113,7 +99,7 @@ let state = {
   selectedProject: null,
   selectedWindow: null,
   selectedCase: null,
-  caseDetail: null
+  settingsTarget: null
 };
 
 async function api(path, opts = {}) {
@@ -136,29 +122,24 @@ async function api(path, opts = {}) {
 }
 
 async function loadProjects() {
-  try {
-    const data = await api("/v1/projects");
-    state.projects = data.projects || [];
-  } catch (e) { console.error("loadProjects", e); }
+  try { const data = await api("/v1/projects"); state.projects = data.projects || []; }
+  catch (e) { console.error("loadProjects", e); }
   render();
 }
-
 async function loadWindows() {
-  try {
-    const data = await api("/v1/windows");
-    state.windows = data.windows || [];
-  } catch (e) { console.error("loadWindows", e); }
+  try { const data = await api("/v1/windows"); state.windows = data.windows || []; }
+  catch (e) { console.error("loadWindows", e); }
   render();
 }
-
 async function loadCases() {
-  try {
-    const data = await api("/v1/cases");
-    state.cases = data.cases || [];
-  } catch (e) { console.error("loadCases", e); }
+  try { const data = await api("/v1/cases"); state.cases = data.cases || []; }
+  catch (e) { console.error("loadCases", e); }
   render();
 }
 
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+}
 function sameWs(a, b) {
   if (!a || !b) return false;
   if (a === b) return true;
@@ -173,29 +154,32 @@ function selectProject(ws) {
   state.selectedCase = null;
   render();
 }
-
 function selectWindow(wid) {
   state.selectedWindow = (state.selectedWindow === wid) ? null : wid;
   state.selectedCase = null;
   render();
 }
+function selectCase(id) {
+  state.selectedCase = (state.selectedCase === id) ? null : id;
+  render();
+}
 
 function render() {
+  // 项目
   const projEl = document.getElementById("projects");
   if (state.projects.length === 0) {
     projEl.innerHTML = '<div class="empty">暂无项目</div>';
   } else {
     projEl.innerHTML = state.projects.map(p => `
       <div class="item ${state.selectedProject === p.workspace ? 'active' : ''}" data-project-ws="${escapeHtml(p.workspace)}">
+        <button class="gear" data-gear="project" data-gear-id="${escapeHtml(p.workspace)}" title="项目设置">&#9881;</button>
         <div class="title">${escapeHtml(p.name || p.workspace)}</div>
         <div class="meta">${p.case_count || 0}案 ${(p.active_cases != null ? p.active_cases : (p.counts && p.counts.active) || 0)}在办</div>
-      </div>
-    `).join("");
-    projEl.querySelectorAll(".item[data-project-ws]").forEach(item => {
-      item.addEventListener("click", () => selectProject(item.dataset.projectWs));
-    });
+      </div>`).join("");
+    wire(projEl, ".item[data-project-ws]", it => selectProject(it.dataset.projectWs));
   }
 
+  // 办公室
   const winEl = document.getElementById("windows");
   const shownWins = state.selectedProject
     ? state.windows.filter(w => sameWs(w.workspace, state.selectedProject))
@@ -210,30 +194,16 @@ function render() {
       const proj = w.workspace ? String(w.workspace).split("/").filter(Boolean).pop() : "";
       return `
       <div class="item ${state.selectedWindow === (w.window_id || w.id) ? 'active' : ''}" data-window-id="${wid}">
+        <button class="gear" data-gear="window" data-gear-id="${wid}" title="办公室设置">&#9881;</button>
         <div class="title">${escapeHtml(w.agent)}${proj ? " · " + escapeHtml(proj) : ""}</div>
         <div class="meta"><span class="status ${cls}">${escapeHtml(st)}</span> · 窗口 ${wid} · 最近 ${escapeHtml(w.last_seen_local || "")}</div>
         <div class="meta">${w.activity ? escapeHtml(w.activity) : (w.case_count || 0) + " 案"}</div>
-        <div class="actions">
-          ${st === "在办" ? `<button class="btn pause" data-action="pause-window" data-window-id="${wid}">暂停</button>` : ""}
-          ${st !== "在办" && st !== "离场" && st !== "离线" ? `<button class="btn resume" data-action="resume-window" data-window-id="${wid}">恢复</button>` : ""}
-          <button class="btn disable" data-action="disable-window" data-window-id="${wid}">离场并封卷</button>
-        </div>
       </div>`;
     }).join("");
-    winEl.querySelectorAll(".item[data-window-id]").forEach(item => {
-      item.addEventListener("click", () => selectWindow(item.dataset.windowId));
-    });
-    winEl.querySelectorAll("button[data-action]").forEach(btn => {
-      btn.addEventListener("click", event => {
-        const wid = btn.dataset.windowId;
-        const action = btn.dataset.action;
-        if (action === "pause-window") pauseWindow(event, wid);
-        else if (action === "resume-window") resumeWindow(event, wid);
-        else if (action === "disable-window") disableWindow(event, wid);
-      });
-    });
+    wire(winEl, ".item[data-window-id]", it => selectWindow(it.dataset.windowId));
   }
 
+  // 案件
   const caseEl = document.getElementById("cases");
   const selWin = state.selectedWindow ? state.windows.find(w => (w.window_id || w.id) === state.selectedWindow) : null;
   const shownCases = state.selectedWindow
@@ -244,146 +214,180 @@ function render() {
     caseEl.innerHTML = `<div class="empty">${state.selectedWindow ? "该办公室暂无案件" : (state.selectedProject ? "该项目暂无案件" : "暂无案件")}</div>`;
   } else {
     caseEl.innerHTML = shownCases.map(c => {
-      const rawStatus = c.status || "";
-      const st = c.status_label || rawStatus;
-      const cls = (rawStatus || st).replace(/[^a-zA-Z\u4e00-\u9fa5]/g, "");
+      const raw = c.status || "";
+      const st = c.status_label || raw;
+      const cls = (raw || st).replace(/[^a-zA-Z\u4e00-\u9fa5]/g, "");
       const owner = c.owner_agent || c.owner_window || "";
       const last = c.last_note || (c.last_node && typeof c.last_node === "object" ? (c.last_node.note || c.last_node.line || "") : c.last_node) || "";
       const cid = escapeHtml(c.id);
-      const canPause = ["open", "doing", "pending", "waiting"].includes(rawStatus) || (!rawStatus && st === "在办");
-      const canResume = rawStatus === "paused" || (!rawStatus && st === "暂停");
-      const isSealed = Boolean(c.sealed) || ["aborted", "done"].includes(rawStatus) || st === "中止" || st === "办结";
       return `
       <div class="item ${state.selectedCase === c.id ? 'active' : ''}" data-case-id="${cid}">
+        <button class="gear" data-gear="case" data-gear-id="${cid}" title="案件设置">&#9881;</button>
         <div class="title">${escapeHtml(c.title)}</div>
-        <div class="meta">
-          <span class="status ${cls}">${escapeHtml(st)}</span>
-          ${owner ? '主办 ' + escapeHtml(owner) : ''}
-        </div>
+        <div class="meta"><span class="status ${cls}">${escapeHtml(st)}</span> ${owner ? '主办 ' + escapeHtml(owner) : ''}</div>
         <div class="meta">${escapeHtml(last)}</div>
-        <div class="actions">
-          ${canPause ? `<button class="btn pause" data-action="pause-case" data-case-id="${cid}">暂停</button>` : ""}
-          ${canResume ? `<button class="btn resume" data-action="resume-case" data-case-id="${cid}">恢复</button>` : ""}
-          ${!isSealed ? `<button class="btn abort" data-action="abort-case" data-case-id="${cid}">中止</button>` : ""}
-          ${!isSealed ? `<button class="btn close" data-action="close-case" data-case-id="${cid}">办结</button>` : ""}
-        </div>
       </div>`;
     }).join("");
-    caseEl.querySelectorAll(".item[data-case-id]").forEach(item => {
-      item.addEventListener("click", () => selectCase(item.dataset.caseId));
-    });
-    caseEl.querySelectorAll(".actions").forEach(act => {
-      act.addEventListener("click", event => event.stopPropagation());
-    });
-    caseEl.querySelectorAll("button[data-action]").forEach(btn => {
-      btn.addEventListener("click", event => {
-        const cid = btn.dataset.caseId;
-        const action = btn.dataset.action;
-        if (action === "pause-case") pauseCase(event, cid);
-        else if (action === "resume-case") resumeCase(event, cid);
-        else if (action === "abort-case") abortCase(event, cid);
-        else if (action === "close-case") closeCase(event, cid);
-      });
-    });
+    wire(caseEl, ".item[data-case-id]", it => selectCase(it.dataset.caseId));
+  }
+
+  function wire(root, sel, onClick) {
+    root.querySelectorAll(sel).forEach(item => item.addEventListener("click", () => onClick(item)));
+    root.querySelectorAll(".gear").forEach(g => g.addEventListener("click", ev => {
+      ev.stopPropagation();
+      openSettings(g.dataset.gear, g.dataset.gearId);
+    }));
   }
 }
 
-function escapeHtml(s) {
-  return String(s == null ? "" : s).replace(/[&<>"']/g, m => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[m]));
+// ── 设置弹窗 ─────────────────────────────────────────────
+function openSettings(kind, id) {
+  state.settingsTarget = { kind, id };
+  const overlay = document.getElementById("modal-overlay");
+  const titleEl = document.getElementById("modal-title");
+  const bodyEl = document.getElementById("modal-body");
+
+  if (kind === "project") {
+    const p = state.projects.find(x => x.workspace === id) || { workspace: id };
+    titleEl.textContent = "项目设置 · " + (p.name || id);
+    bodyEl.innerHTML = `
+      <div class="kv"><b>路径</b>${escapeHtml(id)}</div>
+      <div class="form-row"><label>显示名（可选）</label><input id="s-proj-name" value="${escapeHtml(p.name || "")}"></div>
+      <button class="btn-primary" data-act="save-project">保存</button>
+      <hr>
+      <div class="kv"><b>立案</b>在该项目下新建一份案卷</div>
+      <div class="form-row"><label>案卷标题</label><input id="s-case-title" placeholder="例如：实现联邦同步"></div>
+      <div class="form-row"><label>开篇节点（可选）</label><textarea id="s-case-body" placeholder="案卷第一行节点（不发信）"></textarea></div>
+      <button class="btn-primary" data-act="create-case">立案</button>`;
+    overlay.classList.add("show");
+    return;
+  }
+
+  if (kind === "window") {
+    const w = state.windows.find(x => (x.window_id || x.id) === id) || {};
+    const st = w.state_label || w.state || "";
+    titleEl.textContent = "办公室设置 · " + (w.agent || "") + " · " + id;
+    const canPause = st === "在办";
+    const canResume = st && st !== "在办" && st !== "离场" && st !== "离线";
+    bodyEl.innerHTML = `
+      <div class="kv"><b>身份</b>${escapeHtml(w.agent || "")}</div>
+      <div class="kv"><b>窗口</b>${escapeHtml(id)}</div>
+      <div class="kv"><b>项目</b>${escapeHtml(w.workspace || "—")}</div>
+      <div class="kv"><b>状态</b>${escapeHtml(st)}</div>
+      <div class="kv"><b>最近</b>${escapeHtml(w.last_seen_local || "")}</div>
+      <div class="kv"><b>活动</b>${escapeHtml(w.activity || "—")}</div>
+      <div class="settings-actions">
+        ${canPause ? '<button class="btn pause" data-act="pause-window">暂停</button>' : ""}
+        ${canResume ? '<button class="btn resume" data-act="resume-window">恢复</button>' : ""}
+        <button class="btn disable" data-act="disable-window">离场并封卷</button>
+      </div>`;
+    overlay.classList.add("show");
+    return;
+  }
+
+  if (kind === "case") {
+    const c = state.cases.find(x => x.id === id) || {};
+    const raw = c.status || "";
+    const st = c.status_label || raw;
+    const isSealed = Boolean(c.sealed) || ["aborted", "done"].includes(raw) || st === "中止" || st === "办结";
+    const canPause = ["open", "doing", "pending", "waiting"].includes(raw) || (!raw && st === "在办");
+    const canResume = raw === "paused" || (!raw && st === "暂停");
+    titleEl.textContent = "案件设置 · " + (c.title || id);
+    bodyEl.innerHTML = `
+      <div class="kv"><b>标题</b>${escapeHtml(c.title || "")}</div>
+      <div class="kv"><b>状态</b>${escapeHtml(st)}</div>
+      <div class="kv"><b>主办</b>${escapeHtml(c.owner_agent || c.owner_window || "—")}</div>
+      <div class="kv"><b>项目</b>${escapeHtml(c.workspace || "—")}</div>
+      <div class="settings-actions">
+        ${canPause ? '<button class="btn pause" data-act="pause-case">暂停</button>' : ""}
+        ${canResume ? '<button class="btn resume" data-act="resume-case">恢复</button>' : ""}
+        ${!isSealed ? '<button class="btn abort" data-act="abort-case">中止</button>' : ""}
+        ${!isSealed ? '<button class="btn close" data-act="close-case">办结</button>' : ""}
+      </div>
+      <hr>
+      <div id="s-case-nodes"><div class="empty">加载节点…</div></div>`;
+    overlay.classList.add("show");
+    loadCaseNodes(id);
+    return;
+  }
 }
 
-async function selectCase(id) {
-  state.selectedCase = id;
-  render();
-  await showCaseDetail(id);
+function closeSettings() {
+  document.getElementById("modal-overlay").classList.remove("show");
+  state.settingsTarget = null;
 }
 
-async function showCaseDetail(id) {
-  // U-5：请求令牌。快速点两卷时，晚回来的旧响应不得覆盖当前选中卷的详情。
-  const token = id;
+async function loadCaseNodes(id) {
+  const el = document.getElementById("s-case-nodes");
+  if (!el) return;
   try {
     const c = await api("/v1/cases/" + encodeURIComponent(id));
-    if (state.selectedCase !== token) return;
-    state.caseDetail = c;
-    document.getElementById("case-title").textContent = c.title || id;
     const nodes = c.nodes || [];
-    document.getElementById("case-nodes").innerHTML = nodes.length === 0
-      ? '<div class="empty">暂无节点</div>'
-      : nodes.map(n => `
-        <div class="node ${n.auto ? 'auto' : ''}">
-          <span class="time">${escapeHtml(n.created_at_local || "")}</span> ·
-          <span class="actor">${escapeHtml(n.agent || "")}</span> ·
-          ${escapeHtml(n.action || "")}${n.note ? " · " + escapeHtml(n.note) : ""}${n.auto ? ' [自动]' : ''}
-        </div>
-      `).join("");
-    document.getElementById("case-detail").style.display = "block";
+    el.innerHTML = nodes.length === 0 ? '<div class="empty">暂无节点</div>' : nodes.map(n => `
+      <div class="node ${n.auto ? 'auto' : ''}">
+        <span class="time">${escapeHtml(n.created_at_local || "")}</span> ·
+        <span class="actor">${escapeHtml(n.agent || "")}</span> ·
+        ${escapeHtml(n.action || "")}${n.note ? " · " + escapeHtml(n.note) : ""}${n.auto ? ' [自动]' : ''}
+      </div>`).join("");
   } catch (e) {
-    if (state.selectedCase !== token) return;
-    console.error("showCaseDetail", e);
-    alert("加载案件详情失败：" + e.message);
+    el.innerHTML = '<div class="empty">加载失败：' + escapeHtml(e.message) + '</div>';
   }
 }
 
-async function pauseCase(event, id) {
-  if (event && event.stopPropagation) event.stopPropagation();
-  try { await api("/v1/cases/" + encodeURIComponent(id) + "/pause", { method: "POST" }); await loadCases(); }
-  catch (e) { alert("暂停失败：" + e.message); }
-}
-async function resumeCase(event, id) {
-  if (event && event.stopPropagation) event.stopPropagation();
-  try { await api("/v1/cases/" + encodeURIComponent(id) + "/resume", { method: "POST" }); await loadCases(); }
-  catch (e) { alert("恢复失败：" + e.message); }
-}
-async function abortCase(event, id) {
-  if (event && event.stopPropagation) event.stopPropagation();
-  try { await api("/v1/cases/" + encodeURIComponent(id) + "/abort", { method: "POST" }); await loadCases(); }
-  catch (e) { alert("中止失败：" + e.message); }
-}
-async function closeCase(event, id) {
-  if (event && event.stopPropagation) event.stopPropagation();
-  try { await api("/v1/cases/" + encodeURIComponent(id) + "/close", { method: "POST" }); await loadCases(); }
-  catch (e) { alert("办结失败：" + e.message); }
-}
-async function pauseWindow(event, id) {
-  if (event && event.stopPropagation) event.stopPropagation();
-  try { await api("/v1/windows/" + encodeURIComponent(id) + "/pause", { method: "POST" }); await loadWindows(); }
-  catch (e) { alert("暂停失败：" + e.message); }
-}
-async function resumeWindow(event, id) {
-  if (event && event.stopPropagation) event.stopPropagation();
-  try { await api("/v1/windows/" + encodeURIComponent(id) + "/resume", { method: "POST" }); await loadWindows(); }
-  catch (e) { alert("恢复失败：" + e.message); }
-}
-async function disableWindow(event, id) {
-  if (event && event.stopPropagation) event.stopPropagation();
-  if (!confirm("确定要停用办公室 " + id + " 吗？停用将上报离场，并自动中止且封卷该窗口名下全部未封卷案卷。")) return;
-  try { await api("/v1/windows/" + encodeURIComponent(id) + "/leave", { method: "POST" }); await loadWindows(); await loadCases(); }
-  catch (e) { alert("停用失败：" + e.message); }
-}
-async function addProject() {
-  const path = document.getElementById("project-path").value.trim();
-  if (!path) { alert("请填写目录路径"); return; }
+async function saveProject() {
+  const id = state.settingsTarget && state.settingsTarget.id;
+  const name = document.getElementById("s-proj-name").value.trim();
   try {
-    await api("/v1/projects", { method: "POST", body: { workspace: path } });
-    document.getElementById("project-path").value = "";
-    await loadProjects();
-  } catch (e) { alert("纳入失败：" + e.message); }
+    await api("/v1/projects", { method: "POST", body: { workspace: id, name: name || undefined } });
+    closeSettings(); await loadProjects();
+  } catch (e) { alert("保存失败：" + e.message); }
 }
-async function createCase() {
-  const project = document.getElementById("case-project").value.trim();
-  const title = document.getElementById("case-title-input").value.trim();
-  const body = document.getElementById("case-body").value.trim();
-  if (!project || !title) { alert("请填写项目和标题"); return; }
+async function createCaseFromSettings() {
+  const id = state.settingsTarget && state.settingsTarget.id;
+  const title = document.getElementById("s-case-title").value.trim();
+  const body = document.getElementById("s-case-body").value.trim();
+  if (!title) { alert("请填写案卷标题"); return; }
   try {
-    await api("/v1/cases", { method: "POST", body: { title, workspace: project, note: body || undefined } });
-    document.getElementById("case-title-input").value = "";
-    document.getElementById("case-body").value = "";
-    await loadCases();
+    await api("/v1/cases", { method: "POST", body: { title, workspace: id, note: body || undefined } });
+    closeSettings(); await loadCases(); await loadProjects();
   } catch (e) { alert("立案失败：" + e.message); }
 }
+async function doWindow(action) {
+  const id = state.settingsTarget && state.settingsTarget.id;
+  try {
+    if (action === "pause") await api("/v1/windows/" + encodeURIComponent(id) + "/pause", { method: "POST" });
+    else if (action === "resume") await api("/v1/windows/" + encodeURIComponent(id) + "/resume", { method: "POST" });
+    else if (action === "disable") {
+      if (!confirm("确定停用办公室 " + id + "？会离场并自动中止且封卷其名下全部未封卷案卷。")) return;
+      await api("/v1/windows/" + encodeURIComponent(id) + "/leave", { method: "POST" });
+    }
+    closeSettings(); await loadWindows(); await loadCases();
+  } catch (e) { alert("操作失败：" + e.message); }
+}
+async function doCase(action) {
+  const id = state.settingsTarget && state.settingsTarget.id;
+  try {
+    await api("/v1/cases/" + encodeURIComponent(id) + "/" + action, { method: "POST" });
+    closeSettings(); await loadCases(); await loadProjects();
+  } catch (e) { alert("操作失败：" + e.message); }
+}
 
-document.getElementById("btn-add-project").addEventListener("click", addProject);
-document.getElementById("btn-create-case").addEventListener("click", createCase);
+document.getElementById("modal-body").addEventListener("click", ev => {
+  const el = ev.target.closest("[data-act]");
+  if (!el) return;
+  const act = el.dataset.act;
+  if (act === "save-project") saveProject();
+  else if (act === "create-case") createCaseFromSettings();
+  else if (act === "pause-window") doWindow("pause");
+  else if (act === "resume-window") doWindow("resume");
+  else if (act === "disable-window") doWindow("disable");
+  else if (act === "pause-case") doCase("pause");
+  else if (act === "resume-case") doCase("resume");
+  else if (act === "abort-case") doCase("abort");
+  else if (act === "close-case") doCase("close");
+});
+document.getElementById("modal-close").addEventListener("click", closeSettings);
+document.getElementById("modal-overlay").addEventListener("click", ev => { if (ev.target.id === "modal-overlay") closeSettings(); });
 
 // 初始化
 loadProjects();
