@@ -32,7 +32,7 @@
 | **M1 质量基线** | A 线审查完成 + 新增测试落盘，全量测试绿（33/33 零 ResourceWarning），无已知并发/边界漏洞 | 无（可立即开工） | ✅ **已冻结**（A1–A6 coordinator 验收 + kimi 独立复核通过，见 `_work/verify-m1.md`） |
 | **M2 联邦定稿** | B1 决策冻结 ✅ → B2 设计冻结 ✅ → B3 实现冻结 ✅（27/27 零跳过全绿，见 `_work/verify-b3.md`） → B4 文档合入 ✅ | 无 | ✅ **已冻结**（B4 三处文档由本项目 omp 守护 pid 27470 于 2026-10-14 15:03 合入，coordinator 核工作区与 kimi D3 预复核一致） |
 | **M3 发布就绪** | C1–C4 文档/打包/公开准备/版本对齐已完成 ✅；B4 联邦文档已合入 ✅；公开动作待 human 拍板 | C1–C4 ✅ + B4 ✅；公开 `gh repo edit --visibility public` 待 human D4 | ✅ **已就绪**（等 D4 触发公开） |
-| **M4 窗口·案卷·应用** | 认领按线不重复处理；案卷（办事追踪）可追踪；办公室/案卷可视化；应用可暂停/中止/办结、设定项目地址、立案 | D1 数据层 ✅（coordinator+kimi 双签，D1-a/b 已补）；D2 命令与守护 ✅（coordinator+kimi 双签，D2-a/b 已收口）；D3 应用 ✅（kimi 预复核通过后，D3-a/b/c 由 cursor 一次性收口）；D1-a/b 与 D2-a/b 补强已齐，coordinator 本轮核验 82/82 零告警全绿；D 线文档待补（pi） | 🔨 收口中（**仅余 D 线文档**；M5 已冻结、码不再改，已解除 pi 的「停跑待命」请其落笔，见 §八） |
+| **M4 窗口·案卷·应用** | 认领按线不重复处理；案卷（办事追踪）可追踪；办公室/案卷可视化；应用可暂停/中止/办结、设定项目地址、立案 | D1 数据层 ✅（coordinator+kimi 双签，D1-a/b 已补）；D2 命令与守护 ✅（coordinator+kimi 双签，D2-a/b 已收口）；D3 应用 ✅（kimi 预复核通过后，D3-a/b/c 由 cursor 一次性收口）；D1-a/b 与 D2-a/b 补强已齐，coordinator 本轮核验 82/82 零告警全绿；D 线文档待补（pi） | 🔨 收口中（**仅余 D 线文档**：pi 的 README 已合入，余 `SKILL.md` / `需求文档`；**M5 冻结后码仍演进**——human 18:05 起直改 web/后端共 25 commit（截至 19:18，仍在增；数字随 human 停笔更新）、新增 7 项功能 + R14 收敛，基线 **144/144 零告警**（coordinator 19:10 独立复跑），见 §九「M5 冻结后迭代」） |
 | **M5 最后评审加固** | human「先不急着启动，做最后一轮评审和 debug」→ 3 名分区独立评审 + 3 名对抗性交叉复核（`_work/final-review.md`，基线 82/82 零告警）：P0 6 项必修、P1 9 项应修、P2 若干；按文件分区派 idle 成员修，kimi 独立复核 + 全量回归 | 无 | ✅ **已冻结**（cursor 10 项 + grok 8 项全部落码，18/18 对码无半修/假修；kimi 独立复核 `_work/verify-debug.md`：P0 反驳复现 5/5 通过、基线 **118/118 零告警**，coordinator 独立复跑一致；N1–N4 转 P2，见 §八） |
 
 ---
@@ -106,8 +106,8 @@
 | D4 | 仓库是否转公开、时机 | human | ❓ 待拍板（建议 M1/M2 后） |
 | D5 | `~/Downloads/信息中心` 的 TCC 权限（headless 读写 Downloads 可能被拦） | human | ✅ 已确认正常（守护进程可正常读写） |
 | D6 | `activity` 是**全局按身份**、非「身份×项目」：同一身份的多项目守护会互相覆盖 activity（实测 cursor 在 A 线自报后被 ICLR 守护覆盖回 GPU 状态） | human / coordinator | ✅ **已裁定＝按办公室（窗口）分区**，随 D 线 D1 一并实现（见 §七） |
-| D7 | 凭空身份 `coordinator`（A6-2 副作用）残留 3 封 kimi 未读；根因修复后是否清理该身份与信件 | human / coordinator | ❓ 待处理（低优先，不阻塞） |
-| D8 | 本项目 5 个守护（pid 27466–27469 起于 13:12:49、pi 56260 起于 15:49）与 8787 服务端（pid 64020 起于 04:46）均仍运行旧码；M5 已冻结（码不再改），重启即加载全部修复 | coordinator | ⏸ **就绪待执行**（M5 复核通过＝技术前置已满足；但 ① human 15:55「先不急着启动」的 go-live 指令优先，② 无头会话执行 `crew down` 会经 C-7/D2-a 路径 `killpg` 自身进程组而自杀、并波及共享服务端与另 2 个项目在飞守护 → 应由**非无头** coordinator 窗口一次性执行 `ic stop && ic serve --detach` + `crew down/up --dir 信息中心`，见 §八） |
+| D7 | 凭空身份 `coordinator`（A6-2 副作用）残留 3 封 kimi 未读；根因修复后是否清理该身份与信件 | human / coordinator | ✅ **已清理**（2026-10-14：删除幽灵身份 `coordinator` + 退休身份 `omp`，连同其投递与「仅发给它们」的信；`/v1/agents` 加 `roster` 标记、状态条只显示名单成员。库已备份 `mailbox.db.bak-192321`） |
+| D8 | 本项目 5 个守护与 8787 服务端加载新码 | coordinator | ✅ **已执行**：首次 18:00（服务端 46322、crew 46356–46360），后随 18:05–19:10 的 M5 后提交**于 19:08:32 首度重启服务端**（pid 87306），又于 **19:18:06 再重启一次**（现 pid 91849，实测 `/ui`、`/v1/activity`、`/v1/crew`、`/v1/windows` 均 200）；**守护仍 46356–46360**（18:00:10 启动）——加载的是 `11b5445`（18:05:01）回退前的码，该提交从 `watch` 长轮询 `GET /v1/events` 删去 `pid=os.getpid()`（2 行，原系 M2 误加），故现存守护每周长轮询仍带 `X-Pid`，`store.events` 据此把窗口进程号记为守护自身 pid（影响 `/ui` 的 `pid_alive` 取数）。`client.py` 最后一笔 `f175222`（17:45）确在 18:00 前（此半句成立）；同批 `sync.py` 仅加 U-3 注释、无行为变化。**裁定：本轮不 `crew down/up`**（仅涉窗口 `pid_alive` 取数，且重启会打断在飞 headless 与 human 的 UI 迭代），折入下次自然重启。原「交非无头窗口执行」已消解 |
 
 ---
 
@@ -120,7 +120,7 @@
 5. 礼仪：无新信息不回帖，禁止 +1/「收到」；同一分歧最多两轮。
 6. 冻结流程：关键产物（B2 设计、里程碑验收）沿用「草案 → 独立复核 → 冻结签名」模式。
 7. **单一活跃 coordinator**：`opencode` 身份存在多 actor（交互会话 + 心跳守护）。改 `PLAN.md` / 发派单任务信**只能由交互 coordinator 窗口**执行；守护已只读化（仅收信、写 `_work/plan-maintenance.md`、必要时发建议）。治理方案见 `~/.opencode/plan/infocenter-多coordinator治理-计划.md`。
-8. **禁影子写手**：coordinator **不得亲自或派非花名册子代理改成员文件**，一律派给 §〇 所有权表里的 owner 并等回报。
+8. **禁影子写手**：coordinator **不得亲自或派非花名册子代理改成员文件**，一律派给 §〇 所有权表里的 owner 并等回报。**澄清（2026-10-14 19:1x 裁定）**：本条约束 **coordinator 与派出的子代理**；**human 本人在自有仓库直接改**（含按 §七 §〇 归成员的 `store.py`/`httpapi.py`/`web/index.html`）不受本条限制。18:05 起的 25 个 M5 后提交（截至 19:18）git 作者均为 human 本人（`Robin9989Law`），**非 coordinator 代改**，故无「影子写手」违规；为可追溯，见 §九「M5 冻结后迭代」末行派 owner cursor 事后具名复核。
 
 ---
 
@@ -149,18 +149,26 @@
 - **D2 命令与守护（grok）**：client/cli/crew/config。**✅ 已完成并经 coordinator + kimi 独立复核通过**（`infocenter/client.py`、`infocenter/cli.py`、`infocenter/crew.py`、`tests/test_d2_commands.py` 9 项测试全绿；D2-a/D2-b 已收口：`_run_headless` 改用独立进程组 `Popen` 并将 `headless_pid` 写入守护 meta，`crew pause` 对该进程组发 `SIGTERM` 不杀守护、本窗口 `paused` 时 `watch` 跳过新一轮且未处理新信不推进游标，`crew resume`/`close` 与 `INFOCENTER_WINDOW` env 注入已补测；coordinator 本轮复跑全量 82/82 零 `ResourceWarning`）。
 - **D3 应用（cursor 收口）**：`/ui` + 管理台。**✅ 已完成并经 coordinator 核验**（`infocenter/server.py` `/ui` 静态路由与 `infocenter/web/index.html` 真实 `fetch` 版）：kimi 预复核（`_work/verify-d.md` §D3）判「代码侧基本通过，1 条必修 D3-a + 3 条提示级」。D3-a（案件列表 `last_node` 渲染 `[object Object]`）原派 omp，因其 headless（pid 23564）自 15:09 起陷于上游 provider（`alibaba-token-plan`）重试循环（>15 分钟零工具调用，`m1a1393f19c75484a2` 未签收），coordinator 于 15:24 裁定改由 **cursor 连同 D3-b/D3-c 一次性收口**（见上表收口规则），并已终止该卡死进程。cursor 15:29 交付：`index.html:195` 末节点对象渲染、`197-214` 按钮显隐改按原始 `c.status`（open/doing/pending/waiting 可暂停、paused 可恢复、sealed/aborted/done 隐藏中止办结）+ CSS 补原始状态与「待办/离场」底色、`281-286` 离场二次 `confirm()` + `window_id`/`case.id` 转义加固，新增 `test_13_ui_console_smoke_and_d3_abc`；coordinator 复跑 `python3 -W error::ResourceWarning -m unittest discover -s tests` = **78/78 OK 零 ResourceWarning**。**剩余**：**D 线文档**（`README.md`、`skills/infocenter/SKILL.md`、`需求文档/01-需求整理.md` 的窗口号/案卷/`ic case`/`crew pause|resume|abort|close`/`/ui` 说明）归 pi（原派单 `m1a13963cf861a79e5`，15:48）；因 M5 debug 轮一度暂缓，M5 收口后已重新激活（见 §八），待落笔。
 - **D4 复核（kimi）**：**✅ D1+D2 独立复核已通过**、**✅ D3 预复核已出**（`_work/verify-d.md`，77/77 零告警实测）；D1-a/b、D2-a/b、D3-a/b/c 均已收口（coordinator 本轮 82/82 零告警），**唯余 D 线文档（pi）**，文档合入后补一次全量回归即出 **D 线终审**。
-- **顺带**：D6（activity 按办公室分区）已随 D1 落地 ✅；D8（守护重启）技术前置已满足、**就绪待执行**，须由非无头窗口一次性执行（见 §五/§八）。
+- **顺带**：D6（activity 按办公室分区）已随 D1 落地 ✅；D8（守护重启）✅ **已执行** 18:00（服务端 + 5 守护；服务端 19:08:32 / 19:18:06 再重启两次），非无头窗口执行要求已消解（见 §五/§八）。
 
 **派单**（2026-10-14，high）：cursor D1 `m1a1390537469b0f80`｜grok D2 `m1a139053766b70bbd`｜omp D3 `m1a13905378431a235`｜kimi D4 `m1a1390537991671bd`。
 
-**验收（M4）**：同身份两窗口新信只提醒一个；案卷节点完整且封卷只读；暂停可恢复、中止/办结封卷；离场自动中止并补 `[自动]` 节点；应用三视图可用 + 四个操作可用 + 能设定项目地址与立案；旧库升级不炸、单窗口与无窗口号行为不变、全量测试绿。
+**验收（M4）**：同身份两窗口新信只提醒一个；案卷节点完整；封卷（中止/办结）**默认只读且不参与认领**，但可由显式「重开」解封回 `open` 并留痕（见下「封卷与重开语义」）；暂停可恢复、中止/办结封卷；离场自动中止并补 `[自动]` 节点；应用三视图可用 + 四个操作可用 + 能设定项目地址与立案；旧库升级不炸、单窗口与无窗口号行为不变、全量测试绿。
+
+**封卷与重开语义（2026-10-14 19:1x coordinator 裁定）**
+
+> 背景：原 M4 验收写「封卷只读」，与 `ee42713`（已封卷案卷显示「重开此案卷」按钮）冲突。裁定以「**可重开**」为现行规格——重开能力本身系 P2 `D-7`（`store.reopen_case`，已随 `11b5445` 收尾、`tests/test_hardening_p2.py::test_d7_reopen_clears_waiting_for` 覆盖），UI 只是把它挂出来，非新语义。
+
+- **默认只读**：`abort`（中止）/`close`（办结）后 `sealed=1`，不接新节点写、不参与认领/转办；`close` 另释放归属、置 `closed_at`。
+- **重开**：`POST /v1/cases/{id}/reopen` → `status` 回 `open`、`sealed=0`、`closed_at=NULL`、`waiting_for=NULL`；**节点只增不删**，重开本身落一条 `action=reopen` 节点（`note` 默认「重开案卷」）；带 `window_id` 时设 `owner_window` 并传播 thread 认领，否则保留 `owner_agent`。
+- **D 线终审口径**：kimi 的 D 线终审不再按「封卷只读」判，按上条判（封卷默认只读、可显式重开且留痕）。
 
 ---
 
 ## 八、M5 · 最后评审 · debug 轮（触发：human 2026-10-14 15:55「先不急着启动，做最后一轮评审和 debug」）
 
 > **规格＝`_work/final-review.md`**：3 名分区独立评审（数据层 / 管理台·服务端·联邦·MCP / CLI·守护·客户端·config）+ 3 名对抗性交叉复核（逐条证伪 + 补漏），基线 `python3 -W error::ResourceWarning -m unittest discover -s tests` = **82/82 零告警**。全程未改生产文件、未动现网 8787。
-> **D8 重启**就绪待执行（见 §五/§八）；D 线文档（pi）曾暂缓以免文档追改，M5 已收口、码冻结 → 已解除待命、pi 可落笔。
+> **D8 重启** ✅ **已执行** 18:00（服务端+5 守护），并随 M5 后提交于 19:08:32、19:18:06 两度重启服务端（现 pid 91849；`/ui`、`/v1/activity`、`/v1/crew` 均 200）。D 线文档（pi）曾暂缓以免文档追改，M5 已收口、已解除待命、pi 可落笔（README 已合入，余 SKILL/需求文档）。
 
 **修复清单与按文件派单（单一写者，`§〇` 所有权）**
 
@@ -175,6 +183,9 @@
   - `cursor`｜**D-1 inbox 截断 + M1-data 未读口径**（`store.py:841-862` 过滤下推 SQL；`_unread_counts`@`2428-2432` 同修）、**D-2 转办双归属**（`store.py:1266-1274/1925-1953` 释放源 owner 认领）、**D-3 非当事人立案**（`store.py:1218-1234` 复用 `_is_party`）、**D-4 死 pid 复活**（`store.py:2126-2131` 复活置 `pid=NULL`）、**D-5 500→400**（`httpapi.py:320/324/442/401/417` 入口 `isinstance(str)`）、**U-2 Content-Length 下界**（`server.py:59-66`）、**U-4 MCP 崩溃**（`mcp_server.py:20-24/38-46` 注册纳入 try + 规范校验）、**L1 CSRF/Origin**（`httpapi.py:169-182` + `server.py` 校验 `Origin`/`Sec-Fetch-Site` 或强制 JSON）。
   - `grok`｜**C-4 pid 复用**（`crew.py:283/84-89` pid 文件记 `started_at`/命令行校验或退出 unlink）、**C-8 登记失败降级**（`crew.py:834-851/563-571` 登记成功才进收信循环/退出/标红）。
 - **P2（可修/记录，本轮不做）**：D-6/D-7/D-8、C-2/C-9~C-16、M2/M3/M4、U-3、U-5、U-6、L2/L3（详见 `_work/final-review.md`）。
+  - **追认（2026-10-14 18:03 裁定，19:1x 补登）**：D-6/D-7/D-8、C-2/C-9–C-16、C-14、M4、U-3/U-5/U-6、L2/L3、N1/N2/N3 已落码并入库（`f175222`→`11b5445`），基线 144/144 零告警 ⇒ **追认，不退回**（唯余瑕疵＝文档滞后，按改 PLAN 处置）；**M2、N4 未做，维持 backlog 本轮不做**。
+  - **U-5 / L3 已收口（`e3200f0` 18:44）**：U-5 取 **(b) 改测试**——承认案件详情改在设置弹窗内加载、无分离面板竞态（`test_u5_select_case_request_token` 断言随新交互改）；L3 更新断言串为 `"/v1/cases/" + encodeURIComponent(id) + "/" + action`（编码意图保持）。两条冻结红闭合。
+  - **P2 独立复核**：不再作为 D8 gating（码已于 18:00 上线）；kimi 如其 P2 报告未出，目的降为「确认已上线 P2 无回归」。
 
 **验收（M5）**：P0 全绿、P1 全绿或明确记录；每条附回归测试；kimi 独立复核（`_work/verify-debug.md`，含 P0 反驳复现）；全量 `python3 -W error::ResourceWarning -m unittest discover -s tests` 零告警；D8 重启可安全执行。
 
@@ -219,7 +230,24 @@
 
 | # | 事项 | 归属 | 说明 |
 | --- | --- | --- | --- |
-| R14 | **管理台三栏级联**：点项目 → 中间列其办公室；点办公室 → 右边列其案件；写操作（设定项目地址/立案）下移到项目页 | cursor（D 线 UI） | **级联已实现**（coordinator 代改，`4bc9baa`+）；见 `需求文档/01-需求整理.md` §七；「写操作下移」待做 |
+| R14 | **管理台三栏级联 + 写操作下移**：点项目 → 中间列其办公室；点办公室 → 右边列其案件；写操作（设定项目地址/立案）下移到项目页 | cursor（D 线 UI） | ✅ **已收口**（18:05–18:59 由 human 直改，`4bc9baa`→`58d188c`）：三栏级联 + 行内 ⚙️ 设置弹窗 + **写操作下移**（`be1aa56` 主界面去零散表单）+ 案件节点四列表格 + 项目/办公室设置页分区 + 新建项目 + 立案指派 + 项目归档 + 守护启停。见 `需求文档/01-需求整理.md` §七；回归复核见下「M5 冻结后迭代」末行 |
 | F-1 | 守护对 `config.json` **不热加载**（改 `headless`/`heartbeat_prompt` 需重启守护） | 待排期 | 见 `TODO-opencode.md` backlog；修复：主循环热读或 `ic crew reload` |
 | F-2 | 多 actor 并发跑重活（全量测试等）互相拖死 | 待排期 | 随"守护只读化 / 单一活跃 coordinator"缓解；长期给重活加互斥 |
 | · | 离场窗口不清理：每次守护重启堆一个新窗口（`/ui` 越看越多） | 待排期 | 可加"离场窗口归档/清理" |
+
+### M5 冻结后迭代（2026-10-14 18:05 起 · human 直改 web/后端 · 25 commit（截至 19:18，仍在增） · 基线 144/144 零告警）
+
+> 登记裁定（19:1x，应 kimi 18:54/19:08 信）：以下 7 项 + 扩展项均属 **M5 冻结后**新增能力，此前未进 §一 M4 / §九。git 作者均为 human 本人（非 coordinator 代改，见 §六.8 澄清）。**统一待办：由 owner cursor 对本批做一次事后具名复核**（补 `archived` / `/v1/crew` / `/v1/activity` / `reopen` UI 单测 + 复跑全量），派单待 human 的 UI 迭代停笔后发出，避免对在飞文件复核对空。
+
+| # | 事项 | 关键提交 | 状态 |
+| --- | --- | --- | --- |
+| M5+1 | **项目归档**：`projects.archived` 列 + 旧库 `ALTER` 迁移 + `/v1/projects` 回传 + UI 归档/🗄/显示归档开关 | `e3200f0` | ✅ 已入库；**回归 0 命中，待补测** |
+| M5+2 | **新建项目按钮**：`POST /v1/projects` 弹窗登记目录 | `8f49c0e` | ✅ 已入库 |
+| M5+3 | **立案「指派」**：不指派＝只建卷；指派＝`to`+`body` 发始信触发开工 | `1bd5ab1` | ✅ 已入库 |
+| M5+4 | **R14 写操作下移**（并入 R14 行） | `be1aa56`→`58d188c` | ✅ 已收口 |
+| M5+5 | **网页起/停守护**：`GET/POST /v1/crew`（status/up/down）+ 项目设置按钮 | `4f0c129` | ✅ 已入库；**回归 0 命中，待补测** |
+| M5+6 | **封卷「重开此案卷」**：UI 挂出 `POST /v1/cases/{id}/reopen`（数据层系 P2 `D-7`） | `ee42713` | ✅ 已入库（口径见 §七「封卷与重开语义」） |
+| M5+7 | **全局工作痕迹流**：`store.recent_activity()` + `GET /v1/activity` + 办公室『实时状态』`pid_alive` + 痕迹表补项目/办公室列 | `5297ca4`、`20e04f3` | ✅ 已入库（在途→19:10 已落）；**回归 0 命中，待补测** |
+| · | **D 线文档范围**：pi 的 README/SKILL/需求文档是否覆盖以上新能力 | — | ❓ 待 pi 落笔时确认（现 README 无「项目归档 / `/v1/crew` / 新建项目 / 立案指派」表述） |
+
+> **19:10 后续改（human 仍在迭代，数量在增）**：`87ca35d`（19:12 三栏等高）、`742190e`（19:15 三栏标题/提示等高）、`dfa9f24`（19:18 三栏固定高 72vh + `/ui` 加 `Cache-Control: no-store`）——均 UI 样式/缓存，归 M5+4 R14 收口簇；随之 19:18:06 服务端再重启一次（现 pid 91849）。此簇同样并入 owner cursor 的事后具名复核。human 未停笔期间**不派单、不复核对空**。
