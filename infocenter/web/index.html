@@ -44,6 +44,10 @@ h1 { font-size: 26px; margin-bottom: 24px; }
 .filters select, .filters input { font-size: 12px; padding: 3px 6px; border: 1px solid #d1d1d6; border-radius: 4px; background: #fff; color: #1d1d1f; }
 .mini-select { font-size: 12px; padding: 3px 6px; border: 1px solid #d1d1d6; border-radius: 4px; background: #fff; color: #1d1d1f; }
 .legend { font-size: 12px; color: #8e8e93; font-weight: 400; }
+.dmon { font-size: 12px; }
+.dmon.on { color: #34c759; }
+.dmon.off { color: #c7c7cc; }
+.agents-wrap { display: flex; align-items: center; gap: 8px; }
 .dir { font-size: 17px; font-weight: 700; }
 .dir.out { color: #007aff; }
 .dir.in { color: #34c759; }
@@ -124,7 +128,7 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 <body>
 <div class="topbar">
   <div class="brand"><h1>信息中心 · 管理台</h1><button class="refresh" id="btn-refresh" title="刷新全部">&#8635;</button></div>
-  <div id="agents" class="agents"></div>
+  <div class="agents-wrap"><button class="refresh sm" id="btn-r-agents" title="刷新 agent 状态">&#8635;</button><div id="agents" class="agents"></div></div>
 </div>
 
 <div class="grid">
@@ -185,7 +189,8 @@ let state = {
   caseStatus: "",
   mail: [],
   mailAgent: null,
-  headless: []
+  headless: [],
+  daemons: []
 };
 
 async function api(path, opts = {}) {
@@ -230,6 +235,11 @@ async function loadAgents() {
 async function loadHeadless() {
   try { const data = await api("/v1/headless"); state.headless = data.headless || []; }
   catch (e) { console.error("loadHeadless", e); }
+  render();
+}
+async function loadDaemons() {
+  try { const data = await api("/v1/daemons"); state.daemons = data.daemons || []; }
+  catch (e) { console.error("loadDaemons", e); }
   render();
 }
 async function loadActivity() {
@@ -285,13 +295,16 @@ function render() {
   if (shownProjects.length === 0) {
     projEl.innerHTML = '<div class="empty">暂无项目</div>';
   } else {
-    projEl.innerHTML = shownProjects.map(p => `
+    projEl.innerHTML = shownProjects.map(p => {
+      const dcount = state.daemons.filter(d => d.alive && sameWs(d.dir, p.workspace)).length;
+      return `
       <div class="item has-arch ${state.selectedProject === p.workspace ? 'active' : ''}" data-project-ws="${escapeHtml(p.workspace)}">
         <button class="arch" data-arch-id="${escapeHtml(p.workspace)}" title="${p.archived ? '取消归档' : '归档'}">&#128451;</button>
         <button class="gear" data-gear="project" data-gear-id="${escapeHtml(p.workspace)}" title="项目设置">&#9881;</button>
         <div class="title">${escapeHtml(p.name || p.workspace)}${p.archived ? ' <span class="tag">已归档</span>' : ''}</div>
-        <div class="meta">${p.case_count || 0}案 ${(p.active_cases != null ? p.active_cases : (p.counts && p.counts.active) || 0)}在办</div>
-      </div>`).join("");
+        <div class="meta"><span class="dmon ${dcount ? 'on' : 'off'}" title="${dcount ? '守护 ' + dcount + ' 个运行中' : '无守护（不会自动开工）'}">${dcount ? '&#9679;' : '&#9675;'}</span> 守护 ${dcount} · ${p.case_count || 0}案 ${(p.active_cases != null ? p.active_cases : (p.counts && p.counts.active) || 0)}在办</div>
+      </div>`;
+    }).join("");
     wire(projEl, ".item[data-project-ws]", it => selectProject(it.dataset.projectWs));
   }
 
@@ -937,7 +950,7 @@ document.getElementById("f-case").addEventListener("change", e => { state.activi
 document.getElementById("f-q").addEventListener("input", e => { state.activityFilters.q = e.target.value.trim(); render(); });
 document.getElementById("f-case-status").addEventListener("change", e => { state.caseStatus = e.target.value; render(); });
 async function refreshAll() {
-  await loadProjects(); await loadWindows(); await loadCases(); await loadAgents(); await loadActivity(); await loadHeadless();
+  await loadProjects(); await loadWindows(); await loadCases(); await loadAgents(); await loadActivity(); await loadHeadless(); await loadDaemons();
 }
 document.getElementById("btn-refresh").addEventListener("click", async ev => {
   const b = ev.currentTarget;
@@ -955,7 +968,8 @@ function spinRefresh(id, fn) {
 }
 spinRefresh("btn-r-win", async () => { await loadWindows(); await loadHeadless(); });
 spinRefresh("btn-r-case", () => loadCases());
-spinRefresh("btn-r-act", () => loadActivity());document.getElementById("modal-overlay").addEventListener("click", ev => { if (ev.target.id === "modal-overlay") closeSettings(); });
+spinRefresh("btn-r-act", () => loadActivity());
+spinRefresh("btn-r-agents", async () => { await loadAgents(); await loadHeadless(); await loadDaemons(); });document.getElementById("modal-overlay").addEventListener("click", ev => { if (ev.target.id === "modal-overlay") closeSettings(); });
 
 // 初始化
 loadProjects();
@@ -964,6 +978,7 @@ loadCases();
 loadAgents();
 loadActivity();
 loadHeadless();
+loadDaemons();
 syncActivityFilters();
 
 // 深链：#human 打开干预中枢，#agent/<名> 打开某 agent 的信件往来

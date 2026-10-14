@@ -665,6 +665,28 @@ def headless_runs(home, project: str | None = None, limit: int = 30) -> list[dic
     return out[:limit]
 
 
+def running_daemons(home) -> list[dict]:
+    """列出运行中的收信守护（扫守护 meta 的 pid 并判活）。"""
+    out: list[dict] = []
+    for path in sorted(state_dir(home).glob("*.json")):
+        try:
+            meta = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        try:
+            pid_int = int(meta.get("pid"))
+        except (TypeError, ValueError):
+            continue
+        out.append({
+            "agent": meta.get("agent") or "",
+            "key": meta.get("key") or path.stem,
+            "dir": meta.get("dir") or "",
+            "pid": pid_int,
+            "alive": _pid_alive(pid_int),
+        })
+    return out
+
+
 def down(home, project: str | None = None, only: str = "") -> dict:
     target = _resolve_dir(project)
     wanted = [item["name"] for item in _select(home, only)] if str(only or "").strip() else None

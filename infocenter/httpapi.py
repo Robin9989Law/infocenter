@@ -231,6 +231,13 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         except (TypeError, ValueError):
             limit = 30
         return 200, {"runs": _crew3.headless_runs(store.path.parent, project, limit)}
+
+    if path == "/v1/daemons":
+        if method != "GET":
+            raise MailError("method_not_allowed", "只支持 GET", 405)
+        from infocenter import crew as _crew4
+
+        return 200, {"daemons": _crew4.running_daemons(store.path.parent)}
     window_id = _resolve_window(headers, query, body)
     req_pid = _resolve_pid(headers, body)
     raw_agent = headers.get("X-Agent") if headers is not None else None
