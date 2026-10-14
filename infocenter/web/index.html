@@ -47,6 +47,10 @@ h1 { font-size: 26px; margin-bottom: 24px; }
 .dmon { font-size: 12px; }
 .dmon.on { color: #34c759; }
 .dmon.off { color: #c7c7cc; }
+.dmon-btn { border: none; background: transparent; cursor: pointer; font-size: 12px; padding: 0; }
+.dmon-btn.on { color: #34c759; }
+.dmon-btn.off { color: #8e8e93; }
+.dmon-btn:hover { text-decoration: underline; }
 .agents-wrap { display: flex; align-items: center; gap: 8px; }
 .dir { font-size: 17px; font-weight: 700; }
 .dir.out { color: #007aff; }
@@ -302,7 +306,7 @@ function render() {
         <button class="arch" data-arch-id="${escapeHtml(p.workspace)}" title="${p.archived ? '取消归档' : '归档'}">&#128451;</button>
         <button class="gear" data-gear="project" data-gear-id="${escapeHtml(p.workspace)}" title="项目设置">&#9881;</button>
         <div class="title">${escapeHtml(p.name || p.workspace)}${p.archived ? ' <span class="tag">已归档</span>' : ''}</div>
-        <div class="meta"><span class="dmon ${dcount ? 'on' : 'off'}" title="${dcount ? '守护 ' + dcount + ' 个运行中' : '无守护（不会自动开工）'}">${dcount ? '&#9679;' : '&#9675;'}</span> 守护 ${dcount} · ${p.case_count || 0}案 ${(p.active_cases != null ? p.active_cases : (p.counts && p.counts.active) || 0)}在办</div>
+        <div class="meta"><button class="dmon-btn ${dcount ? 'on' : 'off'}" data-dmon-ws="${escapeHtml(p.workspace)}" title="${dcount ? '点击：停止该项目全部守护（会离场并封卷其未结案卷）' : '点击：启动该项目全部收信守护'}">${dcount ? '&#9679;' : '&#9675;'} 守护 ${dcount}</button> · ${p.case_count || 0}案 ${(p.active_cases != null ? p.active_cases : (p.counts && p.counts.active) || 0)}在办</div>
       </div>`;
     }).join("");
     wire(projEl, ".item[data-project-ws]", it => selectProject(it.dataset.projectWs));
@@ -430,6 +434,10 @@ function render() {
     root.querySelectorAll(".stat").forEach(b => b.addEventListener("click", ev => {
       ev.stopPropagation();
       openSettings("window-status", b.dataset.statWindow);
+    }));
+    root.querySelectorAll(".dmon-btn").forEach(b => b.addEventListener("click", ev => {
+      ev.stopPropagation();
+      toggleDaemons(b.dataset.dmonWs);
     }));
   }
 }
@@ -815,6 +823,18 @@ async function loadAgentMail(name) {
   }
 }
 
+async function toggleDaemons(ws) {
+  const dcount = state.daemons.filter(d => d.alive && sameWs(d.dir, ws)).length;
+  const action = dcount > 0 ? "down" : "up";
+  const name = (state.projects.find(p => p.workspace === ws) || {}).name || ws;
+  if (action === "down" && !confirm("停止项目「" + name + "」的全部收信守护？\n会离场，并自动中止且封卷其名下全部未封卷案卷。")) return;
+  if (action === "up" && !confirm("启动项目「" + name + "」的全部收信守护（让 agent 上线开工）？")) return;
+  try {
+    const r = await api("/v1/crew", { method: "POST", body: { action, dir: ws } });
+    alert((r.lines || []).join("\n") || "完成");
+    await loadDaemons(); await loadWindows(); await loadCases(); await loadProjects();
+  } catch (e) { alert("操作失败：" + e.message); }
+}
 async function refreshWindowStatus() {
   const id = state.settingsTarget && state.settingsTarget.id;
   await loadWindows(); await loadActivity();
