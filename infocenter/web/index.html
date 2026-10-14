@@ -52,6 +52,10 @@ h1 { font-size: 28px; margin-bottom: 24px; }
 .kv { font-size: 13px; margin: 6px 0; }
 .kv b { color: #8e8e93; font-weight: 500; margin-right: 8px; }
 .settings-actions { margin: 14px 0 4px; }
+.section-title { font-size: 13px; font-weight: 600; margin: 18px 0 8px; }
+.section-title:first-child { margin-top: 0; }
+.mini { padding: 6px 9px; margin: 4px 0; background: #f9f9f9; border-radius: 5px; cursor: pointer; font-size: 12.5px; }
+.mini:hover { background: #eee; }
 hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: none; align-items: center; justify-content: center; z-index: 50; }
 .modal-overlay.show { display: flex; }
@@ -251,16 +255,28 @@ function openSettings(kind, id) {
 
   if (kind === "project") {
     const p = state.projects.find(x => x.workspace === id) || { workspace: id };
+    const wins = state.windows.filter(w => sameWs(w.workspace, id));
     titleEl.textContent = "项目设置 · " + (p.name || id);
     bodyEl.innerHTML = `
+      <div class="section-title">概览</div>
       <div class="kv"><b>路径</b>${escapeHtml(id)}</div>
-      <div class="form-row"><label>显示名（可选）</label><input id="s-proj-name" value="${escapeHtml(p.name || "")}"></div>
+      <div class="kv"><b>统计</b>${p.total_cases || 0} 案 · ${p.active_cases || 0} 在办 · ${p.paused_cases || 0} 暂停 · ${p.closed_cases || 0} 已封卷 · ${p.active_windows || 0} 个活跃办公室</div>
+      <div class="kv"><b>更新</b>${escapeHtml(String(p.updated_at || "").replace("T", " ").replace("Z", ""))}</div>
+
+      <div class="section-title">基本信息</div>
+      <div class="form-row"><label>显示名</label><input id="s-proj-name" value="${escapeHtml(p.name || "")}"></div>
       <button class="btn-primary" data-act="save-project">保存</button>
-      <hr>
-      <div class="kv"><b>立案</b>在该项目下新建一份案卷</div>
+
+      <div class="section-title">立案（在该项目下新建案卷）</div>
       <div class="form-row"><label>案卷标题</label><input id="s-case-title" placeholder="例如：实现联邦同步"></div>
       <div class="form-row"><label>开篇节点（可选）</label><textarea id="s-case-body" placeholder="案卷第一行节点（不发信）"></textarea></div>
-      <button class="btn-primary" data-act="create-case">立案</button>`;
+      <button class="btn-primary" data-act="create-case">立案</button>
+
+      <div class="section-title">该项目的办公室（${wins.length}）</div>
+      ${wins.length === 0 ? '<div class="empty">暂无</div>' : wins.map(w => `
+        <div class="mini" data-act="goto-window" data-wid="${escapeHtml(w.window_id || w.id)}">
+          ${escapeHtml(w.agent)} · ${escapeHtml(w.window_id || w.id)} · ${escapeHtml(w.state_label || w.state || "")}
+        </div>`).join("")}`;
     overlay.classList.add("show");
     return;
   }
@@ -268,21 +284,32 @@ function openSettings(kind, id) {
   if (kind === "window") {
     const w = state.windows.find(x => (x.window_id || x.id) === id) || {};
     const st = w.state_label || w.state || "";
-    titleEl.textContent = "办公室设置 · " + (w.agent || "") + " · " + id;
     const canPause = st === "在办";
     const canResume = st && st !== "在办" && st !== "离场" && st !== "离线";
+    const winCases = state.cases.filter(c => c.owner_window === id || (!c.owner_window && w.agent && c.owner_agent === w.agent));
+    titleEl.textContent = "办公室设置 · " + (w.agent || "") + " · " + id;
     bodyEl.innerHTML = `
+      <div class="section-title">概览</div>
       <div class="kv"><b>身份</b>${escapeHtml(w.agent || "")}</div>
       <div class="kv"><b>窗口</b>${escapeHtml(id)}</div>
       <div class="kv"><b>项目</b>${escapeHtml(w.workspace || "—")}</div>
       <div class="kv"><b>状态</b>${escapeHtml(st)}</div>
-      <div class="kv"><b>最近</b>${escapeHtml(w.last_seen_local || "")}</div>
-      <div class="kv"><b>活动</b>${escapeHtml(w.activity || "—")}</div>
+      <div class="kv"><b>最近活动</b>${escapeHtml(w.activity_at_local || w.last_seen_local || "")}</div>
+      ${w.activity ? `<div class="kv"><b>在做什么</b>${escapeHtml(w.activity)}</div>` : ""}
+      <div class="kv"><b>进程</b>${w.pid != null ? escapeHtml(String(w.pid)) : "—"}</div>
+
+      <div class="section-title">操作</div>
       <div class="settings-actions">
         ${canPause ? '<button class="btn pause" data-act="pause-window">暂停</button>' : ""}
         ${canResume ? '<button class="btn resume" data-act="resume-window">恢复</button>' : ""}
         <button class="btn disable" data-act="disable-window">离场并封卷</button>
-      </div>`;
+      </div>
+
+      <div class="section-title">名下案卷（${winCases.length}）</div>
+      ${winCases.length === 0 ? '<div class="empty">暂无</div>' : winCases.map(c => `
+        <div class="mini" data-act="goto-case" data-cid="${escapeHtml(c.id)}">
+          ${escapeHtml(c.title)} · ${escapeHtml(c.status_label || c.status || "")}
+        </div>`).join("")}`;
     overlay.classList.add("show");
     return;
   }
@@ -393,6 +420,14 @@ document.getElementById("modal-body").addEventListener("click", ev => {
   else if (act === "resume-case") doCase("resume");
   else if (act === "abort-case") doCase("abort");
   else if (act === "close-case") doCase("close");
+  else if (act === "goto-window") {
+    const pid = state.settingsTarget && state.settingsTarget.id;
+    state.selectedProject = pid || null;
+    state.selectedWindow = el.dataset.wid;
+    state.selectedCase = null;
+    closeSettings(); render();
+  }
+  else if (act === "goto-case") openSettings("case", el.dataset.cid);
 });
 document.getElementById("modal-close").addEventListener("click", closeSettings);
 document.getElementById("modal-overlay").addEventListener("click", ev => { if (ev.target.id === "modal-overlay") closeSettings(); });
