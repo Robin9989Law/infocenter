@@ -1952,6 +1952,37 @@ class Store:
             _lazy_reconcile_all(conn, now)
             return _collect_projects(conn)
 
+    def recent_activity(self, limit: int = 50) -> list[dict]:
+        n = _limit(limit)
+        with self._session(readonly=True) as conn:
+            rows = conn.execute(
+                """
+                SELECT n.id, n.case_id, n.agent, n.window_id, n.action, n.note, n.auto, n.created_at,
+                       c.title AS case_title, c.workspace AS workspace
+                FROM case_nodes n
+                LEFT JOIN cases c ON c.id = n.case_id
+                ORDER BY n.id DESC
+                LIMIT ?
+                """,
+                (n,),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "case_id": row["case_id"],
+                "case_title": row["case_title"] or "",
+                "agent": row["agent"],
+                "window_id": row["window_id"] or "",
+                "action": row["action"],
+                "note": row["note"],
+                "auto": bool(row["auto"]),
+                "workspace": row["workspace"] or "",
+                "created_at": row["created_at"],
+                "created_at_local": local_time(row["created_at"]),
+            }
+            for row in rows
+        ]
+
 
 # ── 内部辅助函数 ──────────────────────────────────────────────────────────
 
@@ -2692,6 +2723,20 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     }
 
 
+def _pid_running(pid) -> bool:
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 1:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
 def _window_summary(row: sqlite3.Row) -> dict:
     state = row["state"]
     return {
@@ -2705,6 +2750,7 @@ def _window_summary(row: sqlite3.Row) -> dict:
         "activity_at": row["activity_at"],
         "activity_at_local": local_time(row["activity_at"]) if row["activity_at"] else "",
         "pid": row["pid"],
+        "pid_alive": _pid_running(row["pid"]),
         "first_seen_at": row["first_seen_at"],
         "first_seen": row["first_seen_at"],
         "first_seen_local": local_time(row["first_seen_at"]),

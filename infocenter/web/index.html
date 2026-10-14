@@ -19,6 +19,8 @@ h1 { font-size: 28px; margin-bottom: 24px; }
 .tag { font-size: 10px; background: #e5e5ea; color: #666; padding: 1px 6px; border-radius: 4px; vertical-align: middle; font-weight: 400; }
 .panel > div:not(.hint) { overflow-y: auto; flex: 1 1 auto; min-height: 0; }
 .panel .hint { font-size: 12px; color: #8e8e93; margin: -6px 0 10px; line-height: 1.4; flex: 0 0 auto; }
+.panel.wide { max-height: 42vh; margin-bottom: 24px; }
+.legend { font-size: 12px; color: #8e8e93; font-weight: 400; }
 .item { position: relative; padding: 10px 48px 10px 10px; margin: 8px 0; background: #f9f9f9; border-radius: 6px; cursor: pointer; transition: background 0.2s; }
 .item:hover { background: #e8e8e8; }
 .item.active { background: #007aff; color: white; }
@@ -31,6 +33,10 @@ h1 { font-size: 28px; margin-bottom: 24px; }
 .arch:hover { opacity: 1; background: rgba(0,0,0,0.08); }
 .item.active .arch { color: white; opacity: 0.85; }
 .item.has-arch { padding-right: 76px; }
+.stat { position: absolute; top: 7px; right: 30px; border: none; background: transparent; cursor: pointer; font-size: 16px; line-height: 1; padding: 4px 6px; border-radius: 4px; opacity: 0.45; }
+.stat:hover { opacity: 1; background: rgba(0,0,0,0.08); }
+.item.active .stat { color: white; opacity: 0.85; }
+.item.has-stat { padding-right: 76px; }
 .item.active .gear { color: white; opacity: 0.85; }
 .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
 .status.在办, .status.open, .status.doing { background: #34c759; color: white; }
@@ -88,7 +94,7 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
   </div>
   <div class="panel">
     <h2>办公室</h2>
-    <div class="hint">点一行选中 → 右边过滤；点 ⚙️ → 办公室设置</div>
+    <div class="hint">点一行选中 → 右边过滤；点 ⚙️ → 办公室设置。状态：在办=在线 / 暂停=已叫停 / 离场=已退出</div>
     <div id="windows"></div>
   </div>
   <div class="panel">
@@ -96,6 +102,11 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
     <div class="hint">点一行 → 直接打开案件设置（节点 / 操作）</div>
     <div id="cases"></div>
   </div>
+</div>
+
+<div class="panel wide">
+  <h2>工作痕迹 <span class="legend">最近活动：谁 · 何时 · 做了什么（跨项目、来自案卷节点）</span></h2>
+  <div id="activity"></div>
 </div>
 
 <div id="modal-overlay" class="modal-overlay">
@@ -118,7 +129,8 @@ let state = {
   selectedWindow: null,
   selectedCase: null,
   settingsTarget: null,
-  showArchived: false
+  showArchived: false,
+  activity: []
 };
 
 async function api(path, opts = {}) {
@@ -158,6 +170,11 @@ async function loadCases() {
 async function loadAgents() {
   try { const data = await api("/v1/agents"); state.agents = data.agents || []; }
   catch (e) { console.error("loadAgents", e); }
+}
+async function loadActivity() {
+  try { const data = await api("/v1/activity?limit=80"); state.activity = data.activity || []; }
+  catch (e) { console.error("loadActivity", e); }
+  render();
 }
 
 function escapeHtml(s) {
@@ -218,7 +235,8 @@ function render() {
       const wid = escapeHtml(w.window_id || w.id);
       const proj = w.workspace ? String(w.workspace).split("/").filter(Boolean).pop() : "";
       return `
-      <div class="item ${state.selectedWindow === (w.window_id || w.id) ? 'active' : ''}" data-window-id="${wid}">
+      <div class="item has-stat ${state.selectedWindow === (w.window_id || w.id) ? 'active' : ''}" data-window-id="${wid}">
+        <button class="stat" data-stat-window="${wid}" title="实时状态 / 历史痕迹">&#128202;</button>
         <button class="gear" data-gear="window" data-gear-id="${wid}" title="办公室设置">&#9881;</button>
         <div class="title">${escapeHtml(w.agent)}${proj ? " · " + escapeHtml(proj) : ""}</div>
         <div class="meta"><span class="status ${cls}">${escapeHtml(st)}</span> · 窗口 ${wid} · 最近 ${escapeHtml(w.last_seen_local || "")}</div>
@@ -255,6 +273,24 @@ function render() {
     wire(caseEl, ".item[data-case-id]", it => openSettings("case", it.dataset.caseId));
   }
 
+  // 工作痕迹
+  const actEl = document.getElementById("activity");
+  if (actEl) {
+    if (state.activity.length === 0) {
+      actEl.innerHTML = '<div class="empty">暂无活动</div>';
+    } else {
+      actEl.innerHTML = `<table class="nodes"><thead><tr><th>时间</th><th>操作人</th><th>节点</th><th>内容</th><th>案卷</th></tr></thead><tbody>`
+        + state.activity.map(a => `<tr class="${a.auto ? 'auto' : ''}">
+            <td class="time">${escapeHtml(a.created_at_local || "")}</td>
+            <td>${escapeHtml(a.agent || "")}</td>
+            <td class="action">${escapeHtml(a.action || "")}${a.auto ? ' [自动]' : ''}</td>
+            <td class="note">${escapeHtml(a.note || "")}</td>
+            <td>${escapeHtml(a.case_title || "")}</td>
+          </tr>`).join("")
+        + `</tbody></table>`;
+    }
+  }
+
   function wire(root, sel, onClick) {
     root.querySelectorAll(sel).forEach(item => item.addEventListener("click", () => onClick(item)));
     root.querySelectorAll(".gear").forEach(g => g.addEventListener("click", ev => {
@@ -264,6 +300,10 @@ function render() {
     root.querySelectorAll(".arch").forEach(b => b.addEventListener("click", ev => {
       ev.stopPropagation();
       toggleArchive(b.dataset.archId);
+    }));
+    root.querySelectorAll(".stat").forEach(b => b.addEventListener("click", ev => {
+      ev.stopPropagation();
+      openSettings("window-status", b.dataset.statWindow);
     }));
   }
 }
@@ -351,6 +391,7 @@ function openSettings(kind, id) {
       <div class="kv"><b>最近活动</b>${escapeHtml(w.activity_at_local || w.last_seen_local || "")}</div>
       ${w.activity ? `<div class="kv"><b>在做什么</b>${escapeHtml(w.activity)}</div>` : ""}
       <div class="kv"><b>进程</b>${w.pid != null ? escapeHtml(String(w.pid)) : "—"}</div>
+      <div class="kv" style="color:#8e8e93">状态：在办=会话在线；暂停=已叫停（可恢复）；离场=已退出（名下未封卷案卷自动中止封卷）。</div>
 
       <div class="section-title">操作</div>
       <div class="settings-actions">
@@ -364,6 +405,35 @@ function openSettings(kind, id) {
         <div class="mini" data-act="goto-case" data-cid="${escapeHtml(c.id)}">
           ${escapeHtml(c.title)} · ${escapeHtml(c.status_label || c.status || "")}
         </div>`).join("")}`;
+    overlay.classList.add("show");
+    return;
+  }
+
+  if (kind === "window-status") {
+    const w = state.windows.find(x => (x.window_id || x.id) === id) || {};
+    const st = w.state_label || w.state || "";
+    const alive = w.pid != null ? Boolean(w.pid_alive) : null;
+    const traces = state.activity.filter(a => a.window_id === id || (!a.window_id && w.agent && a.agent === w.agent));
+    titleEl.textContent = "办公室实时状态 · " + (w.agent || "") + " · " + id;
+    bodyEl.innerHTML = `
+      <div class="section-title">实时状态</div>
+      <div class="kv"><b>身份 / 窗口</b>${escapeHtml(w.agent || "")} · ${escapeHtml(id)}</div>
+      <div class="kv"><b>项目</b>${escapeHtml(w.workspace || "—")}</div>
+      <div class="kv"><b>状态</b>${escapeHtml(st)} · ${alive === null ? "无进程记录" : (alive ? "进程存活 ✓" : "进程已不在 ✗")}</div>
+      <div class="kv"><b>进程 pid</b>${w.pid != null ? escapeHtml(String(w.pid)) : "—"}</div>
+      <div class="kv"><b>最近活动</b>${escapeHtml(w.activity_at_local || w.last_seen_local || "")}</div>
+      ${w.activity ? `<div class="kv"><b>在做什么</b>${escapeHtml(w.activity)}</div>` : ""}
+      <div class="kv"><b>名下未封卷案卷</b>${w.case_count != null ? w.case_count : (w.cases || []).length} 份</div>
+      <div class="settings-actions"><button class="btn resume" data-act="refresh-stat">刷新</button></div>
+
+      <div class="section-title">历史痕迹（${traces.length}）</div>
+      ${traces.length === 0 ? '<div class="empty">暂无痕迹</div>' : `<table class="nodes"><thead><tr><th>时间</th><th>节点</th><th>内容</th><th>案卷</th></tr></thead><tbody>`
+        + traces.map(a => `<tr class="${a.auto ? 'auto' : ''}">
+            <td class="time">${escapeHtml(a.created_at_local || "")}</td>
+            <td class="action">${escapeHtml(a.action || "")}${a.auto ? ' [自动]' : ''}</td>
+            <td class="note">${escapeHtml(a.note || "")}</td>
+            <td>${escapeHtml(a.case_title || "")}</td>
+          </tr>`).join("") + `</tbody></table>`}`;
     overlay.classList.add("show");
     return;
   }
@@ -433,6 +503,11 @@ async function saveProject() {
     closeSettings(); await loadProjects();
   } catch (e) { alert("保存失败：" + e.message); }
 }
+async function refreshWindowStatus() {
+  const id = state.settingsTarget && state.settingsTarget.id;
+  await loadWindows(); await loadActivity();
+  if (id) openSettings("window-status", id);
+}
 async function crewAction(action) {
   const id = state.settingsTarget && state.settingsTarget.id;
   if (action === "up") {
@@ -479,7 +554,7 @@ async function createCaseFromSettings() {
   else { payload.note = text || undefined; }                         // 只建案卷
   try {
     await api("/v1/cases", { method: "POST", body: payload });
-    closeSettings(); await loadCases(); await loadProjects();
+    closeSettings(); await loadCases(); await loadProjects(); await loadActivity();
   } catch (e) { alert("立案失败：" + e.message); }
 }
 async function doWindow(action) {
@@ -491,14 +566,14 @@ async function doWindow(action) {
       if (!confirm("确定停用办公室 " + id + "？会离场并自动中止且封卷其名下全部未封卷案卷。")) return;
       await api("/v1/windows/" + encodeURIComponent(id) + "/leave", { method: "POST" });
     }
-    closeSettings(); await loadWindows(); await loadCases();
+    closeSettings(); await loadWindows(); await loadCases(); await loadActivity();
   } catch (e) { alert("操作失败：" + e.message); }
 }
 async function doCase(action) {
   const id = state.settingsTarget && state.settingsTarget.id;
   try {
     await api("/v1/cases/" + encodeURIComponent(id) + "/" + action, { method: "POST" });
-    closeSettings(); await loadCases(); await loadProjects();
+    closeSettings(); await loadCases(); await loadProjects(); await loadActivity();
   } catch (e) { alert("操作失败：" + e.message); }
 }
 
@@ -521,6 +596,7 @@ document.getElementById("modal-body").addEventListener("click", ev => {
   else if (act === "abort-case") doCase("abort");
   else if (act === "close-case") doCase("close");
   else if (act === "reopen-case") doCase("reopen");
+  else if (act === "refresh-stat") refreshWindowStatus();
   else if (act === "goto-window") {
     const pid = state.settingsTarget && state.settingsTarget.id;
     state.selectedProject = pid || null;
@@ -544,6 +620,7 @@ loadProjects();
 loadWindows();
 loadCases();
 loadAgents();
+loadActivity();
 </script>
 </body>
 </html>

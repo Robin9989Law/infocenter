@@ -198,6 +198,15 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         if action == "down":
             return 200, _crew.down(home, project_path, only)
         raise MailError("invalid_action", "action 需为 up 或 down", 400)
+
+    if path == "/v1/activity":
+        if method != "GET":
+            raise MailError("method_not_allowed", "只支持 GET", 405)
+        try:
+            limit = int(query.get("limit", ["50"])[0])
+        except (TypeError, ValueError):
+            limit = 50
+        return 200, {"activity": store.recent_activity(limit)}
     window_id = _resolve_window(headers, query, body)
     req_pid = _resolve_pid(headers, body)
     raw_agent = headers.get("X-Agent") if headers is not None else None
