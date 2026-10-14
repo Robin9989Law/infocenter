@@ -307,6 +307,14 @@ function openSettings(kind, id) {
           : '<button class="btn abort" data-act="archive-project">归档此项目</button>'}
       </div>
 
+      <div class="section-title">守护（让 agent 上线干活）</div>
+      <div class="kv"><b>在跑</b>${wins.filter(w => (w.state_label || w.state) === "在办").length} 间办公室</div>
+      <div class="settings-actions">
+        <button class="btn resume" data-act="crew-up">启动守护</button>
+        <button class="btn abort" data-act="crew-down">停止守护</button>
+      </div>
+      <div class="kv" style="color:#8e8e93">启动只拉起该项目各身份的收信守护（不开 tmux/窗口），等同终端 ic crew up --dir &lt;路径&gt;。</div>
+
       <div class="section-title">立案（在该项目下新建案卷）</div>
       <div class="form-row"><label>案卷标题</label><input id="s-case-title" placeholder="例如：实现联邦同步"></div>
       <div class="form-row"><label>指派给（选了就同时发一封始信，触发对方开工）</label>
@@ -423,6 +431,14 @@ async function saveProject() {
     closeSettings(); await loadProjects();
   } catch (e) { alert("保存失败：" + e.message); }
 }
+async function crewAction(action) {
+  const id = state.settingsTarget && state.settingsTarget.id;
+  try {
+    const r = await api("/v1/crew", { method: "POST", body: { action, dir: id } });
+    alert((r.lines || []).join("\n") || "完成");
+    closeSettings(); await loadWindows(); await loadProjects();
+  } catch (e) { alert("操作失败：" + e.message); }
+}
 async function toggleArchive(ws) {
   const p = state.projects.find(x => x.workspace === ws);
   const arch = !(p && p.archived);
@@ -488,6 +504,8 @@ document.getElementById("modal-body").addEventListener("click", ev => {
   else if (act === "save-project") saveProject();
   else if (act === "archive-project") archiveProject(true);
   else if (act === "unarchive-project") archiveProject(false);
+  else if (act === "crew-up") crewAction("up");
+  else if (act === "crew-down") crewAction("down");
   else if (act === "create-case") createCaseFromSettings();
   else if (act === "pause-window") doWindow("pause");
   else if (act === "resume-window") doWindow("resume");

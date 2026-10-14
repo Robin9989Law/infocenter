@@ -172,8 +172,32 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         or path == "/v1/projects"
         or path.startswith("/v1/projects/")
     )
-    _check_write_security(method, headers, raw, is_d_route)
+    _check_write_security(method, headers, raw, is_d_route or path == "/v1/crew")
     body = _json_object(raw)
+
+    if path == "/v1/crew":
+        from pathlib import Path as _Path
+        from infocenter import crew as _crew
+
+        home = store.path.parent
+        host = (headers.get("Host") if headers is not None else None) or "127.0.0.1:8787"
+        url = "http://" + str(host)
+        if method == "GET":
+            q_dir = query.get("dir", [None])[0]
+            return 200, _crew.status(home, str(_Path(q_dir).expanduser().resolve()) if q_dir else None)
+        if method != "POST":
+            raise MailError("method_not_allowed", "只支持 GET / POST", 405)
+        action = (_opt_str(body, "action") or "").strip()
+        project = _opt_str(body, "dir")
+        only = _opt_str(body, "only") or ""
+        if not project:
+            raise MailError("invalid_dir", "需要 dir（项目目录）", 400)
+        project_path = str(_Path(project).expanduser().resolve())
+        if action == "up":
+            return 200, _crew.up(home, url, project_path, only)
+        if action == "down":
+            return 200, _crew.down(home, project_path, only)
+        raise MailError("invalid_action", "action 需为 up 或 down", 400)
     window_id = _resolve_window(headers, query, body)
     req_pid = _resolve_pid(headers, body)
     raw_agent = headers.get("X-Agent") if headers is not None else None
