@@ -148,7 +148,7 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
     <div id="projects"></div>
   </div>
   <div class="panel">
-    <div class="panel-head"><h2>办公室</h2><button class="refresh sm" id="btn-r-win" title="刷新">&#8635;</button></div>
+    <div class="panel-head"><h2>办公室</h2><span class="head-tools"><select id="f-win-state" class="mini-select"><option value="">全部状态</option></select><button class="refresh sm" id="btn-r-win" title="刷新">&#8635;</button></span></div>
     <div class="hint">点一行选中 → 右边过滤；点 ⚙️ → 办公室设置。状态：在办=在线 / 暂停=已叫停 / 离场=已退出</div>
     <div id="windows"></div>
   </div>
@@ -197,6 +197,7 @@ let state = {
   activity: [],
   activityFilters: { project: "", agent: "", case: "", q: "" },
   caseStatus: "",
+  winState: "",
   mail: [],
   mailAgent: null,
   headless: [],
@@ -331,9 +332,16 @@ function render() {
 
   // 办公室
   const winEl = document.getElementById("windows");
-  const shownWins = state.selectedProject
+  const winStateSel = document.getElementById("f-win-state");
+  if (winStateSel) {
+    const labels = [...new Set(state.windows.map(w => w.state_label || w.state).filter(Boolean))];
+    winStateSel.innerHTML = '<option value="">全部状态</option>' + labels.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join("");
+    winStateSel.value = state.winState || "";
+  }
+  let shownWins = state.selectedProject
     ? state.windows.filter(w => sameWs(w.workspace, state.selectedProject))
     : state.windows;
+  if (state.winState) shownWins = shownWins.filter(w => (w.state_label || w.state) === state.winState);
   if (shownWins.length === 0) {
     winEl.innerHTML = `<div class="empty">${state.selectedProject ? "该项目暂无办公室" : "暂无办公室"}</div>`;
   } else {
@@ -1004,6 +1012,7 @@ document.getElementById("f-agent").addEventListener("change", e => { state.activ
 document.getElementById("f-case").addEventListener("change", e => { state.activityFilters.case = e.target.value; render(); });
 document.getElementById("f-q").addEventListener("input", e => { state.activityFilters.q = e.target.value.trim(); render(); });
 document.getElementById("f-case-status").addEventListener("change", e => { state.caseStatus = e.target.value; render(); });
+document.getElementById("f-win-state").addEventListener("change", e => { state.winState = e.target.value; render(); });
 async function refreshAll() {
   await loadProjects(); await loadWindows(); await loadCases(); await loadAgents(); await loadActivity(); await loadHeadless(); await loadDaemons(); await loadRuns();
 }
