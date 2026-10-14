@@ -204,7 +204,7 @@ async function loadAgents() {
   render();
 }
 async function loadActivity() {
-  try { const data = await api("/v1/activity?limit=200"); state.activity = data.activity || []; }
+  try { const data = await api("/v1/activity?limit=100"); state.activity = data.activity || []; }
   catch (e) { console.error("loadActivity", e); }
   render();
 }
