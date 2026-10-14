@@ -527,6 +527,12 @@ function openSettings(kind, id) {
           ${opts}
         </select>
       </div>
+      <div class="form-row"><label>项目（选了 → 该项目的守护会自动收到并开工；不选 = 无项目，仅交互会话可见）</label>
+        <select id="s-msg-ws">
+          <option value="">（不带项目）</option>
+          ${state.projects.filter(p => !p.archived).map(p => `<option value="${escapeHtml(p.workspace)}">${escapeHtml(p.name || p.workspace)}</option>`).join("")}
+        </select>
+      </div>
       <div class="form-row"><label>主题</label><input id="s-msg-subject" placeholder="主题"></div>
       <div class="form-row"><label>正文</label><textarea id="s-msg-body" placeholder="正文（可留空）"></textarea></div>
       <button class="btn-primary" data-act="send-human">发送</button>
@@ -624,11 +630,15 @@ async function sendHuman() {
   const to = Array.from(sel.selectedOptions).map(o => o.value);
   const subject = document.getElementById("s-msg-subject").value.trim();
   const body = document.getElementById("s-msg-body").value;
+  const wsEl = document.getElementById("s-msg-ws");
+  const workspace = wsEl ? wsEl.value : "";
   if (to.length === 0) { alert("请选收件人"); return; }
   if (!subject) { alert("请填主题"); return; }
+  const payload = { to: to.join(","), subject, body };
+  if (workspace) payload.workspace = workspace;
   try {
-    await api("/v1/messages", { method: "POST", body: { to: to.join(","), subject, body } });
-    alert("已发送");
+    await api("/v1/messages", { method: "POST", body: payload });
+    alert("已发送" + (workspace ? "（带项目，守护会开工）" : "（无项目，仅交互会话可见）"));
     closeSettings();
     await loadAgents(); await loadActivity();
   } catch (e) { alert("发送失败：" + e.message); }
