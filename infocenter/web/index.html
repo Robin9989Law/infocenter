@@ -235,8 +235,10 @@ function render() {
   }
 
   const caseEl = document.getElementById("cases");
+  const selWin = state.selectedWindow ? state.windows.find(w => (w.window_id || w.id) === state.selectedWindow) : null;
   const shownCases = state.selectedWindow
-    ? state.cases.filter(c => c.owner_window === state.selectedWindow)
+    ? state.cases.filter(c => c.owner_window === state.selectedWindow
+        || (!c.owner_window && selWin && c.owner_agent === selWin.agent))
     : (state.selectedProject ? state.cases.filter(c => sameWs(c.workspace, state.selectedProject)) : state.cases);
   if (shownCases.length === 0) {
     caseEl.innerHTML = `<div class="empty">${state.selectedWindow ? "该办公室暂无案件" : (state.selectedProject ? "该项目暂无案件" : "暂无案件")}</div>`;
