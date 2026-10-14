@@ -38,6 +38,7 @@ h1 { font-size: 26px; margin-bottom: 24px; }
 .item.active { background: #007aff; color: white; }
 .item .title { font-weight: 500; }
 .item .meta { font-size: 12px; color: #666; margin-top: 4px; }
+.cid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: #8e8e93; }
 .item.active .meta { color: rgba(255,255,255,0.85); }
 .gear { position: absolute; top: 6px; right: 4px; border: none; background: transparent; cursor: pointer; font-size: 19.5px; line-height: 1; padding: 4px 6px; border-radius: 4px; opacity: 0.45; }
 .gear:hover { opacity: 1; background: rgba(0,0,0,0.08); }
@@ -283,7 +284,7 @@ function render() {
       return `
       <div class="item" data-case-id="${cid}">
         <div class="title">${escapeHtml(c.title)}</div>
-        <div class="meta"><span class="status ${cls}">${escapeHtml(st)}</span> ${owner ? '主办 ' + escapeHtml(owner) : ''}</div>
+        <div class="meta"><span class="cid">${cid}</span> <span class="status ${cls}">${escapeHtml(st)}</span> ${owner ? '主办 ' + escapeHtml(owner) : ''}</div>
         <div class="meta">${escapeHtml(last)}</div>
       </div>`;
     }).join("");
@@ -516,6 +517,7 @@ function openSettings(kind, id) {
     const canResume = raw === "paused" || (!raw && st === "暂停");
     titleEl.textContent = "案件设置 · " + (c.title || id);
     bodyEl.innerHTML = `
+      <div class="kv"><b>案件编号</b><span class="cid">${escapeHtml(id)}</span></div>
       <div class="kv"><b>标题</b>${escapeHtml(c.title || "")}</div>
       <div class="kv"><b>状态</b>${escapeHtml(st)}</div>
       <div class="kv"><b>主办</b>${escapeHtml(c.owner_agent || c.owner_window || "—")}</div>
