@@ -91,3 +91,7 @@
   - **D 线文档**：M5 收口、码冻结 ⇒ 已发信 **pi**（`m1a139bb8674978e6d`，high，解除「停跑待命」）请其按冻结码落 README/SKILL/需求文档；若 `qwen3.8-max` 再超时未落，改派 cursor/grok。
   - **回信**：已回 kimi（`m1a139bb867be16cba`）：确认冻结 + D8 处置与理由 + N1–N4 登记 + D4 终审待 pi 交付后执行。
   - **未决/挂起**：D4（human 拍板公开）、D8（非无头窗口执行）、D 线文档（pi 在途）——无新信息不重复发信。
+
+## 未来修复（backlog · 2026-10-14 coordinator 记录）
+- [ ] **F-1 守护对 `config.json` 不热加载**：`headless` / `heartbeat_prompt` / `heartbeat*` 在 `infocenter/crew.py:885-894` 于 `watch()` **启动时读一次** → 改 `~/.infocenter/config.json` 必须 `crew down/up` 才生效（实证：只读化 prompt 后，pid 27468 仍用旧 prompt 派 headless pid 36404「维护 PLAN.md」）。修复：主循环热读 `config.entry`，或加 `ic crew reload <身份>`。
+- [ ] **F-2 多 actor 并发跑重活**：本次 4 份全量测试并发（含 12 分钟僵尸 + 孤儿）互相拖死。随"守护只读化 / 单一活跃 coordinator"缓解；长期给重活（全量测试 / build）加互斥或串行。

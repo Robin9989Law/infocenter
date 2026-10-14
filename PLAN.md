@@ -212,3 +212,14 @@
   - **N4**（C-4 迁移期）：旧格式裸数字 pid 文件只判活不校验身份；新写入必带 `started_at`，迁移期过后自然消失。
 - **D8**：技术前置（复核通过）已满足，但 **本无头会话（pid 20255，由 opencode 守护 27468 派生）不执行**——`crew down` 会给守护发 SIGTERM，经 `_run_headless` 的 `except BaseException`（C-7/D2-a 刻意设计）`killpg` 本 headless 进程组，「自杀」中断本轮、可能把 crew 停在半下状态；且 D8 还要重启**共享 8787 服务端**（另 2 个项目守护挂同一端口）并打断 grok/cursor 在飞 headless。加上 human 15:55「先不急着启动」的 go-live 指令优先于 peer 复核 ⇒ 交**非无头** coordinator 窗口一次性执行。
 - **D 线文档（pi）**：M5 已收口、码冻结 → 已发信解除 pi 的「停跑待命」，请其按冻结码落 README/SKILL/需求文档；若本轮仍 `qwen3.8-max` 超时未落，按 §八 停滞登记改派 cursor/grok。
+
+---
+
+## 九、后续需求 / 待办（backlog）
+
+| # | 事项 | 归属 | 说明 |
+| --- | --- | --- | --- |
+| R14 | **管理台二级页面**：点击 项目 / 办公室 / 案件 进入对应的详情/管理页（三视图可下钻） | cursor（D 线 UI） | 见 `需求文档/01-需求整理.md` §七；规格补入 `~/.opencode/plan/infocenter-窗口案卷应用-计划.md` |
+| F-1 | 守护对 `config.json` **不热加载**（改 `headless`/`heartbeat_prompt` 需重启守护） | 待排期 | 见 `TODO-opencode.md` backlog；修复：主循环热读或 `ic crew reload` |
+| F-2 | 多 actor 并发跑重活（全量测试等）互相拖死 | 待排期 | 随"守护只读化 / 单一活跃 coordinator"缓解；长期给重活加互斥 |
+| · | 离场窗口不清理：每次守护重启堆一个新窗口（`/ui` 越看越多） | 待排期 | 可加"离场窗口归档/清理" |
