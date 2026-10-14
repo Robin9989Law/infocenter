@@ -1959,7 +1959,9 @@ class Store:
             rows = conn.execute(
                 """
                 SELECT m.id, m.thread_id, m.from_agent, m.subject, m.created_at, m.workspace,
-                       d.status AS my_status
+                       d.status AS my_status, d.claimed_by AS my_claimed_by,
+                       (SELECT c.title FROM cases c WHERE (c.id = m.thread_id OR c.thread_id = m.thread_id) LIMIT 1) AS case_title,
+                       (SELECT c.id FROM cases c WHERE (c.id = m.thread_id OR c.thread_id = m.thread_id) LIMIT 1) AS case_id
                 FROM messages m
                 LEFT JOIN deliveries d ON d.message_id = m.id AND d.to_agent = ?
                 WHERE m.from_agent = ?
@@ -1989,6 +1991,9 @@ class Store:
                         "workspace": row["workspace"] or "",
                         "direction": "out" if sent else "in",
                         "other": (", ".join(recips) if sent else row["from_agent"]),
+                        "claimed_by": row["my_claimed_by"] or "",
+                        "case_id": row["case_id"] or "",
+                        "case_title": row["case_title"] or "",
                         "my_status": row["my_status"] if not sent else None,
                         "created_at": row["created_at"],
                         "created_at_local": local_time(row["created_at"]),
