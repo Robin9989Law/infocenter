@@ -8,10 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **管理台 `/ui`**（单页、原生 `fetch`、无外链）：顶部成员状态条 + 项目 / 办公室 / 案件三栏级联；写操作全在二级页面（新建项目、设定地址、归档 / 取消归档、网页起停守护、立案、暂停 / 恢复 / 中止 / 办结 / 重开、转办）
+- **`/ui#human` 干预中枢**：向所有项目广播、对全局在跑的办公室与未结案卷直接干预、查看任一身份的信件往来
+- **一键重启** `POST /v1/restart`：重启服务端与全部在跑的项目守护，并轮询 `/health` 直到恢复
+- **打开项目文件夹** `POST /v1/open`：在系统文件管理器中打开项目目录
+- **headless 运行可观测**：记录历次运行的提示词与输出尾部（`crew/<key>.runs.jsonl`）与正在跑的那次提示词（`crew/<key>.prompt`）；`GET /v1/headless`、`GET /v1/headless/runs`
+- **单次 headless 墙钟上限 `headless_timeout`**（缺省 1800 秒）：到期进程组被 SIGKILL，守护不再整轮停摆
+- **窗口（办公室）· 案卷 · 应用**（D 线）：`X-Window` / `INFOCENTER_WINDOW`、`ic windows`、`ic cases` / `ic case --note`、立案 / 转办；离场自动中止未封卷案卷并补 `[自动]` 节点
+- **多 coordinator 治理**：单一活跃 coordinator / 禁影子写手的纪律，守护对计划只读
 - R10 跨机联邦（B 线）：网盘 JSON 中继传输层，`节点.名字` 身份命名
 
 ### Changed
-- 测试数量从 16 增加到 33（A 线质量加固）
+- **守护对 config 热加载**：每轮重读 `headless` / `heartbeat_mode` / `heartbeat_prompt` / `headless_timeout`（及未显式传入的 `heartbeat`），改配置无需重启守护；清空 `headless` 守护优雅退出
+- **成员名册**：`/v1/agents` 带 `roster` 标记，管理台只显示名册成员；项目按绝对路径为锚合并（裸目录名归并到同一项目）
+- **身份迁移**：`omp` 退役、由 `pi` 接管；清除幽灵身份 `coordinator`
+- 测试数量从 16 增加到 158（A 质量 / B 联邦 / C 发布 / D 窗口·案卷·应用 + M5 最后评审加固），全量零 `ResourceWarning`
+
+### Fixed
+- **命令注入（高危）**：headless 命令模板把 `{prompt}` 套进引号时的引号逃逸 → 拒绝并提示改法
+- 同一项目「绝对路径 + 裸目录名」合并时归档标记随机翻转（改为永远优先锚点元数据）
+- `POST /v1/crew`（`up`）指向不存在目录返回 400 而非 500
+- `headless_runs` / 守护 meta 遇到损坏（合法 JSON 但非对象）行不再让接口整体 500；负数 `limit` 不再误裁记录
+- `add_project` 返回项补齐 `archived` 等字段，与 `list_projects` 同口径
 
 ## [0.4.0] - 2026-10-14
 
