@@ -10,6 +10,11 @@ body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-
 h1 { font-size: 26px; margin-bottom: 24px; }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .topbar h1 { margin-bottom: 0; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.refresh { border: none; background: transparent; cursor: pointer; font-size: 20px; line-height: 1; color: #007aff; padding: 4px 7px; border-radius: 6px; }
+.refresh:hover { background: rgba(0,122,255,0.1); }
+.refresh.spin { animation: spin 0.8s linear; }
+@keyframes spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
 .agents { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .chip { background: #fff; border-radius: 6px; padding: 4px 10px; font-size: 12px; color: #1d1d1f; box-shadow: 0 1px 3px rgba(0,0,0,0.08); white-space: nowrap; cursor: pointer; }
 .chip b { font-weight: 600; }
@@ -104,7 +109,7 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 </head>
 <body>
 <div class="topbar">
-  <h1>信息中心 · 管理台</h1>
+  <div class="brand"><h1>信息中心 · 管理台</h1><button class="refresh" id="btn-refresh" title="刷新全部">&#8635;</button></div>
   <div id="agents" class="agents"></div>
 </div>
 
@@ -807,6 +812,14 @@ document.getElementById("f-proj").addEventListener("change", e => { state.activi
 document.getElementById("f-agent").addEventListener("change", e => { state.activityFilters.agent = e.target.value; render(); });
 document.getElementById("f-case").addEventListener("change", e => { state.activityFilters.case = e.target.value; render(); });
 document.getElementById("f-q").addEventListener("input", e => { state.activityFilters.q = e.target.value.trim(); render(); });
+async function refreshAll() {
+  await loadProjects(); await loadWindows(); await loadCases(); await loadAgents(); await loadActivity();
+}
+document.getElementById("btn-refresh").addEventListener("click", async ev => {
+  const b = ev.currentTarget;
+  b.classList.add("spin");
+  try { await refreshAll(); } finally { setTimeout(() => b.classList.remove("spin"), 800); }
+});
 document.getElementById("modal-overlay").addEventListener("click", ev => { if (ev.target.id === "modal-overlay") closeSettings(); });
 
 // 初始化
