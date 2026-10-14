@@ -76,7 +76,7 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
   </div>
   <div class="panel">
     <h2>案件</h2>
-    <div class="hint">点一行选中；点 ⚙️ → 节点 / 操作</div>
+    <div class="hint">点一行 → 直接打开案件设置（节点 / 操作）</div>
     <div id="cases"></div>
   </div>
 </div>
@@ -221,14 +221,13 @@ function render() {
       const last = c.last_note || (c.last_node && typeof c.last_node === "object" ? (c.last_node.note || c.last_node.line || "") : c.last_node) || "";
       const cid = escapeHtml(c.id);
       return `
-      <div class="item ${state.selectedCase === c.id ? 'active' : ''}" data-case-id="${cid}">
-        <button class="gear" data-gear="case" data-gear-id="${cid}" title="案件设置">&#9881;</button>
+      <div class="item" data-case-id="${cid}">
         <div class="title">${escapeHtml(c.title)}</div>
         <div class="meta"><span class="status ${cls}">${escapeHtml(st)}</span> ${owner ? '主办 ' + escapeHtml(owner) : ''}</div>
         <div class="meta">${escapeHtml(last)}</div>
       </div>`;
     }).join("");
-    wire(caseEl, ".item[data-case-id]", it => selectCase(it.dataset.caseId));
+    wire(caseEl, ".item[data-case-id]", it => openSettings("case", it.dataset.caseId));
   }
 
   function wire(root, sel, onClick) {
