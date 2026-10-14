@@ -15,6 +15,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -197,7 +198,7 @@ class WatchConfigHotReloadTest(unittest.TestCase):
     def _run_watch(self, fake_request, templates, expect_stop=True):
         from unittest.mock import patch
 
-        def fake_headless(template, prompt, proj, agent=None):
+        def fake_headless(template, prompt, proj, agent=None, timeout=None):
             templates.append(template)
 
         with (
@@ -244,6 +245,24 @@ class WatchConfigHotReloadTest(unittest.TestCase):
         code = self._run_watch(fake_request, templates, expect_stop=False)
         self.assertEqual(code, 0)
         self.assertEqual(templates, ["echo OLD"])
+
+
+class HeadlessTimeoutTest(unittest.TestCase):
+    """单次 headless 墙钟上限：默认值 / 身份配置覆盖 / 挂死进程被按时 SIGKILL。"""
+
+    def test_timeout_seconds_default_and_override(self):
+        self.assertEqual(crew._headless_timeout_seconds({}), crew.HEADLESS_TIMEOUT)
+        self.assertEqual(crew._headless_timeout_seconds({"headless_timeout": 300}), 300)
+        self.assertEqual(crew._headless_timeout_seconds({"headless_timeout": "bad"}), crew.HEADLESS_TIMEOUT)
+        self.assertEqual(crew._headless_timeout_seconds({"headless_timeout": 1}), 10)  # 下限 10s
+
+    def test_run_headless_kills_hung_process_at_timeout(self):
+        with tempfile.TemporaryDirectory() as project:
+            start = time.monotonic()
+            outcome = crew._run_headless("sleep 30", "x", project, agent="grok", timeout=1)
+            elapsed = time.monotonic() - start
+        self.assertEqual(outcome, "timeout")
+        self.assertLess(elapsed, 15)
 
 
 if __name__ == "__main__":

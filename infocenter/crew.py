@@ -86,6 +86,8 @@ def log_file(home, key: str) -> Path:
 _PID_START_SLACK = 15
 OFFICE_REGISTER_ATTEMPTS = 3
 _HEADLESS_RETRY = {"timeout", "fail", "start_failed", "interrupted"}
+# 单次 headless 的默认墙钟上限（秒）；可在身份配置里用 "headless_timeout" 覆盖。
+HEADLESS_TIMEOUT = 1800
 _HEADLESS_RETRY_BASE = 2
 _HEADLESS_RETRY_MAX = 300
 
@@ -418,6 +420,15 @@ def _heartbeat_seconds(item: dict) -> int:
     except (TypeError, ValueError):
         beat = 0
     return max(0, min(beat, 86400))
+
+
+def _headless_timeout_seconds(item: dict) -> int:
+    """身份配置 "headless_timeout"：单次 headless 的墙钟上限（秒），缺省回落 HEADLESS_TIMEOUT。"""
+    try:
+        secs = int(item.get("headless_timeout") or HEADLESS_TIMEOUT)
+    except (TypeError, ValueError):
+        secs = HEADLESS_TIMEOUT
+    return max(10, min(secs, 7 * 86400))
 
 
 def up(home, url: str, project: str, only: str = "", dry_run: bool = False) -> dict:
@@ -1068,6 +1079,7 @@ def watch(
                 break
             mode = str((entry or {}).get("heartbeat_mode") or "idle").strip().lower()
             custom_prompt = str((entry or {}).get("heartbeat_prompt") or "").strip() or None
+            htimeout = _headless_timeout_seconds(entry or {})
             if heartbeat_from_config:
                 new_heartbeat = _heartbeat_seconds(entry or {})
                 heartbeat = max(0, min(int(new_heartbeat or 0), 86400))
@@ -1106,7 +1118,7 @@ def watch(
                 if fresh:
                     prompt = build_prompt(agent, project, fresh, int(payload.get("unread_total") or len(fresh)))
                     print(f"[{utcnow()}] 本项目新信 {len(fresh)} 封，触发 headless", flush=True)
-                    outcome = _run_headless(template, prompt, project, agent=agent)
+                    outcome = _run_headless(template, prompt, project, agent=agent, timeout=htimeout)
                     if outcome in _HEADLESS_RETRY:
                         retry_rounds += 1
                         # N2：同一批信只补一次 [自动] 中断节点，避免永久失败时刷屏写一堆。
@@ -1135,6 +1147,7 @@ def watch(
                         build_heartbeat_prompt(agent, project, is_coord, custom_prompt, coordinator_name=coord_name),
                         project,
                         agent=agent,
+                        timeout=htimeout,
                     )
                     _commit(new_cursor)
                     last_run = time.monotonic()
@@ -1237,8 +1250,14 @@ def _substitute_prompt(template: str, prompt: str) -> str:
     return "".join(out)
 
 
-def _run_headless(template: str, prompt: str, project: str, agent: str | None = None) -> str:
-    """跑一轮 headless。返回 ok / timeout / interrupted / fail / start_failed。"""
+def _run_headless(
+    template: str, prompt: str, project: str, agent: str | None = None,
+    timeout: int = HEADLESS_TIMEOUT,
+) -> str:
+    """跑一轮 headless。返回 ok / timeout / interrupted / fail / start_failed。
+
+    timeout：单次墙钟上限（秒，来自身份配置 headless_timeout，缺省 HEADLESS_TIMEOUT）。
+    挂死的进程最多阻塞这么久即被 SIGKILL，守护随即可继续收信。"""
     env = os.environ.copy()
     if agent:
         env["INFOCENTER_AGENT"] = agent
@@ -1279,9 +1298,9 @@ def _run_headless(template: str, prompt: str, project: str, agent: str | None = 
     try:
         try:
             if stdin_text is None:
-                stdout, stderr = proc.communicate(timeout=1800)
+                stdout, stderr = proc.communicate(timeout=timeout)
             else:
-                stdout, stderr = proc.communicate(stdin_text, timeout=1800)
+                stdout, stderr = proc.communicate(stdin_text, timeout=timeout)
         except subprocess.TimeoutExpired:
             outcome = "timeout"
             _signal_group(proc.pid, signal.SIGKILL)
@@ -1319,7 +1338,7 @@ def _run_headless(template: str, prompt: str, project: str, agent: str | None = 
                 print(f"[{utcnow()}] headless 退出码 {code}，输出尾部：{tail}", flush=True)
                 outcome = "fail"
         if outcome == "timeout":
-            print(f"[{utcnow()}] headless 超时（30 分钟）", flush=True)
+            print(f"[{utcnow()}] headless 超时（{timeout} 秒）", flush=True)
     finally:
         _note_headless_pid(None)
         if h_home and h_key:

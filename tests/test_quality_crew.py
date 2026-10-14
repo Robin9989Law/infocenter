@@ -252,7 +252,7 @@ class CrewQualityTest(unittest.TestCase):
                 clock[0] = 116.0  # 第 2 轮无新信
             return item
 
-        def fake_headless(template, prompt, proj, agent=None):
+        def fake_headless(template, prompt, proj, agent=None, timeout=None):
             headless_calls.append(prompt)
 
         with (
