@@ -1952,6 +1952,50 @@ class Store:
             _lazy_reconcile_all(conn, now)
             return _collect_projects(conn)
 
+    def agent_messages(self, agent: str, limit: int = 100) -> list[dict]:
+        name = normalize_name(agent)
+        n = _limit(limit)
+        with self._session(readonly=True) as conn:
+            rows = conn.execute(
+                """
+                SELECT m.id, m.thread_id, m.from_agent, m.subject, m.created_at, m.workspace,
+                       d.status AS my_status
+                FROM messages m
+                LEFT JOIN deliveries d ON d.message_id = m.id AND d.to_agent = ?
+                WHERE m.from_agent = ?
+                   OR EXISTS (SELECT 1 FROM deliveries d2 WHERE d2.message_id = m.id AND d2.to_agent = ?)
+                ORDER BY m.created_at DESC, m.id DESC
+                LIMIT ?
+                """,
+                (name, name, name, n),
+            ).fetchall()
+            out = []
+            for row in rows:
+                recips = [
+                    r["to_agent"]
+                    for r in conn.execute(
+                        "SELECT to_agent FROM deliveries WHERE message_id = ? ORDER BY to_agent",
+                        (row["id"],),
+                    )
+                ]
+                sent = row["from_agent"] == name
+                out.append(
+                    {
+                        "id": row["id"],
+                        "thread_id": row["thread_id"],
+                        "from": row["from_agent"],
+                        "to": recips,
+                        "subject": row["subject"],
+                        "workspace": row["workspace"] or "",
+                        "direction": "out" if sent else "in",
+                        "other": (", ".join(recips) if sent else row["from_agent"]),
+                        "my_status": row["my_status"] if not sent else None,
+                        "created_at": row["created_at"],
+                        "created_at_local": local_time(row["created_at"]),
+                    }
+                )
+        return out
+
     def recent_activity(self, limit: int = 50) -> list[dict]:
         n = _limit(limit)
         with self._session(readonly=True) as conn:

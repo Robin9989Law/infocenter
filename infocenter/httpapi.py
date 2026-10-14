@@ -230,6 +230,14 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
             a["roster"] = a.get("name") in roster
         return 200, {"agents": agents}
 
+    if method == "GET" and path.startswith("/v1/agents/") and path.endswith("/messages"):
+        name = normalize_name(path[len("/v1/agents/") : -len("/messages")].strip("/"))
+        try:
+            limit = int(query.get("limit", ["100"])[0])
+        except (TypeError, ValueError):
+            limit = 100
+        return 200, {"agent": name, "messages": store.agent_messages(name, limit)}
+
     if method == "PUT" and path.startswith("/v1/agents/"):
         name = normalize_name(_one(path, "/v1/agents/"))
         if name != agent:
