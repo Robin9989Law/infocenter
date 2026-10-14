@@ -56,17 +56,17 @@ h1 { font-size: 28px; margin-bottom: 24px; }
 <div class="grid">
   <div class="panel">
     <h2>项目</h2>
-    <div class="hint">一个本地项目目录</div>
+    <div class="hint">点一个项目 → 中间列出它的办公室</div>
     <div id="projects"></div>
   </div>
   <div class="panel">
     <h2>办公室</h2>
-    <div class="hint">一个会话 / 守护算一间；同一身份开多个会话＝多间。「离场并封卷」会中止该办公室名下所有未结案卷，慎用。</div>
+    <div class="hint">点一间 → 右边列出它的案件。「离场并封卷」会中止其未结案卷，慎用。</div>
     <div id="windows"></div>
   </div>
   <div class="panel">
     <h2>案件</h2>
-    <div class="hint">一条工作线（thread）的办事追踪</div>
+    <div class="hint">点一条 → 下方显示节点时间线</div>
     <div id="cases"></div>
   </div>
 </div>
@@ -110,6 +110,8 @@ let state = {
   projects: [],
   windows: [],
   cases: [],
+  selectedProject: null,
+  selectedWindow: null,
   selectedCase: null,
   caseDetail: null
 };
@@ -157,30 +159,57 @@ async function loadCases() {
   render();
 }
 
+function sameWs(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const ba = String(a).split("/").filter(Boolean).pop();
+  const bb = String(b).split("/").filter(Boolean).pop();
+  return !!ba && ba === bb;
+}
+
+function selectProject(ws) {
+  state.selectedProject = (state.selectedProject === ws) ? null : ws;
+  state.selectedWindow = null;
+  state.selectedCase = null;
+  render();
+}
+
+function selectWindow(wid) {
+  state.selectedWindow = (state.selectedWindow === wid) ? null : wid;
+  state.selectedCase = null;
+  render();
+}
+
 function render() {
   const projEl = document.getElementById("projects");
   if (state.projects.length === 0) {
     projEl.innerHTML = '<div class="empty">暂无项目</div>';
   } else {
     projEl.innerHTML = state.projects.map(p => `
-      <div class="item">
+      <div class="item ${state.selectedProject === p.workspace ? 'active' : ''}" data-project-ws="${escapeHtml(p.workspace)}">
         <div class="title">${escapeHtml(p.name || p.workspace)}</div>
         <div class="meta">${p.case_count || 0}案 ${(p.active_cases != null ? p.active_cases : (p.counts && p.counts.active) || 0)}在办</div>
       </div>
     `).join("");
+    projEl.querySelectorAll(".item[data-project-ws]").forEach(item => {
+      item.addEventListener("click", () => selectProject(item.dataset.projectWs));
+    });
   }
 
   const winEl = document.getElementById("windows");
-  if (state.windows.length === 0) {
-    winEl.innerHTML = '<div class="empty">暂无办公室</div>';
+  const shownWins = state.selectedProject
+    ? state.windows.filter(w => sameWs(w.workspace, state.selectedProject))
+    : state.windows;
+  if (shownWins.length === 0) {
+    winEl.innerHTML = `<div class="empty">${state.selectedProject ? "该项目暂无办公室" : "暂无办公室"}</div>`;
   } else {
-    winEl.innerHTML = state.windows.map(w => {
+    winEl.innerHTML = shownWins.map(w => {
       const st = w.state_label || w.state || "";
       const cls = st.replace(/[^a-zA-Z\u4e00-\u9fa5]/g, "");
       const wid = escapeHtml(w.window_id || w.id);
       const proj = w.workspace ? String(w.workspace).split("/").filter(Boolean).pop() : "";
       return `
-      <div class="item" data-window-id="${wid}">
+      <div class="item ${state.selectedWindow === (w.window_id || w.id) ? 'active' : ''}" data-window-id="${wid}">
         <div class="title">${escapeHtml(w.agent)}${proj ? " · " + escapeHtml(proj) : ""}</div>
         <div class="meta"><span class="status ${cls}">${escapeHtml(st)}</span> · 窗口 ${wid} · 最近 ${escapeHtml(w.last_seen_local || "")}</div>
         <div class="meta">${w.activity ? escapeHtml(w.activity) : (w.case_count || 0) + " 案"}</div>
@@ -191,6 +220,9 @@ function render() {
         </div>
       </div>`;
     }).join("");
+    winEl.querySelectorAll(".item[data-window-id]").forEach(item => {
+      item.addEventListener("click", () => selectWindow(item.dataset.windowId));
+    });
     winEl.querySelectorAll("button[data-action]").forEach(btn => {
       btn.addEventListener("click", event => {
         const wid = btn.dataset.windowId;
@@ -203,10 +235,13 @@ function render() {
   }
 
   const caseEl = document.getElementById("cases");
-  if (state.cases.length === 0) {
-    caseEl.innerHTML = '<div class="empty">暂无案件</div>';
+  const shownCases = state.selectedWindow
+    ? state.cases.filter(c => c.owner_window === state.selectedWindow)
+    : (state.selectedProject ? state.cases.filter(c => sameWs(c.workspace, state.selectedProject)) : state.cases);
+  if (shownCases.length === 0) {
+    caseEl.innerHTML = `<div class="empty">${state.selectedWindow ? "该办公室暂无案件" : (state.selectedProject ? "该项目暂无案件" : "暂无案件")}</div>`;
   } else {
-    caseEl.innerHTML = state.cases.map(c => {
+    caseEl.innerHTML = shownCases.map(c => {
       const rawStatus = c.status || "";
       const st = c.status_label || rawStatus;
       const cls = (rawStatus || st).replace(/[^a-zA-Z\u4e00-\u9fa5]/g, "");
