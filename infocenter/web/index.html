@@ -105,6 +105,10 @@ h1 { font-size: 26px; margin-bottom: 24px; }
 .irow { display: flex; align-items: center; gap: 6px; padding: 6px 9px; margin: 4px 0; background: #f9f9f9; border-radius: 5px; font-size: 12.5px; }
 .irow .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .irow .btn { padding: 2px 8px; }
+.irow.block { display: block; }
+.irow details { margin-top: 4px; }
+.irow summary { cursor: pointer; color: #007aff; font-size: 12px; }
+.irow details .body-text { margin-top: 6px; max-height: 240px; overflow: auto; background: #fff; padding: 8px; border-radius: 4px; }
 hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: none; align-items: center; justify-content: center; z-index: 50; }
 .modal-overlay.show { display: flex; }
@@ -587,11 +591,15 @@ function openSettings(kind, id) {
         </div>`;
       }).join("")}
 
-      <div class="section-title">③ 在跑 headless（${state.headless.filter(h => h.alive).length}）</div>
+      <div class="section-title">③ 在跑 headless（${state.headless.filter(h => h.alive).length}）· 可看运行时上下文</div>
       ${state.headless.length === 0 ? '<div class="empty">无</div>' : state.headless.map(h => `
-        <div class="irow"><span class="grow"><b>${escapeHtml(h.agent)}</b> · ${escapeHtml(String(h.dir).split("/").filter(Boolean).pop() || "")} · pid ${escapeHtml(String(h.pid))} · ${h.alive ? "运行中" : "已退出"}</span></div>`).join("")}
+        <div class="irow block"><span class="grow"><b>${escapeHtml(h.agent)}</b> · ${escapeHtml(String(h.dir).split("/").filter(Boolean).pop() || "")} · pid ${escapeHtml(String(h.pid))} · ${h.alive ? "运行中" : "已退出"}</span>
+          ${h.prompt ? `<details><summary>运行时上下文</summary><div class="body-text">${escapeHtml(h.prompt)}</div></details>` : ""}
+        </div>`).join("")}
+      <div class="section-title">④ 最近完成的 headless</div>
+      <div id="s-runs"><div class="empty">加载…</div></div>
 
-      <div class="section-title">④ 未结案卷（${openCases.length}）· 可直接干预</div>
+      <div class="section-title">⑤ 未结案卷（${openCases.length}）· 可直接干预</div>
       ${openCases.length === 0 ? '<div class="empty">无</div>' : openCases.map(c => {
         const st = c.status_label || c.status || "";
         const cid = escapeHtml(c.id);
@@ -602,10 +610,11 @@ function openSettings(kind, id) {
         </div>`;
       }).join("")}
 
-      <div class="section-title">⑤ human 的信件往来</div>
+      <div class="section-title">⑥ human 的信件往来</div>
       <div id="s-agent-mail"><div class="empty">加载…</div></div>`;
     overlay.classList.add("show");
     loadAgentMail("human");
+    loadHeadlessRuns();
     return;
   }
 
@@ -735,6 +744,24 @@ async function sendHuman() {
     closeSettings();
     await loadAgents(); await loadActivity();
   } catch (e) { alert("发送失败：" + e.message); }
+}
+async function loadHeadlessRuns() {
+  const el = document.getElementById("s-runs");
+  if (!el) return;
+  try {
+    const data = await api("/v1/headless/runs?limit=15");
+    const runs = data.runs || [];
+    el.innerHTML = runs.length === 0
+      ? '<div class="empty">暂无记录（收信守护需重启一次后才会记录）</div>'
+      : runs.map(r => `
+        <div class="irow block"><span class="grow"><b>${escapeHtml(r.agent || "")}</b> · ${escapeHtml(String(r.dir || "").split("/").filter(Boolean).pop() || "")} · ${escapeHtml(String(r.end || "").replace("T", " ").replace("Z", ""))} · ${escapeHtml(r.outcome || "")}</span>
+          <details><summary>上下文 / 输出</summary>
+            <div class="body-text">${escapeHtml(r.prompt || "（无提示词）")}</div>
+            <div class="body-text">${escapeHtml(r.tail || "")}</div>
+          </details></div>`).join("");
+  } catch (e) {
+    el.innerHTML = '<div class="empty">加载失败：' + escapeHtml(e.message) + '</div>';
+  }
 }
 async function loadAgentMail(name) {
   const el = document.getElementById("s-agent-mail");

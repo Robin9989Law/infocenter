@@ -613,14 +613,56 @@ def running_headless(home, project: str | None = None) -> list[dict]:
             pid_int = int(pid)
         except (TypeError, ValueError):
             continue
+        prompt = ""
+        pf = state_dir(home) / f"{path.stem}.prompt"
+        try:
+            if pf.exists():
+                prompt = pf.read_text(encoding="utf-8")
+        except OSError:
+            prompt = ""
         out.append({
             "agent": meta.get("agent") or "",
             "key": meta.get("key") or path.stem,
             "dir": d,
             "pid": pid_int,
             "alive": _pid_alive(pid_int),
+            "prompt": prompt,
         })
     return out
+
+
+def _record_run(home, key: str, rec: dict) -> None:
+    path = state_dir(home) / f"{key}.runs.jsonl"
+    try:
+        with path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if len(lines) > 60:
+            path.write_text("\n".join(lines[-60:]) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def headless_runs(home, project: str | None = None, limit: int = 30) -> list[dict]:
+    """最近完成的 headless 运行（含提示词上下文与输出尾部）。"""
+    target = _resolve_dir(project) if project else None
+    out: list[dict] = []
+    for path in sorted(state_dir(home).glob("*.runs.jsonl")):
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            d = rec.get("dir") or ""
+            if target and (_resolve_dir(d) if d else None) != target:
+                continue
+            out.append(rec)
+    out.sort(key=lambda r: str(r.get("end") or ""), reverse=True)
+    return out[:limit]
 
 
 def down(home, project: str | None = None, only: str = "") -> dict:
@@ -1170,6 +1212,16 @@ def _run_headless(template: str, prompt: str, project: str, agent: str | None = 
         print(f"[{utcnow()}] headless 启动失败：{exc}", flush=True)
         return "start_failed"
     _note_headless_pid(proc.pid)
+    ctx = _daemon_ctx
+    h_home = ctx.get("home")
+    h_key = ctx.get("key")
+    started_at = utcnow()
+    if h_home and h_key:
+        try:
+            (state_dir(h_home) / f"{h_key}.prompt").write_text(prompt, encoding="utf-8")
+        except OSError:
+            pass
+    run_tail = ""
     outcome = "fail"
     try:
         try:
@@ -1203,6 +1255,7 @@ def _run_headless(template: str, prompt: str, project: str, agent: str | None = 
         else:
             code = proc.returncode
             tail = ((stdout or "") + (stderr or "")).strip()[-500:]
+            run_tail = ((stdout or "") + (stderr or "")).strip()[-2000:]
             if code in (-signal.SIGTERM, 128 + signal.SIGTERM):
                 print(f"[{utcnow()}] headless 被暂停打断（退出码 {code}），输出尾部：{tail}", flush=True)
                 outcome = "interrupted"
@@ -1216,6 +1269,26 @@ def _run_headless(template: str, prompt: str, project: str, agent: str | None = 
             print(f"[{utcnow()}] headless 超时（30 分钟）", flush=True)
     finally:
         _note_headless_pid(None)
+        if h_home and h_key:
+            _record_run(
+                h_home,
+                h_key,
+                {
+                    "agent": agent or ctx.get("agent") or "",
+                    "key": h_key,
+                    "dir": project,
+                    "pid": proc.pid,
+                    "start": started_at,
+                    "end": utcnow(),
+                    "outcome": outcome,
+                    "prompt": prompt,
+                    "tail": run_tail,
+                },
+            )
+            try:
+                (state_dir(h_home) / f"{h_key}.prompt").unlink(missing_ok=True)
+            except OSError:
+                pass
     return outcome
 
 
