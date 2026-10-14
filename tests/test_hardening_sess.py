@@ -165,5 +165,86 @@ class HeadlessRunsRouteTest(_ServerBase):
         self.assertEqual([r["outcome"] for r in payload["runs"]], ["ok"])
 
 
+class WatchConfigHotReloadTest(unittest.TestCase):
+    """F-1：守护每轮重读 config.json，headless 模板改动无需重启即刻生效。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.home = Path(self.tmp.name) / "hot"
+        self.home.mkdir()
+        self.project = str(Path(tempfile.mkdtemp(dir=self.tmp.name, prefix="projHot")).resolve())
+        self.cfg = self.home / "config.json"
+
+    def _write(self, headless):
+        self.cfg.write_text(
+            json.dumps({
+                "agents": [
+                    {"name": "opencode", "role": "coordinator"},
+                    {"name": "cursor", "headless": headless, "poll": 5, "heartbeat": 0},
+                ]
+            }, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    def _mail(self, mid, cursor):
+        return {
+            "cursor": cursor,
+            "unread_total": 1,
+            "new": [{"id": mid, "from": "opencode", "subject": "s", "workspace": self.project}],
+        }
+
+    def _run_watch(self, fake_request, templates, expect_stop=True):
+        from unittest.mock import patch
+
+        def fake_headless(template, prompt, proj, agent=None):
+            templates.append(template)
+
+        with (
+            patch.object(crew, "_office_request", side_effect=lambda *a, **k: {"window_id": "w", "state": "open"}),
+            patch.object(crew, "request", side_effect=fake_request),
+            patch.object(crew, "_run_headless", side_effect=fake_headless),
+        ):
+            if expect_stop:
+                with self.assertRaises(StopIteration):
+                    crew.watch(self.home, "cursor", self.project, "http://127.0.0.1:9", poll=5, heartbeat=0)
+                return None
+            return crew.watch(self.home, "cursor", self.project, "http://127.0.0.1:9", poll=5, heartbeat=0)
+
+    def test_headless_template_change_applies_without_restart(self):
+        self._write("echo OLD")
+        state = {"n": 0}
+        templates = []
+
+        def fake_request(_url, _method, _path, _agent, query=None, timeout=None):
+            state["n"] += 1
+            if state["n"] == 1:
+                # 第 1 轮跑到一半：运行中热改 config，下一轮 loop-top 应读到新模板。
+                self._write("echo NEW")
+                return self._mail("m1", 1)
+            if state["n"] == 2:
+                return self._mail("m2", 2)
+            raise StopIteration("done")
+
+        self._run_watch(fake_request, templates)
+        self.assertEqual(templates, ["echo OLD", "echo NEW"])
+
+    def test_clearing_headless_exits_daemon(self):
+        self._write("echo OLD")
+        state = {"n": 0}
+        templates = []
+
+        def fake_request(_url, _method, _path, _agent, query=None, timeout=None):
+            state["n"] += 1
+            if state["n"] == 1:
+                self._write("")  # 运行中清空 headless
+                return self._mail("m1", 1)
+            raise StopIteration("done")
+
+        code = self._run_watch(fake_request, templates, expect_stop=False)
+        self.assertEqual(code, 0)
+        self.assertEqual(templates, ["echo OLD"])
+
+
 if __name__ == "__main__":
     unittest.main()

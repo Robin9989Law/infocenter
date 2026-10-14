@@ -1002,6 +1002,8 @@ def watch(
     if not template:
         raise MailError("no_headless", f"{agent} 在 config.json 里没有 headless 命令")
     poll = max(5, min(int(poll or DEFAULT_POLL), 3600))
+    # F-1：heartbeat 未显式传入（None）时跟随 config，每轮热读；显式传入则视为命令行覆盖。
+    heartbeat_from_config = heartbeat is None
     if heartbeat is None:
         heartbeat = _heartbeat_seconds(entry or {})
     heartbeat = max(0, min(int(heartbeat or 0), 86400))
@@ -1059,6 +1061,18 @@ def watch(
             return 1
         last_run = time.monotonic()
         while True:
+            # F-1：每轮重读 config，使 headless / heartbeat_mode / heartbeat_prompt（及未显式传入的
+            # heartbeat）改动**无需重启守护**即可生效——治理层改 config.json 后即刻作用于下一轮。
+            entry = config.entry(home, agent)
+            template = str((entry or {}).get("headless") or "").strip()
+            if not template:
+                print(f"[{utcnow()}] config 里 {agent} 的 headless 已清空，守护退出", flush=True)
+                break
+            mode = str((entry or {}).get("heartbeat_mode") or "idle").strip().lower()
+            custom_prompt = str((entry or {}).get("heartbeat_prompt") or "").strip() or None
+            if heartbeat_from_config:
+                new_heartbeat = _heartbeat_seconds(entry or {})
+                heartbeat = max(0, min(int(new_heartbeat or 0), 86400))
             try:
                 try:
                     payload = request(
