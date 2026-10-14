@@ -28,10 +28,13 @@ h1 { font-size: 28px; margin-bottom: 24px; }
 .status.暂停, .status.paused { background: #ff9500; color: white; }
 .status.中止, .status.离场, .status.aborted, .status.left { background: #8e8e93; color: white; }
 .status.办结, .status.done { background: #5856d6; color: white; }
-.node { padding: 8px; margin: 6px 0; background: #f9f9f9; border-left: 3px solid #007aff; font-size: 13px; }
-.node.auto { border-left-color: #8e8e93; font-style: italic; }
-.node .time { color: #666; font-size: 11px; }
-.node .actor { font-weight: 500; }
+.nodes { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.nodes th, .nodes td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+.nodes th { color: #8e8e93; font-weight: 500; font-size: 11.5px; white-space: nowrap; }
+.nodes td.time { white-space: nowrap; color: #666; }
+.nodes td.action { white-space: nowrap; font-weight: 500; }
+.nodes tr.auto td.note { color: #8e8e93; font-style: italic; }
+.nodes-title { font-size: 13px; color: #8e8e93; margin: 4px 0 6px; }
 .form-row { margin: 12px 0; }
 .form-row label { display: block; font-size: 13px; margin-bottom: 4px; color: #666; }
 .form-row input, .form-row textarea { width: 100%; padding: 8px; border: 1px solid #d1d1d6; border-radius: 4px; font-size: 14px; }
@@ -52,7 +55,7 @@ h1 { font-size: 28px; margin-bottom: 24px; }
 hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: none; align-items: center; justify-content: center; z-index: 50; }
 .modal-overlay.show { display: flex; }
-.modal { background: #fff; border-radius: 10px; width: 560px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column; box-shadow: 0 12px 48px rgba(0,0,0,0.3); }
+.modal { background: #fff; border-radius: 10px; width: 640px; max-width: 92vw; max-height: 84vh; display: flex; flex-direction: column; box-shadow: 0 12px 48px rgba(0,0,0,0.3); }
 .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid #eee; }
 .modal-head h2 { font-size: 17px; }
 .modal-close { border: none; background: transparent; font-size: 22px; line-height: 1; cursor: pointer; color: #8e8e93; }
@@ -304,6 +307,7 @@ function openSettings(kind, id) {
         ${!isSealed ? '<button class="btn close" data-act="close-case">办结</button>' : ""}
       </div>
       <hr>
+      <div class="nodes-title">节点时间线</div>
       <div id="s-case-nodes"><div class="empty">加载节点…</div></div>`;
     overlay.classList.add("show");
     loadCaseNodes(id);
@@ -322,12 +326,17 @@ async function loadCaseNodes(id) {
   try {
     const c = await api("/v1/cases/" + encodeURIComponent(id));
     const nodes = c.nodes || [];
-    el.innerHTML = nodes.length === 0 ? '<div class="empty">暂无节点</div>' : nodes.map(n => `
-      <div class="node ${n.auto ? 'auto' : ''}">
-        <span class="time">${escapeHtml(n.created_at_local || "")}</span> ·
-        <span class="actor">${escapeHtml(n.agent || "")}</span> ·
-        ${escapeHtml(n.action || "")}${n.note ? " · " + escapeHtml(n.note) : ""}${n.auto ? ' [自动]' : ''}
-      </div>`).join("");
+    el.innerHTML = nodes.length === 0 ? '<div class="empty">暂无节点</div>' : `
+      <table class="nodes">
+        <thead><tr><th>节点</th><th>时间</th><th>操作人</th><th>内容</th></tr></thead>
+        <tbody>${nodes.map(n => `
+          <tr class="${n.auto ? 'auto' : ''}">
+            <td class="action">${escapeHtml(n.action || "")}${n.auto ? ' [自动]' : ''}</td>
+            <td class="time">${escapeHtml(n.created_at_local || "")}</td>
+            <td>${escapeHtml(n.agent || "")}</td>
+            <td class="note">${escapeHtml(n.note || "")}</td>
+          </tr>`).join("")}</tbody>
+      </table>`;
   } catch (e) {
     el.innerHTML = '<div class="empty">加载失败：' + escapeHtml(e.message) + '</div>';
   }
