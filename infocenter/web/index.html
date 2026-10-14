@@ -105,7 +105,7 @@ hr { border: none; border-top: 1px solid #eee; margin: 16px 0; }
 </div>
 
 <div class="panel wide">
-  <h2>工作痕迹 <span class="legend">最近活动：谁 · 何时 · 做了什么（跨项目、来自案卷节点）</span></h2>
+  <h2>工作痕迹 <span class="legend">最近活动：项目 · 办公室 · 案卷 · 节点 · 内容（跨项目、来自案卷节点）</span></h2>
   <div id="activity"></div>
 </div>
 
@@ -279,14 +279,20 @@ function render() {
     if (state.activity.length === 0) {
       actEl.innerHTML = '<div class="empty">暂无活动</div>';
     } else {
-      actEl.innerHTML = `<table class="nodes"><thead><tr><th>时间</th><th>操作人</th><th>节点</th><th>内容</th><th>案卷</th></tr></thead><tbody>`
-        + state.activity.map(a => `<tr class="${a.auto ? 'auto' : ''}">
+      actEl.innerHTML = `<table class="nodes"><thead><tr><th>时间</th><th>项目</th><th>办公室</th><th>案卷</th><th>节点</th><th>内容</th></tr></thead><tbody>`
+        + state.activity.map(a => {
+            const p = state.projects.find(x => sameWs(x.workspace, a.workspace));
+            const proj = p ? (p.name || p.workspace) : (a.workspace ? String(a.workspace).split("/").filter(Boolean).pop() : "");
+            const office = (a.agent || "") + (a.window_id ? " · " + a.window_id : "");
+            return `<tr class="${a.auto ? 'auto' : ''}">
             <td class="time">${escapeHtml(a.created_at_local || "")}</td>
-            <td>${escapeHtml(a.agent || "")}</td>
+            <td>${escapeHtml(proj)}</td>
+            <td>${escapeHtml(office)}</td>
+            <td>${escapeHtml(a.case_title || "")}</td>
             <td class="action">${escapeHtml(a.action || "")}${a.auto ? ' [自动]' : ''}</td>
             <td class="note">${escapeHtml(a.note || "")}</td>
-            <td>${escapeHtml(a.case_title || "")}</td>
-          </tr>`).join("")
+          </tr>`;
+          }).join("")
         + `</tbody></table>`;
     }
   }
