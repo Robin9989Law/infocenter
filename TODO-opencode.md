@@ -92,6 +92,31 @@
   - **回信**：已回 kimi（`m1a139bb867be16cba`）：确认冻结 + D8 处置与理由 + N1–N4 登记 + D4 终审待 pi 交付后执行。
   - **未决/挂起**：D4（human 拍板公开）、D8（非无头窗口执行）、D 线文档（pi 在途）——无新信息不重复发信。
 
+- [x] 2026-10-14 19:1x 收信裁定（kimi `m1a13a19b952b0f871`）——**三条裁定 + PLAN 补登（M5 冻结后 23 commit / 7 项新功能）**：
+  - **收信**：kimi《PLAN 补登：18:50 后又 3 commit + 在途 /v1/activity；封卷可重开与 M4 验收口径冲突》——① 口径冲突求裁定；② 7 项 M5 后功能未登记 + §九 R14 过期；③ 「coordinator 代改」与 §六.8「禁影子写手」张力求裁定；④ 报 144/144 自洽；⑤ SKILL.md 未落、pi last_seen 18:51。
+  - **独立核验**：`env -u INFOCENTER_AGENT -u INFOCENTER_WINDOW python3 -W error::ResourceWarning -m unittest discover -s tests` = **144/144 OK 零 ResourceWarning**（70.8s，与 kimi 一致，口径确认需清 env）；`/v1/activity`、`/v1/crew`、`/ui` 实测均 **200**（服务端 19:08:32 再重启，pid 87306）；`reopen_case` 数据层 + `test_d7_reopen_clears_waiting_for` 既有 ⇒ 重开非新语义。
+  - **裁定一（口径冲突）**：以「**可重开**」为现行规格（重开系 P2 `D-7` 已有能力，UI 只是挂出）；M4 验收「封卷只读」→ 改为「封卷默认只读且不参与认领，可显式重开解封回 `open` 并留痕」；§七 新增「封卷与重开语义」段（`status`→`open`、`sealed=0`、`closed_at`/`waiting_for` 清空、节点只增不删、落 `action=reopen` 节点）。**kimi D 线终审按新口径判**。
+  - **裁定二（PLAN 登记缺口）**：§九 新增「M5 冻结后迭代」子表（M5+1…M5+7：项目归档 / 新建项目 / 立案指派 / R14 写操作下移 / 网页起停守护 / 封卷重开 / 全局动态流 + 痕迹表项目办公室列）；§九 R14 行改 ✅ 收口；§一 M4 行「M5 已冻结、码不再改」改述为「M5 冻结后 23 commit 演进、新增 7 项 + R14 收敛、基线 144/144」。**待办**：archived / `/v1/crew` / `/v1/activity` / reopen-UI 均**回归 0 命中**，派 owner cursor 事后补测 + 复跑（待 human UI 停笔后发）。
+  - **裁定三（§六.8 影子写手）**：**不违规**——23 个 M5 后提交 git 作者均为 human 本人（`Robin9989Law`），§六.8 约束的是 coordinator 与子代理，human 自改不受限；§六.8 已加澄清句。治理补强＝上述 cursor 事后具名复核。
+  - **顺带同步**：§五 D8 行 + §八 D8 段改「✅ 已执行 18:00 / 19:08 再重启」；§八 P2 行补追认范围 + U-5/L3 收口（`e3200f0` 取 (b)）。
+  - **回信**：已回 kimi（`ic reply m1a13a19b952b0f871`）三条裁定 + 事实（144/144、/v1/activity 200、重开语义）；**未向 cursor 发派单**（human 正在飞编辑 web，避免对空复核）。**未解结案**：D 线文档（pi：SKILL.md 仍 02:43）、M5+ 回归补测。
+
+- [x] 2026-10-14 21:1x 收信补登（kimi `m1a13a87e9324eede6`）：应 kimi 心跳观察更新 **PLAN §九**——① F-1 行改 ✅（human `7dbccf2` config 热加载）；② §九「M5 冻结后迭代」新增 **M5+8**（`6c5aba4` 21:00 后端 7 项真 bug：高危命令注入 / `_collect_projects` 合并非确定 / `/v1/crew up` 缺目录 400 / headless_runs 坏行 / limit 负数 / add_project 对齐，自报基线 **154/154**）；③ 表头计数/基线同步为 53 commit·154/154，并补记 19:19–20:34 另 26 commit（状态条 / 信件往来历史 / 干预中枢 / 一键重启 / `POST /v1/open` 等）并入 owner cursor 事后具名复核。**口径**：human 未停笔（`index.html` 仍 +198/-117 未提交），按 §九「未停笔不复核对空」本轮**不跑回归、不派单**；154/154 为自报，待停笔后随 cursor 具名复核独立复跑。回信：kimi 无新信息不回帖，仅 case 写回一行节点。
+
+- [x] 2026-10-14 21:2x 收信补登（kimi `m1a13a96af912c9513`）——**§九 三项事实登记：基线 156/156 独立确认、README M5+ 覆盖已补齐、需求文档/SKILL 仍欠**：
+  - **收信**（1 封，workspace=本仓）：kimi 21:23 心跳复核——① human 代码面已停笔（末 commit `7dbccf2` 21:04），独立复跑全量 = **156/156 零告警**，human 自报 154/154 成立、+2 系 F-1 自带回归；② README 20:50 已补 M5+ 覆盖（三栏级联/写操作下移/新建项目/归档/`/v1/crew`/立案指派/reopen/`/v1/activity`/`pid_alive`），D4 提示级「README 滞后」消解；③ 仍欠：`需求文档/01-需求整理.md`（R14 仍写「写操作下移 待做」+ M5+ 未覆盖）、`SKILL.md` 20:44 未提交。
+  - **独立核验（coordinator）**：`env -u INFOCENTER_AGENT -u INFOCENTER_WINDOW python3 -W error::ResourceWarning -m unittest discover -s tests` = **156/156 OK 零 ResourceWarning**（74.0s），与 kimi 一致；`需求文档` mtime 18:15、`SKILL.md` mtime 20:44 抽验属实（diff +30/−7，案卷/窗口/封卷重开段对码现码）；`pi` activity 21:21 自报在办「核对 SKILL 草稿 + 补需求文档 D 线章节」。
+  - **PLAN 更新**：§九「M5 冻结后迭代」表头基线 → **156/156 零告警（独立确认）**；F-1 行、M5+8 行「待独立复跑」→ **已确认（156/156，含 +2）**；`·` D 线文档行 → README ✅ + SKILL 待提交 + 需求文档欠（pi 在办）；§一 M4 行基线 144/144→**156/156**、commit 25→**53**；追写「21:2x 补登」块。
+  - **资源调配**：残余两文档归 **pi**（在册在跑，21:21 自报在办），**不派单、不代改**（§六.8）；kimi/grok/cursor 无停滞（cursor 21:17 待命候事后复核派单）。**cursor 事后具名复核**仍**待发**——是否可发以 human **明确确认停笔**为准（本轮据 kimi 观察「似已停笔」，不据此派单）。
+  - **回信**：kimi 来信系供 §九 登记、无待答问题 ⇒ **无新信息不回帖**，仅 case 写回一行节点。
+
+- [x] 2026-10-14 22:4x 收信补登（grok `m1a13ad4f909bca23f`）——**§五 D8 / §八引言同步守护 22:17:32 换新（78688–78692）**：
+  - **收信**（1 封，workspace=本仓）：grok 22:33 补**进程事实**——本项目 5 守护 22:17:32 自然换新为 **78688 grok / 78689 kimi / 78690 opencode / 78691 cursor / 78692 pi**（cwd=本仓，ppid=1），命令行仅 `--poll 30`、**无 `--heartbeat`**，config heartbeat 600/600/900/600/600、grok 启动日志 `heartbeat=600`；系 `ba7f650`（22:17:30，`plan_up` 不再固化 `--heartbeat`）之后拉起。§五 D8 / §八引言仍写 30603–30607/载 `fd8eba9`/残留未含 `baec4e6`，已过期。服务端仍 55074（21:05:10），沿用「不追」。
+  - **独立核验（coordinator）**：`ps` 实测 78688–78692 均在（`crew watch <名> --dir 本仓 --url 127.0.0.1:8787 --home ~/.infocenter --poll 30`，ppid=1，22:17:32 启动、无 `--heartbeat`）；`lsof :8787` = **55074**；`infocenter` 包解析到本仓工作树，`crew.py` 工作树无改动 ⇒ 该批载 HEAD **`ba7f650`**，**含 `baec4e6`（20:15:53）起的 `running_daemons`/`GET /v1/daemons`**。
+  - **PLAN 更新**：§五 D8 行「现为 30603–30607」→ **「已两度换新：20:11:34（30603–30607 载 `fd8eba9`）→ 22:17:32（78688–78692 载 `ba7f650`，无 `--heartbeat`，已含 `baec4e6`）」**，残留句改「已随 22:17:32 换新消解」；§八引言同步；§九加「22:4x 补登」块。
+  - **回信**：grok 系**仅事实上报、无待答** ⇒ **无新信息不回帖**（不发「已对齐」），仅 case 写回一行节点。
+  - **裁定不变**：仍**不 `crew down/up`**——22:17:32 已自然换新并载最新码，原 D8 目标（守护/服务端载新码）已达成；本路未改生产文件。
+
 ## 未来修复（backlog · 2026-10-14 coordinator 记录）
-- [ ] **F-1 守护对 `config.json` 不热加载**：`headless` / `heartbeat_prompt` / `heartbeat*` 在 `infocenter/crew.py:885-894` 于 `watch()` **启动时读一次** → 改 `~/.infocenter/config.json` 必须 `crew down/up` 才生效（实证：只读化 prompt 后，pid 27468 仍用旧 prompt 派 headless pid 36404「维护 PLAN.md」）。修复：主循环热读 `config.entry`，或加 `ic crew reload <身份>`。
+- [x] **F-1 守护对 `config.json` 不热加载** ✅ **已修复**（human `7dbccf2`，21:04）：`watch()` 主循环每轮重读 `config.entry`，`headless`/`heartbeat_mode`/`heartbeat_prompt`（及未显式传入的 `heartbeat`）改动无需重启守护即生效；清空 `headless` 时守护优雅退出。自报 +2 回归（`tests/test_hardening_sess.py`）。原症状（pid 27468 用旧 prompt 派 pid 36404）消失。**基线已独立复跑确认（156/156 零告警，含本项 +2）。**
 - [ ] **F-2 多 actor 并发跑重活**：本次 4 份全量测试并发（含 12 分钟僵尸 + 孤儿）互相拖死。随"守护只读化 / 单一活跃 coordinator"缓解；长期给重活（全量测试 / build）加互斥或串行。

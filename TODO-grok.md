@@ -33,3 +33,86 @@
   - PLAN §八 仍写「P2 本轮不做 / N1–N4 本轮不改」。`_work/d8-handoff.md`（17:25）把 D8 触发改成等 P2 补齐，与 PLAN 冲突。
   - 这批未覆盖：区域三 M2（`crew.kickoff` 缺 plan 或 `request` 的 `ApiError` 仍穿透，`cli` 只捕 `MailError`）；N4（无 `started_at` 的旧 pid 只判活）。
   - 已发 opencode（workspace=本项目）。裁定前不改码，不动 pi 的 D 线文档。未复跑全量（已有两路 `unittest discover`，pid 37119 / 39574）。activity 已自报「等裁定」。
+- [x] 2026-10-14 18:08 签收裁定 `m1a139de19775cc465`：追认已落盘 P2，不退回；区域三 M2 与 N4 维持 backlog。未改 `PLAN.md`（非本方），未再改生产文件。
+  - 来信所问的工作树改动是同一批 P2 收尾，不是别路。18:05:01 已入库 `11b5445`：`crew.py` 只回退 `watch` 里 `/v1/events` 误加的 `pid=os.getpid()`；`sync.py` 只加 U-3 降级注释，无行为变化。
+  - 当前树仍符合裁定范围：`kickoff` 的 `read_text`/`request` 无捕获（`crew.py:500/507`），`cli` 只捕 `MailError`；裸 pid 无 `started_at` 时 `_read_pid` 只判活（`crew.py:255-257`）。`11b5445` 说明里的「M2 已在 f175222」指 `client.py` 的 `X-Pid`，不是这条 kickoff M2。
+  - 已回 opencode（`m1a139e4031f8c4e8d`）。PLAN §八/§五 与 `_work/d8-handoff.md` 的同步仍在 `_work/plan-maintenance.md`，待交互 coordinator。案卷 18:07 已被 opencode 封卷，`--note` 被拒（`case_sealed`），未重开。
+- [x] 2026-10-14 18:23 心跳：收件箱 0 未读。`ic cases` 本项目与 owner=grok 的在办案卷均为 0。B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；P2 追认范围已落盘，M2（`kickoff`）与 N4 仍是 backlog，本轮不改生产文件。D 线文档未改派（SKILL.md 仍 02:43，归 pi）。PLAN 里 P2「本轮不做」与 D8「就绪待执行」的滞后已在 `_work/plan-maintenance.md` 待交互 coordinator，不重复发信。human 18:19–18:21 正在提交 R14 写操作下移（`be1aa56` 起），§九 仍写「待做」，提交还在继续，本轮不发信。未改 activity。名下无下一项。
+- [x] 2026-10-14 18:34 心跳：收件箱 0 未读。`ic cases` 在办 0。名下仍无下一项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 维持 backlog，不改生产文件。R14 提交已停在 `df1e8cf`（18:24），`index.html` 工作树干净。PLAN 滞后（§九 R14「写操作下移」仍待做、§五/§八 D8 仍「就绪待执行」、§八 P2 仍「本轮不做」）以及 U-5/L3 两条测试与现码不符，已由 opencode 守护 18:26 写入 `_work/plan-maintenance.md` 待交互 coordinator，不另发信。抽查仍成立：`loadCaseNodes` 无 `selectedCase` token 守卫，`doCase` 用 `"/" + action` 且仍 `encodeURIComponent`。`index.html` 归 cursor，本方不动。SKILL.md 仍 02:43，归 pi（18:33 在途）。未改 activity。
+- [x] 2026-10-14 18:49 心跳：收件箱 0 未读。`ic cases` 在办 0。名下无下一项。B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，不改生产文件。18:44 human 入库 `e3200f0`（项目归档，并改写 `tests/test_hardening_p2.py` 的 U-5/L3 断言）。本方复跑 `test_hardening_p2` + `test_debug_p0` + `test_federation` + `test_d2_commands` = 73 OK。`loadCaseNodes` 仍无 `const token` 守卫，与该提交的新断言一致；`index.html` / `store.py` / `httpapi.py` 非本方文件。PLAN 滞后（§九 R14「写操作下移」仍待做、§五/§八 D8 仍「就绪待执行」、§八 P2 仍「本轮不做」）已在 `_work/plan-maintenance.md`（18:42）待交互 coordinator。`e3200f0` 晚于该记录（归档已入库，上述两测已绿），不另发信。SKILL.md 仍 02:43，归 pi。未改 activity。
+- [x] 2026-10-14 19:02 心跳：收件箱 0 未读。`ic cases --status open` = 0。列出的两份中止案卷是 ICLR 的 A3-dx3（已封卷），不是本项目。名下无下一项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，不改生产文件。本方文件 mtime 仍止于 18:03（`crew.py` / `sync.py`）。18:44 之后 human 又入库 `4f0c129`（`/v1/crew` 起停，只动 `httpapi.py` / `index.html`）和 `58d188c`（设置分区顺序，只动 `index.html`）。PLAN 仍停在 18:15（§九 R14「写操作下移」待做、§五/§八 D8「就绪待执行」、§八 P2「本轮不做」，未登记归档与网页起停守护）；这些滞后已在 `_work/plan-maintenance.md`（18:42），kimi 18:50 已发信，不另发。SKILL.md 仍 02:43，pi 18:51 自报在写。未改 activity。
+- [x] 2026-10-14 19:18 心跳：收件箱 0 未读。`ic cases --workspace` 本项目在办 0，`--owner grok` 在办 0。名下仍无下一项可写：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 维持 backlog，未改生产文件。19:1x PLAN 补登已覆盖上一轮的 R14 / P2 追认 / D8「已执行」；核对后仍有三处滞后，已发 opencode `m1a13a22a2d9193507`（未改 PLAN）：
+  - §七第 152 行仍写 D8「就绪待执行」，与 §五/§八「已执行」矛盾。
+  - §五「其后未再改 `crew.py`/`client.py`，无碍」对 `crew.py` 不成立：`11b5445`（18:05:01）删了 `watch` 里 `/v1/events` 的 `pid=os.getpid()`。守护 46356–46360 于 18:00:10 启动，仍会在长轮询带 `X-Pid`。`client.py` 止于 `f175222`（17:45），这半句成立；`sync.py` 同提交只加 U-3 注释。重启与否等裁定，本路不执行 `crew down`。
+  - `_work/d8-handoff.md` 第 4 行仍写「待 P2 补齐之后再执行」。
+  - human 仍在改 UI（19:15 `742190e`），不请派 cursor。案卷尚未建立（对方未读），`--note` 被拒 `not_found`。activity 已自报。
+- [x] 2026-10-14 19:44 心跳：收件箱 0 未读。`ic cases` 在办 4 份里本项目只有 `m1a13a22a2d9193507`（D8 文案），其余是 kimi 的 PLAN 补登 / pi 停滞 / ICLR A3-dx3。名下无下一项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件（`crew.py`/`sync.py` 仍 18:03）。
+  - 上轮三处滞后已由 opencode 收口：§七 D8「已执行」、§五更正 `crew.py` 回退与 `X-Pid`、`_work/d8-handoff.md` 触发条件划掉。19:32 把「每周长轮询」改成「每次」。本轮核对工作树已是「每次」；守护仍 46356–46360（18:00:10，`--poll 30`）。已写案卷节点，未再发信。
+  - 服务端 19:32:17 又换成 pid 2879（PLAN 仍写 91849）。案卷 19:30 已约定 pid 随 human 重启、不追，不另发。
+  - 18:05 起提交已到 37（HEAD `2ce380e` 19:44，工作痕迹筛选；前一笔是案件编号 / 标已读）。PLAN 自标「截至 19:18，仍在增；停笔再更新数字」，human 未停笔，不派、不另发。未改 activity（身份级 activity 是另一项目的 D3 待命）。
+- [x] 2026-10-14 20:09 心跳：未读 1 封是 human《检查案件》`m1a13a3a8a9faaa49e`（workspace 为空，广播「所有案件」）。按无 workspace 约定留给交互会话，未签收。`ic cases --workspace` 本项目在办 0，`--owner grok` 在办 0。名下无下一项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 服务端现 pid 27407（20:04:46 启动）。守护仍 46356–46360（18:00:10）。pid 随 human 重启，沿用 19:30「不追」约定，不另发。
+  - human 20:05 入库 `429ad76`：`crew.py` 增加 `running_headless`，`httpapi.py` 增加 `GET /v1/headless`。PLAN §一/§九 仍写「25 commit（截至 19:18）」。opencode 守护 20:05 已把提交数与 `/v1/headless` 写入 `_work/plan-maintenance.md`，等 human 停笔后由交互 coordinator 一次对齐。本轮不另发。
+  - `skills/infocenter/SKILL.md` 仍 02:43，归 pi。未改 activity（身份级 activity 仍是另一项目）。
+- [x] 2026-10-14 20:28 心跳：收件箱 0 未读。`ic cases --status active` 本项目 0，`--owner grok` 在办 0（`m1a13a3df8dcc17666`《检查案件》已 aborted）。名下无下一项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 新事实：本项目 5 个守护已于 20:11:34 换新（30603–30607，cwd=本仓库，20:28 仍在）。加载的是 `fd8eba9` 的 `crew.py`：`watch` 的 `GET /v1/events` 无 `pid`，全文件 `pid=os.getpid()` 为 0，`client.request` 仅显式传入时才加 `X-Pid`。PLAN §五 D8「现存守护每次长轮询仍带 X-Pid / 守护仍 46356–46360」不成立。办公室登记 POST 仍带 `body.pid`，是一次性登记，不是那条缺陷。
+  - 服务端 pid 不追：20:24 为 31778（20:15:29），20:28 已换成 39090（20:27:45）。PLAN 的 91849 已过期。沿用 19:30，本路不 `crew down`。这批守护早于 `baec4e6`（20:15:53，`running_daemons`），不建议为此再重启。
+  - §一/§九仍写「25 commit（截至 19:18）」。20:28 HEAD `2a21b33`，`--since 17:19` = 50。20:05 的 `_work/plan-maintenance.md` 之后新入库且未写入该文件：`fd8eba9` 运行上下文、`baec4e6` `/v1/daemons`、`76e7706` 一键开关、`2a21b33` headless 结果徽标。human 20:22 仍在提交，不请派 cursor。
+  - 已发 opencode `m1a13a62e9d6e49821`（workspace=本项目）。案卷尚未建立（对方未读），`--note` 被拒 `not_found`。未改 activity。
+- [x] 2026-10-14 20:41 心跳：收件箱 0 未读。`ic cases --workspace` 本项目在办 1（`m1a13a62e9d6e49821`，owner=opencode），`--owner grok` 在办 0。名下无下一项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 上轮信已被 opencode 20:31 签收并核实（守护 30603–30607 @20:11:34、长轮询无 `X-Pid`、当时服务端 39090、HEAD `f12aed0` / 51、新增 `/v1/restart`）。只读未改 PLAN，等 human 停笔一次对齐。
+  - 20:39 再核：守护未换。服务端 20:31:49 换成 40412，沿用「不追」。HEAD `537c72d`，`--since 17:19` = 53。20:31 记录之后新增 `f5aaa84`（办公室筛选）、`537c72d`（`POST /v1/open`）。`index.html` 工作树仍脏（+198/−117）。human 未停笔，不另发信，不请派 cursor。
+  - 已写案卷节点。未改 activity（身份级 activity 仍是另一项目的 D3 待命）。
+- [x] 2026-10-14 20:54 心跳：收件箱 0 未读。`ic cases --workspace` 本项目在办仍只有 `m1a13a62e9d6e49821`（owner=opencode），`--owner grok` 在办 0。名下无实现项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - D8 事实未变：守护仍 30603–30607（20:11:34），服务端仍 40412，HEAD 仍 `537c72d`，`--since 17:19` = 53。不另发 D8 信。
+  - 新事实：kimi 20:48 终审段已写入 `_work/verify-d.md`（通过，144/144，快照早于下面这批未提交改动）。PLAN §一 M4 仍写「仅余 D 线文档」，§七仍写终审待文档合入。`SKILL.md` 20:44、README 窗口/案卷接口表 20:50，均未提交。已另发 opencode `m1a13a7bc977a34f92`，不改 PLAN。对方未读，新案卷尚未建立。
+  - 20:52 工作树新增且已停笔约两分钟：`crew.py`（`_substitute_prompt` 只在引号真正包住 `{prompt}` 时去壳；`running_headless` / `headless_runs` / `running_daemons` 跳过非对象 JSON）、`store.py`（项目锚点优先绝对路径元数据）、`httpapi.py`（`crew up` 目录不存在改 400）。跨文件、非派单，未改、未测。
+  - 已在 D8 案卷补一行，指向这封新信。未改 activity（身份级 activity 仍是另一项目的 D3 待命）。
+- [x] 2026-10-14 21:01 签收 opencode `m1a13a7e1b35913679`。核对属实：D4 案卷 `m1a1390537991671bd` 已办结；PLAN §一 M4 / §七仍写「唯余 D 线文档、合入后才出终审」；`crew.py` / `httpapi.py` / `store.py` 与未跟踪 `tests/test_hardening_sess.py` 停在 20:53，HEAD 仍 `537c72d`。同步归交互 coordinator，等 human 停笔。未回帖，未改 PLAN，未改生产文件。案卷 `m1a13a7bc977a34f92` 已写节点并办结。未改 activity。
+- [x] 2026-10-14 21:15 心跳：收件箱 0 未读。`ic cases --owner grok` 在办 0。本项目在办只有 `m1a13a62e9d6e49821`（owner=opencode，D8 文案）。名下无下一项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 20:53 未提交的后端修复与 F-1 已入库：`6c5aba4`（21:00）、`7dbccf2`（21:04）。HEAD `7dbccf2`。`--since 18:05` = 53，与 PLAN §九「53 commit（截至 21:04）」一致。`crew.py` 工作树干净。
+  - D8 事实未变：守护仍 30603–30607（20:11:34）。服务端 21:05:10 换成 55074，沿用 19:30「不追」。PLAN 21:10 补登了 F-1 / M5+8 / 提交数，并把 D8「每周」改成「每次」，但该行仍写守护 46356–46360、每次长轮询带 `X-Pid`、服务端 91849。已在原案卷补一行，不另发信。
+  - `index.html` 工作树仍脏（mtime 20:41）。human 未停笔，不请派 cursor，不跑全量。未改 activity（身份级 activity 仍是另一项目）。
+- [x] 2026-10-14 21:27 心跳：收件箱 0 未读。`ic cases --workspace` 本项目在办仍只有 `m1a13a62e9d6e49821`（owner=opencode），`--owner grok` 在办 0。名下无下一项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 与 21:15 案卷节点相比无新事实：守护仍 30603–30607（20:11:34），服务端仍 55074（21:05:10），HEAD 仍 `7dbccf2`。PLAN.md 仍停在 21:10（§九 53 commit；§五 D8 仍写守护 46356–46360、每次长轮询带 `X-Pid`、服务端 91849）。`index.html` 仍脏（20:41）。不另发信，不重复写案卷节点。
+  - pi 21:21 仍在补需求文档，SKILL.md 20:44 / README 20:50 未入库，本方不动。未改 activity（身份级 activity 仍是另一项目的 D3 待命，21:22）。
+- [x] 2026-10-14 21:45 心跳：收件箱 0 未读。`ic cases --workspace` 本项目在办仍只有 `m1a13a62e9d6e49821`（owner=opencode），`--owner grok` 在办 0。名下无实现项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 相对 21:27 的新事实：PLAN.md 于 21:28 补登（§一/§九 写成 human 代码面停笔、53 commit、156/156）。§五 D8、§八引言、§九 19:10 段仍写守护 46356–46360、每次长轮询带 X-Pid、服务端 91849，§九该段仍写「未停笔」。
+  - 实测未变：守护仍 30603–30607（20:11:34），长轮询无 X-Pid；服务端仍 55074（21:05:10），不追。HEAD 仍 `7dbccf2`，`--since 18:05` = 53。`index.html` 仍脏（20:41）。SKILL.md 21:39、README 21:37 仍未入库，需求文档仍 18:15，归 pi，本方不动。
+  - 已在原线程回 opencode `m1a13aa8a783eea8ac`，并写案卷节点。不改 PLAN，不 `crew down`。未改 activity（身份级 activity 仍是另一项目，21:36）。
+- [x] 2026-10-14 22:00 心跳：MCP 未读 0（回信被已离场窗口 `w-ba5dfc` 占着）。签收 opencode `m1a13aab8918d75786`（`force`）。D8 三处已对齐，实测未变：守护仍 30603–30607（20:11:34），长轮询无 X-Pid；服务端仍 55074；HEAD 仍 `7dbccf2`，`--since 18:05` = 53。案卷 `m1a13a62e9d6e49821` 已写节点并办结。未回帖。
+  - 名下无实现项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 新缺口：§七 D4 第 151 行仍写「文档合入后才出终审」。终审 20:56 已确认，156/156 已复跑。已发 opencode `m1a13ab6c1356cdb16`。对方未读，案卷尚未建立，`--note` 被拒 `not_found`。README 21:37、SKILL.md 21:39 未入库，需求文档仍 18:15，归 pi。未改 activity。
+- [x] 2026-10-14 22:33 心跳：收件箱 0 未读。`ic cases` 本项目在办 0，`--owner grok` 在办 0。名下无实现项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 上轮 §七 D4 缺口已收口：案卷 `m1a13ab6c1356cdb16` 22:01 办结，PLAN 第 151 行已改为终审已出、文档余量归 pi。未再写节点。
+  - 新事实：human `ba7f650`（22:17:30）只改 `crew.py` `plan_up`，启动不再把 `--heartbeat` 写入命令行。kimi 已报提交数与 156/156（`m1a13ad233c674bdfb`，待 kimi），不重复。
+  - 守护 22:17:32 换新为 78688 grok / 78689 kimi / 78690 opencode / 78691 cursor / 78692 pi。命令行无 `--heartbeat`，config heartbeat 为 600/600/900/600/600，grok 启动日志 `heartbeat=600`。§五 D8 / §八仍写 30603–30607。服务端仍 55074，不追，未 `crew down`。
+  - 已在 kimi 那份案卷补一行。另发 opencode `m1a13ad4f909bca23f`（reply-to 被拒：不在该线程）。新案卷尚未建立，`--note` 被拒 `not_found`。activity 已自报。
+- [x] 2026-10-14 22:45 心跳：收件箱 0 未读。`ic cases --owner grok` 在办 0。本项目在办 2 份：`m1a13ad4f909bca23f`（owner=opencode，D8 pid）与 `m1a13ad7cc69c391c3`（owner=pi，自检，22:38 自动中断）。名下无实现项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 上轮 D8 事实已由 PLAN 22:34 写入 §五/§八。22:45 复核未变：守护仍 78688–78692（22:17:32，无 `--heartbeat`），服务端仍 55074（21:05:10），HEAD 仍 `ba7f650`，`--since 18:05` = 54。`index.html` 仍是 20:41 的未提交改版（+198/−117）。SKILL.md 21:39、README 21:37、需求文档 18:15，均未入库，归 pi。
+  - 已在 `m1a13ad4f909bca23f` 写一行节点，未改状态，未再发信。未改 activity（身份级 activity 仍是另一项目）。
+- [x] 2026-10-14 22:56 心跳：收件箱 0 未读。`ic cases --owner grok` 在办 0。本项目在办仍只有 `m1a13ad4f909bca23f`（owner=opencode，D8 pid）。名下无实现项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 与 22:45 案卷节点相比无新事实：守护仍 78688–78692（22:17:32，无 `--heartbeat`），服务端仍 55074（21:05:10），HEAD 仍 `ba7f650`，`--since 18:05` = 54。PLAN.md 仍 22:34，§五/§八与实测一致。`index.html` 仍是 20:41 的未提交改版。SKILL.md 21:39、README 21:37、需求文档 18:15，均未入库，归 pi。
+  - opencode 22:51 维护记录对本项目的结论也是零漂移。不另发信，不重复写案卷节点。未改 activity（身份级 activity 仍是另一项目）。
+- [x] 2026-10-14 23:10 心跳：收件箱 0 未读。`ic cases --owner grok` 在办 0。本项目在办仍是 `m1a13ad4f909bca23f`（owner=opencode，D8 pid）。名下无实现项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - D8 事实未变：守护仍 78688–78692（22:17:32，无 `--heartbeat`），服务端仍 55074（21:05:10），HEAD 仍 `ba7f650`，`--since 18:05` = 54。不另发 D8 信，不重复写案卷节点。
+  - 新事实：`需求文档/01-需求整理.md` mtime 23:03:29，工作树 +71/−9，未提交。R14 已写成「✅ 已全量收口」，新增 R15–R18，R18 表含 M5+1–M5+8 与 F-1（`7dbccf2` / `ba7f650`）。PLAN §七第 151 行、§九「·」行、§九 21:2x/22:3x 补登仍写「18:15 未动 / R14 待做」。已发 opencode `m1a13af6ca94092c7f`。对方未读，案卷尚未建立，`--note` 被拒 `not_found`。未改 PLAN，未对码。pi 23:02 仍自报在补，kimi 23:07 在抽验，不另派。
+  - SKILL.md 仍 21:39、README 仍 21:37，未入库。activity 已自报。
+- [x] 2026-10-14 23:24 心跳：收件箱 0 未读。`ic cases --owner grok` 起手在办 0；本项目在办仍是 `m1a13ad4f909bca23f`（owner=opencode，D8）。名下无实现项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - D8 未变：守护仍 78688–78692（22:17:32，无 `--heartbeat`），服务端仍 55074（21:05:10）。不另发 D8 信，不重复写该案卷节点。
+  - 上轮「需求文档未提交」已过期：human 23:19:13 入库 `90e6a1f`（只含 README / SKILL.md / 需求文档，+146/−20）。三文件工作树干净。`ba7f650..HEAD` = 1，`--since 18:05` = 55；多出的一笔是文档，代码面仍止于 `ba7f650`。23:10 那封（`m1a13af6ca94092c7f`）23:14 被 `w-fe6103`（LLM思维链）签收，事实已旧。
+  - kimi 23:21 已发 `m1a13b00cd42189d8f`，覆盖 §一 M4 与 §九「·」行、21:2x/22:3x。本方只补 §七第 150–151 行仍写「待落笔 / 未提交 / 18:15 未动」，回在原线程 `m1a13b03fdfa961026`，并写案卷节点（状态待 opencode）。未改 PLAN。`index.html` 仍是 20:41 的未提交改版。activity 已自报。
+- [x] 2026-10-14 23:48 心跳：收件箱 0 未读。`ic cases --owner grok` 在办 0，本项目 `--status active` 0。名下无实现项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 上轮文档案卷 `m1a13af6ca94092c7f` 已于 23:25 离场自动中止。PLAN.md 工作树 mtime 仍 22:34，文档行未改。不重复单发。
+  - 新事实：human `da3377c`（23:34:01）给 `crew.py` 加身份配置 `headless_timeout`（缺省 1800，clamp 10 秒–7 天，watch 每轮热读，超时 SIGKILL）。`ba7f650..HEAD` = 3（`90e6a1f` 文档、`b987102` 只改 TODO-pi、`da3377c`）。`--since 18:05` = 57。装载计数 158。本方只跑 `HeadlessTimeoutTest` = 2 OK，未复跑全量。
+  - 守护 23:34:09 换新为 44650 grok / 44651 kimi / 44652 opencode / 44653 cursor / 44654 pi（cwd=本仓，仅 `--poll 30`，无 `--heartbeat`，已载 `da3377c`）。服务端仍 55074（21:05:10），不追，未 `crew down`。PLAN §一/§五/§八/§九仍写 78688–78692、54 commit、156/156、停笔 22:17。
+  - 已发 opencode `m1a13b19d489c40271`。对方未读，案卷尚未建立，`--note` 被拒 `not_found`。`index.html` 仍是 20:41 的未提交改版。activity 已自报。
+- [x] 2026-10-15 00:01 心跳：收件箱 0 未读。`ic cases --owner grok` 在办 0。本项目在办仍是 `m1a13b19d489c40271`（owner=opencode）。名下无实现项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 23:48 那封已由 opencode 23:51 核验并转交互 coordinator（PLAN 仍写 54/156、78688–78692、停笔 22:17）。本轮实测未变：守护仍 44650–44654（23:34:09，无 `--heartbeat`），服务端仍 55074（21:05:10），HEAD 仍 `da3377c`，`--since 18:05` = 57。不 `crew down`，不另发 D8 信。
+  - 23:51 之后的增量：README 与需求文档于 23:54 写入 `headless_timeout`（未提交）。需求文档 R18 写成 55 commit、158/158；`--since 18:05` 仍是 57（多出的是 `90e6a1f` 与 `b987102`）。`SKILL.md` 仍无该字段，pi 自报在追。kimi 已就 23:54 增量报 opencode。已在原案卷补一行，不另发信。
+  - `index.html` 仍是 20:41 的未提交改版。未改 activity（身份级 activity 仍是另一项目的 D3）。
+- [x] 2026-10-15 00:13 心跳：收件箱 0 未读。`ic cases --owner grok` 在办 0。本项目在办仍是 `m1a13b19d489c40271`（owner=opencode）。名下无实现项：B1–B4、D2、本方 C-1/C-3/C-4/C-5+M5/C-6/C-7/C-8 已验收；M2（`kickoff`）与 N4 仍是 backlog，未改生产文件。
+  - 相对 00:01 节点的新事实：23:54 的 README / 需求文档已入库 `bac9f2d`（00:01:59，含 `headless_timeout` 与 158/158）；`369d1c4`（00:02:52）只改 `TODO-pi.md`。HEAD `369d1c4`，`--since 18:05` = 59。源码仍止于 `da3377c`。`SKILL.md` 无 config 字段表，不含 `headless_timeout` 不是遗漏（opencode 00:08 已核）。
+  - 守护仍 44650–44654（23:34:09，无 `--heartbeat`），服务端仍 55074（21:05:10）。不 `crew down`。`index.html` 仍是 20:41 的未提交改版。
+  - PLAN 工作树仍 22:34：§一/§九 54 commit、156/156、停笔 22:17；§五/§八 守护 78688–78692；§七 150–151 与 §九仍写文档未提交。这些已由 opencode 00:08 写入 `_work/plan-maintenance.md`（建议改成 59 / 158、补 M5+9、文档追码到 `bac9f2d`、守护 44650–44654），转交互 coordinator。不另发信。
+  - 已在原案卷补一行更正。未改 activity（身份级 activity 仍是另一项目的 D3）。

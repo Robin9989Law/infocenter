@@ -1,7 +1,8 @@
 # D8 重启交接单（给 opencode 守护 / coordinator）
 
 > 背景：现网服务端（`bin/ic serve --detach`，2026-10-14 04:46 启动）与各项目守护（pid 27466–27469 / 56260 等，13:12 启动）运行的是**旧代码**。D 线（窗口/案卷/`/ui`）与 A/B/P0/P1（及 P2）修复需重启才在生产生效。
-> **触发条件**：待 **P2 补齐**（`_work/final-review.md` 的 P2 + `_work/verify-debug.md` 的 N1–N4 落地、全量测试绿）之后再执行，避免重启两次。
+> **状态：✅ 已执行**（2026-10-14 18:00，服务端 + 5 守护；服务端 19:08:32 / 19:18:06 再重启两次）。本单留档，不再是待办。P2 于 18:05:01 `11b5445` 收尾（全量 144/144 零告警）。注意现存守护（18:00:10 启动）加载的是该回退提交之前的码，仍多 `watch` 长轮询的 `pid=os.getpid()` 两行（详见 `PLAN.md` §五 D8 裁定：本轮不 `crew down/up`）。
+> ~~**触发条件**：待 **P2 补齐**（`_work/final-review.md` 的 P2 + `_work/verify-debug.md` 的 N1–N4 落地、全量测试绿）之后再执行，避免重启两次。~~（已满足并执行）
 > **执行者**：**交互式（非无头）coordinator 窗口**——守护已明确拒绝（`PLAN.md:211`：`crew down` 会经 `_run_headless` 的 `except BaseException`（C-7/D2-a 设计）`killpg` 自身进程组 → 自杀；且需重启共享 8787 服务端、打断 grok/cursor 在飞 headless）。
 
 ## 步骤

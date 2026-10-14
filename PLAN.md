@@ -32,7 +32,7 @@
 | **M1 质量基线** | A 线审查完成 + 新增测试落盘，全量测试绿（33/33 零 ResourceWarning），无已知并发/边界漏洞 | 无（可立即开工） | ✅ **已冻结**（A1–A6 coordinator 验收 + kimi 独立复核通过，见 `_work/verify-m1.md`） |
 | **M2 联邦定稿** | B1 决策冻结 ✅ → B2 设计冻结 ✅ → B3 实现冻结 ✅（27/27 零跳过全绿，见 `_work/verify-b3.md`） → B4 文档合入 ✅ | 无 | ✅ **已冻结**（B4 三处文档由本项目 omp 守护 pid 27470 于 2026-10-14 15:03 合入，coordinator 核工作区与 kimi D3 预复核一致） |
 | **M3 发布就绪** | C1–C4 文档/打包/公开准备/版本对齐已完成 ✅；B4 联邦文档已合入 ✅；公开动作待 human 拍板 | C1–C4 ✅ + B4 ✅；公开 `gh repo edit --visibility public` 待 human D4 | ✅ **已就绪**（等 D4 触发公开） |
-| **M4 窗口·案卷·应用** | 认领按线不重复处理；案卷（办事追踪）可追踪；办公室/案卷可视化；应用可暂停/中止/办结、设定项目地址、立案 | D1 数据层 ✅（coordinator+kimi 双签，D1-a/b 已补）；D2 命令与守护 ✅（coordinator+kimi 双签，D2-a/b 已收口）；D3 应用 ✅（kimi 预复核通过后，D3-a/b/c 由 cursor 一次性收口）；D1-a/b 与 D2-a/b 补强已齐，coordinator 本轮核验 82/82 零告警全绿；D 线文档待补（pi） | 🔨 收口中（**仅余 D 线文档**：pi 的 README 已合入，余 `SKILL.md` / `需求文档`；**M5 冻结后码仍演进**——human 18:05 起直改 web/后端共 25 commit（截至 19:18，仍在增；数字随 human 停笔更新）、新增 7 项功能 + R14 收敛，基线 **144/144 零告警**（coordinator 19:10 独立复跑），见 §九「M5 冻结后迭代」） |
+| **M4 窗口·案卷·应用** | 认领按线不重复处理；案卷（办事追踪）可追踪；办公室/案卷可视化；应用可暂停/中止/办结、设定项目地址、立案 | D1 数据层 ✅（coordinator+kimi 双签，D1-a/b 已补）；D2 命令与守护 ✅（coordinator+kimi 双签，D2-a/b 已收口）；D3 应用 ✅（kimi 预复核通过后，D3-a/b/c 由 cursor 一次性收口）；D1-a/b 与 D2-a/b 补强已齐，coordinator 本轮核验 82/82 零告警全绿；D 线文档待补（pi） | 🔨 收口中（**仅余 D 线文档**：pi 的 README 已合入，余 `SKILL.md` / `需求文档`；**M5 冻结后码仍演进**——human 18:05 起直改 web/后端共 54 commit（截至 22:17）、新增 7 项功能 + R14 收敛 + M5+ 扩展，基线 **156/156 零告警**（coordinator 21:2x / 22:3x 独立复跑；含 F-1 `7dbccf2` +2），见 §九「M5 冻结后迭代」） |
 | **M5 最后评审加固** | human「先不急着启动，做最后一轮评审和 debug」→ 3 名分区独立评审 + 3 名对抗性交叉复核（`_work/final-review.md`，基线 82/82 零告警）：P0 6 项必修、P1 9 项应修、P2 若干；按文件分区派 idle 成员修，kimi 独立复核 + 全量回归 | 无 | ✅ **已冻结**（cursor 10 项 + grok 8 项全部落码，18/18 对码无半修/假修；kimi 独立复核 `_work/verify-debug.md`：P0 反驳复现 5/5 通过、基线 **118/118 零告警**，coordinator 独立复跑一致；N1–N4 转 P2，见 §八） |
 
 ---
@@ -106,8 +106,8 @@
 | D4 | 仓库是否转公开、时机 | human | ❓ 待拍板（建议 M1/M2 后） |
 | D5 | `~/Downloads/信息中心` 的 TCC 权限（headless 读写 Downloads 可能被拦） | human | ✅ 已确认正常（守护进程可正常读写） |
 | D6 | `activity` 是**全局按身份**、非「身份×项目」：同一身份的多项目守护会互相覆盖 activity（实测 cursor 在 A 线自报后被 ICLR 守护覆盖回 GPU 状态） | human / coordinator | ✅ **已裁定＝按办公室（窗口）分区**，随 D 线 D1 一并实现（见 §七） |
-| D7 | 凭空身份 `coordinator`（A6-2 副作用）残留 3 封 kimi 未读；根因修复后是否清理该身份与信件 | human / coordinator | ✅ **已清理**（2026-10-14：删除幽灵身份 `coordinator` + 退休身份 `omp`，连同其投递与「仅发给它们」的信；`/v1/agents` 加 `roster` 标记、状态条只显示名单成员。库已备份 `mailbox.db.bak-192321`） |
-| D8 | 本项目 5 个守护与 8787 服务端加载新码 | coordinator | ✅ **已执行**：首次 18:00（服务端 46322、crew 46356–46360），后随 18:05–19:10 的 M5 后提交**于 19:08:32 首度重启服务端**（pid 87306），又于 **19:18:06 再重启一次**（现 pid 91849，实测 `/ui`、`/v1/activity`、`/v1/crew`、`/v1/windows` 均 200）；**守护仍 46356–46360**（18:00:10 启动）——加载的是 `11b5445`（18:05:01）回退前的码，该提交从 `watch` 长轮询 `GET /v1/events` 删去 `pid=os.getpid()`（2 行，原系 M2 误加），故现存守护每周长轮询仍带 `X-Pid`，`store.events` 据此把窗口进程号记为守护自身 pid（影响 `/ui` 的 `pid_alive` 取数）。`client.py` 最后一笔 `f175222`（17:45）确在 18:00 前（此半句成立）；同批 `sync.py` 仅加 U-3 注释、无行为变化。**裁定：本轮不 `crew down/up`**（仅涉窗口 `pid_alive` 取数，且重启会打断在飞 headless 与 human 的 UI 迭代），折入下次自然重启。原「交非无头窗口执行」已消解 |
+| D7 | 凭空身份 `coordinator`（A6-2 副作用）残留 3 封 kimi 未读；根因修复后是否清理该身份与信件 | human / coordinator | ✅ **已清理**（2026-10-14：删除幽灵身份 `coordinator` + 退休身份 `omp`，连同其投递与「仅发给它们」的信；`/v1/agents` 加 `roster` 标记、状态条只显示名单成员。库已备份 `mailbox.db.bak-192321`。19:41 opencode 裁定选 2：幽灵身份 `coordinator` 删除成立；`omp` 系**跨仓共享身份**（LLM思维链 / 01_ICLR2027 两仓在用），被其存活守护按心跳重建属**预期行为**——不再反复清理、不 kill 他仓守护，靠 `roster` 标记在本仓隐藏即可） |
+| D8 | 本项目 5 个守护与 8787 服务端加载新码 | coordinator | ✅ **已执行 / 已随换新收口**：首次 18:00（服务端 46322、crew 46356–46360），后随 18:05–19:10 的 M5 后提交于 19:08:32 首度重启服务端（pid 87306）、又于 19:18:06 再重启一次（pid 91849）；**5 个守护已两度自然换新**：20:11:34 → **30603 grok / 30604 kimi / 30605 opencode / 30606 cursor / 30607 pi**（载 `fd8eba9`）；再于 **22:17:32 → 78688 grok / 78689 kimi / 78690 opencode / 78691 cursor / 78692 pi**（ppid=1、cwd=本仓、命令行仅 `--poll 30`、**无 `--heartbeat`**，系 `ba7f650` 22:17:30 之后拉起；现载 HEAD `ba7f650`，已含 `baec4e6`（20:15:53）起的 `running_daemons`/`GET /v1/daemons`，config heartbeat 600/600/900/600/600 交守护每轮热读），`watch` 长轮询 `GET /v1/events` **已不带 `X-Pid`**，原「每次长轮询仍带 X-Pid、`store.events` 据此记守护自身 pid、影响 `/ui` `pid_alive` 取数」缺陷**随 20:11:34 换新消解**（`/v1/windows` 的 `body.pid` 是一次性登记，非该缺陷）。**8787 服务端**随后多次随 human 手动重启换新，**现 pid 55074（21:05:10）**，沿用 19:30「随 human 重启、不追」口径不追；实测 `/ui`、`/v1/activity`、`/v1/crew`、`/v1/windows` 均 200。残留：20:11:34 那批载 `fd8eba9`、未含 `baec4e6` 起新码的旧残留，**已随 22:17:32 换新消解**。`client.py` 最后一笔 `f175222`（17:45）确在 18:00 前（此半句成立）；同批 `sync.py` 仅加 U-3 注释、无行为变化。**裁定：不 `crew down/up`**；原「折入下次自然重启 / 交非无头窗口执行」均已消解（20:11:34 换新即自然重启），原记「守护仍 46356–46360 / 现 pid 91849」已过期（21:44 grok 复核，见 `m1a13aa8a783eea8ac`；22:17:32 再换新，见 `m1a13ad4f909bca23f`） |
 
 ---
 
@@ -148,7 +148,7 @@
 - **D1 数据层（cursor）**：store + httpapi + mcp_server + 测试。**✅ 已完成并经 coordinator + kimi 独立复核通过**（`infocenter/store.py`、`infocenter/httpapi.py`、`infocenter/mcp_server.py`、`tests/test_quality_window.py` 10 项测试全绿，同时合入 B3 §10 接口，含 D6 按办公室隔离 activity；`_work/verify-d.md` D1-a/D1-b 旧库迁移与转办正向单测已补齐；coordinator 本轮核验 82/82 零告警全绿）。
 - **D2 命令与守护（grok）**：client/cli/crew/config。**✅ 已完成并经 coordinator + kimi 独立复核通过**（`infocenter/client.py`、`infocenter/cli.py`、`infocenter/crew.py`、`tests/test_d2_commands.py` 9 项测试全绿；D2-a/D2-b 已收口：`_run_headless` 改用独立进程组 `Popen` 并将 `headless_pid` 写入守护 meta，`crew pause` 对该进程组发 `SIGTERM` 不杀守护、本窗口 `paused` 时 `watch` 跳过新一轮且未处理新信不推进游标，`crew resume`/`close` 与 `INFOCENTER_WINDOW` env 注入已补测；coordinator 本轮复跑全量 82/82 零 `ResourceWarning`）。
 - **D3 应用（cursor 收口）**：`/ui` + 管理台。**✅ 已完成并经 coordinator 核验**（`infocenter/server.py` `/ui` 静态路由与 `infocenter/web/index.html` 真实 `fetch` 版）：kimi 预复核（`_work/verify-d.md` §D3）判「代码侧基本通过，1 条必修 D3-a + 3 条提示级」。D3-a（案件列表 `last_node` 渲染 `[object Object]`）原派 omp，因其 headless（pid 23564）自 15:09 起陷于上游 provider（`alibaba-token-plan`）重试循环（>15 分钟零工具调用，`m1a1393f19c75484a2` 未签收），coordinator 于 15:24 裁定改由 **cursor 连同 D3-b/D3-c 一次性收口**（见上表收口规则），并已终止该卡死进程。cursor 15:29 交付：`index.html:195` 末节点对象渲染、`197-214` 按钮显隐改按原始 `c.status`（open/doing/pending/waiting 可暂停、paused 可恢复、sealed/aborted/done 隐藏中止办结）+ CSS 补原始状态与「待办/离场」底色、`281-286` 离场二次 `confirm()` + `window_id`/`case.id` 转义加固，新增 `test_13_ui_console_smoke_and_d3_abc`；coordinator 复跑 `python3 -W error::ResourceWarning -m unittest discover -s tests` = **78/78 OK 零 ResourceWarning**。**剩余**：**D 线文档**（`README.md`、`skills/infocenter/SKILL.md`、`需求文档/01-需求整理.md` 的窗口号/案卷/`ic case`/`crew pause|resume|abort|close`/`/ui` 说明）归 pi（原派单 `m1a13963cf861a79e5`，15:48）；因 M5 debug 轮一度暂缓，M5 收口后已重新激活（见 §八），待落笔。
-- **D4 复核（kimi）**：**✅ D1+D2 独立复核已通过**、**✅ D3 预复核已出**（`_work/verify-d.md`，77/77 零告警实测）；D1-a/b、D2-a/b、D3-a/b/c 均已收口（coordinator 本轮 82/82 零告警），**唯余 D 线文档（pi）**，文档合入后补一次全量回归即出 **D 线终审**。
+- **D4 复核（kimi）**：**✅ D1+D2 独立复核已通过**、**✅ D3 预复核已出**（`_work/verify-d.md`，77/77 零告警实测）、**✅ D 线终审已出**——D1-a/b、D2-a/b、D3-a/b/c 均已收口；kimi 20:51 终审通过、coordinator 20:56 确认（终审信 `m1a13a7e1b35913679`，案卷 `m1a1390537991671bd` 已办结），全量 **156/156** 已 21:2x 复跑零告警。**唯余文档余量仍归 pi**（README/SKILL 未提交、`需求文档/01-需求整理.md` 仍 18:15 未动），不阻塞终审，见 §九。
 - **顺带**：D6（activity 按办公室分区）已随 D1 落地 ✅；D8（守护重启）✅ **已执行** 18:00（服务端 + 5 守护；服务端 19:08:32 / 19:18:06 再重启两次），非无头窗口执行要求已消解（见 §五/§八）。
 
 **派单**（2026-10-14，high）：cursor D1 `m1a1390537469b0f80`｜grok D2 `m1a139053766b70bbd`｜omp D3 `m1a13905378431a235`｜kimi D4 `m1a1390537991671bd`。
@@ -168,7 +168,7 @@
 ## 八、M5 · 最后评审 · debug 轮（触发：human 2026-10-14 15:55「先不急着启动，做最后一轮评审和 debug」）
 
 > **规格＝`_work/final-review.md`**：3 名分区独立评审（数据层 / 管理台·服务端·联邦·MCP / CLI·守护·客户端·config）+ 3 名对抗性交叉复核（逐条证伪 + 补漏），基线 `python3 -W error::ResourceWarning -m unittest discover -s tests` = **82/82 零告警**。全程未改生产文件、未动现网 8787。
-> **D8 重启** ✅ **已执行** 18:00（服务端+5 守护），并随 M5 后提交于 19:08:32、19:18:06 两度重启服务端（现 pid 91849；`/ui`、`/v1/activity`、`/v1/crew` 均 200）。D 线文档（pi）曾暂缓以免文档追改，M5 已收口、已解除待命、pi 可落笔（README 已合入，余 SKILL/需求文档）。
+> **D8 重启** ✅ **已执行** 18:00（服务端+5 守护），并随 M5 后提交于 19:08:32、19:18:06 两度重启服务端；**5 守护已两度自然换新**：20:11:34（30603–30607，载 `fd8eba9`）→ **22:17:32（78688–78692，载 HEAD `ba7f650`，长轮询已无 `X-Pid`）**，8787 服务端多次随 human 重启，**现 pid 55074 @21:05:10**（不追；`/ui`、`/v1/activity`、`/v1/crew` 均 200）。见 §五 D8。D 线文档（pi）曾暂缓以免文档追改，M5 已收口、已解除待命、pi 可落笔（README 已合入，余 SKILL/需求文档）。
 
 **修复清单与按文件派单（单一写者，`§〇` 所有权）**
 
@@ -231,11 +231,11 @@
 | # | 事项 | 归属 | 说明 |
 | --- | --- | --- | --- |
 | R14 | **管理台三栏级联 + 写操作下移**：点项目 → 中间列其办公室；点办公室 → 右边列其案件；写操作（设定项目地址/立案）下移到项目页 | cursor（D 线 UI） | ✅ **已收口**（18:05–18:59 由 human 直改，`4bc9baa`→`58d188c`）：三栏级联 + 行内 ⚙️ 设置弹窗 + **写操作下移**（`be1aa56` 主界面去零散表单）+ 案件节点四列表格 + 项目/办公室设置页分区 + 新建项目 + 立案指派 + 项目归档 + 守护启停。见 `需求文档/01-需求整理.md` §七；回归复核见下「M5 冻结后迭代」末行 |
-| F-1 | 守护对 `config.json` **不热加载**（改 `headless`/`heartbeat_prompt` 需重启守护） | 待排期 | 见 `TODO-opencode.md` backlog；修复：主循环热读或 `ic crew reload` |
+| F-1 | 守护对 `config.json` **不热加载**（改 `headless`/`heartbeat_prompt` 需重启守护） | ✅ human | **已落码 `7dbccf2`（21:04）**：守护每轮重读 `config.json`，`headless`/`heartbeat_mode`/`heartbeat_prompt`（及未显式传入的 `heartbeat`）改动**无需重启守护**即生效；清空 `headless` 时守护优雅退出。+2 回归（`tests/test_hardening_sess.py`）**已随基线独立复跑确认**（156/156，含本项 +2）。**收尾 `ba7f650`（22:17）**：`plan_up` 不再把 `--heartbeat` 固化进守护命令行，`heartbeat` 亦由守护每轮热读 config（改 heartbeat 无需重启；仅 `crew.py` −3/+1，无专项测试，提示级观察、不阻塞） |
 | F-2 | 多 actor 并发跑重活（全量测试等）互相拖死 | 待排期 | 随"守护只读化 / 单一活跃 coordinator"缓解；长期给重活加互斥 |
 | · | 离场窗口不清理：每次守护重启堆一个新窗口（`/ui` 越看越多） | 待排期 | 可加"离场窗口归档/清理" |
 
-### M5 冻结后迭代（2026-10-14 18:05 起 · human 直改 web/后端 · 25 commit（截至 19:18，仍在增） · 基线 144/144 零告警）
+### M5 冻结后迭代（2026-10-14 18:05 起 · human 直改 web/后端 · 54 commit（截至 22:17） · 基线 156/156 零告警（独立确认））
 
 > 登记裁定（19:1x，应 kimi 18:54/19:08 信）：以下 7 项 + 扩展项均属 **M5 冻结后**新增能力，此前未进 §一 M4 / §九。git 作者均为 human 本人（非 coordinator 代改，见 §六.8 澄清）。**统一待办：由 owner cursor 对本批做一次事后具名复核**（补 `archived` / `/v1/crew` / `/v1/activity` / `reopen` UI 单测 + 复跑全量），派单待 human 的 UI 迭代停笔后发出，避免对在飞文件复核对空。
 
@@ -248,6 +248,26 @@
 | M5+5 | **网页起/停守护**：`GET/POST /v1/crew`（status/up/down）+ 项目设置按钮 | `4f0c129` | ✅ 已入库；**回归 0 命中，待补测** |
 | M5+6 | **封卷「重开此案卷」**：UI 挂出 `POST /v1/cases/{id}/reopen`（数据层系 P2 `D-7`） | `ee42713` | ✅ 已入库（口径见 §七「封卷与重开语义」） |
 | M5+7 | **全局工作痕迹流**：`store.recent_activity()` + `GET /v1/activity` + 办公室『实时状态』`pid_alive` + 痕迹表补项目/办公室列 | `5297ca4`、`20e04f3` | ✅ 已入库（在途→19:10 已落）；**回归 0 命中，待补测** |
-| · | **D 线文档范围**：pi 的 README/SKILL/需求文档是否覆盖以上新能力 | — | ❓ 待 pi 落笔时确认（现 README 无「项目归档 / `/v1/crew` / 新建项目 / 立案指派」表述） |
+| M5+8 | **后端 7 项真 bug 修复批**（本会话新码）：`_substitute_prompt` 引号逃逸**命令注入（高危）**、`_collect_projects` 元数据合并非确定（归档被裸名来信翻转）、`/v1/crew up` 缺目录 500→400、`headless_runs`/`running_*` 坏行 500、`limit` 负数、`add_project` 口径对齐 | `6c5aba4` | ✅ 已入库；自报 +10 回归、基线 **154/154 → 156/156**（独立复跑确认，含 F-1 `7dbccf2` +2） |
+| · | **D 线文档范围**：pi 的 README/SKILL/需求文档是否覆盖以上新能力 | pi（C 线） | **README 已补齐**（20:50，三栏级联 / 写操作下移 / 新建项目 / 归档 / `/v1/crew` 起停守护 / 立案指派 / reopen / `/v1/activity` / `pid_alive`，见 `README.md:506-509`）；**`SKILL.md` 20:44 落盘待提交**（+30/−7，抽验对码通过）；**`需求文档/01-需求整理.md` 仍欠**——R14 节仍写「写操作下移 待做」、M5+ 簇未覆盖。⇒ pi 21:21 自报在办（核对 SKILL 草稿 + 补需求文档），不另派单、不代改（§六.8） |
 
-> **19:10 后续改（human 仍在迭代，数量在增）**：`87ca35d`（19:12 三栏等高）、`742190e`（19:15 三栏标题/提示等高）、`dfa9f24`（19:18 三栏固定高 72vh + `/ui` 加 `Cache-Control: no-store`）——均 UI 样式/缓存，归 M5+4 R14 收口簇；随之 19:18:06 服务端再重启一次（现 pid 91849）。此簇同样并入 owner cursor 的事后具名复核。human 未停笔期间**不派单、不复核对空**。
+> **19:10 后续改（human 仍在迭代，数量在增）**：`87ca35d`（19:12 三栏等高）、`742190e`（19:15 三栏标题/提示等高）、`dfa9f24`（19:18 三栏固定高 72vh + `/ui` 加 `Cache-Control: no-store`）——均 UI 样式/缓存，归 M5+4 R14 收口簇；随之 19:18:06 服务端再重启一次（pid 91849，此后多次重启，现 55074 @21:05:10，不追）。此簇同样并入 owner cursor 的事后具名复核。**「human 未停笔期间不派单、不复核对空」口径已解除**——human 代码面已停笔（末 commit `7dbccf2` 21:04，见下 21:2x 补登）。
+
+> **21:0x 补登（应 kimi 21:09 信 `m1a13a87e9324eede6`）**：`dfa9f24` 之后 human 仍在停笔前沿路迭代，§九 表头计数与基线同步为「**53 commit（截至 21:04）· 基线 154/154（自报）**」。
+> - **F-1 已办**：`7dbccf2`（21:04）落 config 热加载（见 §九 backlog F-1 行 ✅）。
+> - **后端修复批入表**：`6c5aba4`（21:00）7 项真 bug（含高危命令注入）→ 新增 **M5+8**，自报 +10 回归。
+> - **19:19–20:34 另有 26 commit**（状态条、信件往来历史 `/v1/agents/{name}/messages`、human 干预中枢 + hash 深链、编号点击复制、多栏筛选、headless 运行上下文持久化、项目行守护启停、一键重启 `POST /v1/restart`、`POST /v1/open` 等）——均 human 直改、已入库，**不再逐条列细目**，一并并入 owner cursor 的事后具名复核。
+> - **口径**：§九「未停笔不复核对空」——154/154 为 human 自报，待其停笔后随 cursor 具名复核独立复跑确认；本轮 coordinator 不跑回归、不派单。
+
+> **21:2x 补登（应 kimi 21:25 信 `m1a13a96af912c9513`）**：human 代码面**已停笔**（末 commit `7dbccf2` 21:04；`crew.py` 21:02 / `tests/test_hardening_sess.py` 21:03 为其同批落盘，此后无写盘）。三项登记：
+> - **基线独立复跑确认**：kimi 对稳定快照独立复跑全量 = **156/156 OK 零 ResourceWarning**；coordinator 21:2x 独立复跑**结果一致（156/156 零告警）**。human 自报 154/154 成立，**+2 系 F-1 `7dbccf2` 自带回归**（`tests/test_hardening_sess.py`）。§九 口径行「154/154 自报待独立复跑确认」→ **已确认（156/156）**。
+> - **README M5+ 覆盖已补齐**（20:50 未提交改动，`README.md:506-509` 等）：三栏级联 / 写操作下移 / 新建项目 / 归档 / `/v1/crew` 起停守护 / 立案指派 / reopen / `/v1/activity` / `pid_alive` 实时状态均写入 ⇒ D4 终审提示级「README 仍写三视图滞后」**已消解**（见上 `·` 行）。
+> - **仍欠（pi 残余，不阻塞）**：`需求文档/01-需求整理.md`（18:15 未动）——R14 节仍写「写操作下移 待做」、M5+ 簇（归档 / 新建项目 / 立案指派 / `/v1/crew` / reopen / F-1 热加载）未覆盖；`skills/infocenter/SKILL.md`（20:44 落盘，**未提交**）。**pi 21:21 自报在办**（核对 SKILL 案卷草稿与冻结码、补需求文档 D 线章节）⇒ 归 pi，不代改。
+> - **口径**：以上系对既有 §九 的三项事实登记（F-1 行 / M5+ 表头 / `·` 行已同步）；**cursor 事后具名复核（M5+ 补测 + 复跑）仍待发**，是否可发以 human 明确确认停笔为准（kimi 观察「似已停笔」，本轮不据此派单）。
+
+> **22:3x 补登（应 kimi 22:30 信 `m1a13ad233c674bdfb`）**：**「human 已停笔 21:04」口径作废**——human 于 **22:17:30** 再落 F-1 收尾 commit **`ba7f650`**（`crew.py` −3/+1：`plan_up` 不再把 `--heartbeat` 固化进守护命令行，`heartbeat` 交守护每轮热读 config）。§九 表头与 §一 M4 行计数同步 **53→54**（截至 22:17），F-1 行补记收尾 commit。三项：
+> - **基线独立复跑确认（含 ba7f650 快照）**：kimi 本轮独立复跑全量 = **156/156 OK 零 ResourceWarning**；coordinator 22:3x 独立复跑一致（**156/156 OK 零告警**）。`ba7f650` 未带新测试（计数不变），F-1 的 +2 回归（`tests/test_hardening_sess.py`）仍绿；`plan_up` 命令行构造变化无专项测试，提示级观察、不阻塞。
+> - **提示级（旧账，非新发现）**：`infocenter/web/index.html` 工作树仍有 20:41 起未提交 UI 改版（+198/−117，纯 CSS 主题重写 paper/copper），21:08 信已报过——**明确并入 owner cursor 事后具名复核范围**，避免漏审。
+> - **口径**：human 代码面停笔时点顺延至 **22:17（`ba7f650`）**；`7dbccf2` 之后的 26 commit 及本 commit 均 human 直改、已入库，并入 cursor 事后具名复核。其余无变化：收件箱 0 未读、无 active 案卷；`需求文档/01-需求整理.md` 仍 18:15 未动、`SKILL.md` 未提交（pi 残余，在办不催）。
+
+> **22:4x 补登（应 grok 22:33 信 `m1a13ad4f909bca23f`）**：补一条**进程事实**（不复述基线/commit）。本项目 5 个守护于 **22:17:32 自然换新**：**78688 grok / 78689 kimi / 78690 opencode / 78691 cursor / 78692 pi**（`ps` 实测：ppid=1、cwd=本仓、命令行仅 `crew watch <名> --dir 本仓 --url 127.0.0.1:8787 --home ~/.infocenter --poll 30`、**无 `--heartbeat`**；config heartbeat 600/600/900/600/600，grok 启动日志 `heartbeat=600`）。命令行无 `--heartbeat` 系 `ba7f650`（22:17:30，`plan_up` 不再固化 `--heartbeat`）之后拉起 ⇒ 该批已载 HEAD `ba7f650`，**含 `baec4e6`（20:15:53）起的 `running_daemons`/`GET /v1/daemons`**，故 §五 D8 此前「这批守护载 `fd8eba9`、未含 `baec4e6`」的残留**随本次换新消解**（22:10:30 曾有一次中途换新，22:17:30 已离场，不另记）。8787 服务端仍 **55074（21:05:10）**，沿用 19:30「随 human 重启、不追」口径不追。**已同步 §五 D8 / §八引言**；本路未 `crew down/up`、未改生产文件。

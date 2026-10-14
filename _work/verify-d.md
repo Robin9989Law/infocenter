@@ -141,3 +141,104 @@
 ## 结论
 
 **D2-a/D2-b 收口通过，kimi 侧无追加意见。** D 线终审前置仅剩一项：**D 线文档合入（omp：README / `skills/infocenter/SKILL.md` / `需求文档/01-需求整理.md`，三处 mtime 14:53 / 02:43 / 15:01，自上一轮心跳起未变）**。文档合入后补一次全量回归即出 D 线终审。
+
+---
+
+# D 线终审（2026-10-14 20:48，kimi）
+
+> 触发条件达成：D 线文档三处已齐——`README.md`（18:05，已提交）、`需求文档/01-需求整理.md`（18:15，已提交）、`skills/infocenter/SKILL.md`（**20:44 落盘，未提交**，工作树 diff +37 行）。复核快照：HEAD `537c72d`（20:34），工作树含 `web/index.html`（20:41）与 SKILL.md 未提交改动。
+
+## 文档对码核验（逐项抽查，均一致）
+
+- **SKILL.md**（最全，含 M5+ 口径）：窗口号 `X-Window`/`INFOCENTER_WINDOW` ✅、认领按线程传播 ✅、`ic_case` 只读 ✅、`ic case <id> --note --status` / `ic cases --workspace` / `ic windows --agent`（`cli.py:129-143` 逐项对上）✅、`crew pause|resume|abort|close` ✅、**封卷默认只读 + `POST /v1/cases/{id}/reopen` 显式重开留痕**（`httpapi.py:518-519` → `store.reopen_case`，与 §七「封卷与重开语义」裁定一致）✅、离场自动中止补 `[自动]` 节点 ✅、管理台三栏级联 + 立案指派 + 项目归档 + 网页起停守护（`/v1/crew`，`httpapi.py:178`）+ 全局痕迹（`/v1/activity`，`httpapi.py:202`、`store.py:2005`）✅。
+- **README.md**：窗口/办公室/案卷术语表（85-87）✅、`ic case/cases/windows` 参数表与 `cli.py` 一致（`--owner`/`--state`/`--workspace`/`--limit` 均存在）✅、crew 收局四操作（212-215）✅、「封卷后只读（要改只能重开）」（477）与新口径一致 ✅。
+- **需求文档**：R14 §七 三栏级联 + 写操作下移规格已记录（180-189）✅。
+
+## 回归
+
+本机复跑 `env -u INFOCENTER_AGENT python3 -W error::ResourceWarning -m unittest discover -s tests` = **144/144 OK 零 ResourceWarning**（71.5s，20:48 快照，含工作树在途改动）。注：M5 冻结（118）后 human 新增 25+ commit 但**测试数仍为 144**，§九 登记的「归档/`/v1/crew`/`/v1/activity`/reopen UI 待补测」依然成立（属 cursor 事后具名复核范围，非本终审阻塞项）。
+
+## 提示级（不阻塞 D 线冻结，建议 pi 在 human 停笔后补一轮，或并入 cursor 事后复核）
+
+1. **README §管理台（483 行）滞后**：仍写「三视图（办公室/案卷/项目）」与旧交互（主界面直接设定项目地址/立案），未反映 R14 已收口的三栏级联 + 写操作下移，也无重开/归档/新建项目/立案指派/起停守护/痕迹流等 M5+ 能力。
+2. **需求文档同样缺 M5+ 簇**（19:58 后的 headless 上下文持久化、办公室状态筛选、`/v1/open` 等）。→ 即 PLAN §九「D 线文档范围 ❓」的答案：**SKILL.md 已覆盖，README / 需求文档未覆盖**。
+
+## 结论
+
+**D 线终审通过（按「封卷默认只读、可显式重开」现行口径）**：D1–D3 码冻结双签在先，D 线文档三处齐且抽查与实码一致，全量 144/144 零告警。残余事项（README/需求文档补 M5+、cursor 事后具名复核补测、SKILL.md 待提交）均已在 PLAN §九 有归属，不阻塞 M4 收口。若 human 后续 commit 再改 D 线语义，按 diff 复核即可。
+
+---
+
+# 追审 · README 21:35 增量（2026-10-14 21:3x 心跳，kimi）
+
+> 背景：终审（20:48）提示级第 1 条「README §管理台滞后」之后，README 于 21:35 再改（diff +49 行，未提交）。本轮对该增量做对码抽验。
+
+## 结论：增量全部与实码一致，终审提示级第 1 条**完全消解**
+
+- HTTP 表新增 17 行逐一对上：`/v1/cases` 过滤参数（`workspace/status/owner/owner_window/limit`）✅、`POST /v1/cases` 带 `to`+`body` 发始信（`httpapi.py:494-497` → `create_case(to=..., body=...)`）✅、`nodes`/`pause|resume`/`abort|close`/`reopen`/`claim|transfer`（`httpapi.py:508-540`，含 `claim` 的 `force`、`transfer` 的 `to_window` 必填校验）✅、`/v1/windows` GET/POST 与 `/v1/windows/{id}` GET/PUT/DELETE + `pause|resume|leave`（`httpapi.py:557-608`，代码另收 `exit|stop|abort` 别名，为 README 超集）✅、`/v1/projects` 含 `archived` 布尔校验 ✅、`/v1/activity` limit ≤ 100（`store._limit` 1–100 硬夹）✅、`/v1/headless` / `/v1/headless/runs` / `/v1/daemons`（`httpapi.py:215-244`）✅、`/v1/agents/{name}/messages`（`httpapi.py:337-338`）✅、`/v1/restart`（`dry_run` 预览 + 日志 `~/.infocenter/restart.log`，`httpapi.py:246-287`，路径=`store.path.parent/restart.log` 属实）✅、`/v1/open`（非目录 400 + CSRF 守卫 `_check_write_security`，`httpapi.py:175/289-301`）✅。
+- **F-1 热加载**段落（README §config.json）与 `crew.py:1005/1064` 注释及实现一致：每轮重读 config，`headless`/`heartbeat_mode`/`heartbeat_prompt`（及未显式传入的 `heartbeat`）免重启；清空 `headless` 优雅退出；`poll` 与显式 `--heartbeat` 仍需重启 ✅。
+- §管理台改写为三栏级联 + 写操作下移 + 干预中枢（`#human`）+ 标题栏重启 + 工作痕迹流 + 编号点击复制 ✅（与 §九 M5+1–M5+8 及 19:19–20:34 簇对应）。
+
+## 仍欠（不变，归 pi 在办）
+
+- `需求文档/01-需求整理.md` 仍 18:15 未动（R14 节「写操作下移 待做」过期 + M5+ 簇未覆盖）——pi 21:21 自报在办（last_seen 21:26，pid 存活）。
+- `skills/infocenter/SKILL.md` 20:44 落盘仍**未提交**。
+
+## 备注
+
+本轮未复跑回归：源码末写盘为 `index.html` 20:41（与 21:23 复跑 156/156 快照同源），21:35 仅动 README，回归结果不受影响。
+
+---
+
+# 追审 · 需求文档 23:03 增量（2026-10-14 23:07 心跳，kimi）
+
+> 背景：终审提示级第 2 条「需求文档缺 M5+ 簇、R14 节过期」——pi 于 23:03 落 `需求文档/01-需求整理.md` 改写（diff +80/−16，未提交），§七 重写为「D 线 · 窗口 · 案卷 · 应用」：新增 R15/R16/R17 三节 + R14 改 ✅ + 新增 R18 M5+ 簇表。本轮逐条对码抽验。
+
+## 结论：全部与实码一致，终审提示级第 2 条**完全消解**
+
+- **R15 窗口号与线程认领** ✅：`X-Window` 头 / `INFOCENTER_WINDOW` env / `claimed_by` 按线程传播 / `force=true` 强接 / MCP 推送按窗口过滤——与 D1 冻结码一致（D1 双签时已逐条验过）。
+- **R16 案卷** ✅：状态机（open/doing/waiting_for/paused/aborted/done+sealed）、`ic case/cases`、`crew pause|resume|abort|close`、`GET /v1/cases{,/{id}}`、`POST /v1/cases/{id}/pause|resume|abort|close|reopen`、封卷可重开留痕、离场自动中止补 `[自动]` 节点、MCP 只读 `ic_case`——与 §七 封卷重开裁定口径及实码一致。
+- **R17 管理台** ✅：`/v1/crew`（`httpapi.py:178`）、`/v1/activity`→`store.recent_activity`（`:206-213`）、`/v1/headless/runs`（`:215`）、`/v1/daemons`（`:239`）、`/v1/restart`（`:246`）、`/v1/open`（`:289`）、`/v1/agents/{name}/messages`（`:337-338`）、`reopen`（`:522-523`）、hash 深链 `#human`/`#agent/<名>`（`index.html:1155-1157`）、引用 commit `5297ca4/20e04f3/fd8eba9/baec4e6/f12aed0/537c72d` 全部在 git log 中核实存在。
+- **R14 改 ✅** ✅：「写操作下移 待做」旧表述已删，状态改「已全量收口（4bc9baa→58d188c，含 960dbfa/dfa9f24）」——`960dbfa`（.panel-head flex-grow 根因修复）与 `dfa9f24`（72vh 等高 + no-store）均在 log 中核实。
+- **R18 M5+ 簇表** ✅：M5+1–M5+8 + F-1 九行，关键提交列与 git log 逐一相符；「18:05–22:17 · 54 commit」经 `git log --since=18:00` 实测 = 54，一致；「基线 156/156 零告警（kimi + coordinator 独立复跑确认）」属实；M5+1/5/7「回归 0 命中待 cursor 补测」口径与 PLAN §九 一致。
+
+## 提示级（不阻塞，1 条）
+
+- 文档头「最近更新：2026-10-14 **22:5x**」与实际落盘时间 23:03 略有出入（无实质影响，pi 若再动顺手修即可）。
+
+## 备注
+
+本轮未复跑回归：源码末写盘仍为 `crew.py` 22:15 / `store.py` 20:52 / `index.html` 20:41，与 22:30 已确认的 156/156 零告警快照同源，23:03 仅动文档。三处 D 线文档（README 21:37 / SKILL.md 21:39 / 需求文档 23:03）内容至此全部对码通过；**残余仅一项：三份文档均仍未提交（git status M），pi 在办**（23:02 自报「准备收口 D 线文档」，last_seen 23:06，未达停滞阈值，不催）。
+
+---
+
+# 追审 · `da3377c` headless_timeout 配置化（2026-10-14 23:45 心跳，kimi）
+
+> 背景：23:35 心跳发现 crew.py 23:31 / 两测试 23:32 秒级在写，按纪律未跑半写回归。本轮（23:44）核查：human 已于 **23:34 提交 `da3377c`**（`HEADLESS_TIMEOUT=1800` 默认值 + `_headless_timeout_seconds()` clamp 10–7d，watch 两处 `_run_headless` 传入，+2 回归），此后无写盘，快照稳定 → 出追审。
+
+## 结论：通过
+
+- **对码**：`crew.py` +31/−5——配置读取（`headless_timeout` 缺省回落 1800、非数字回落默认、clamp 下限 10s 上限 7d）、watch 两轮调用点（新信触发 / 心跳触发）均传入 `htimeout`、`_run_headless` 签名加 `timeout` 参数并替换两处硬编码 `1800`、超时日志改动态秒数；与 F-1 热加载自洽（`entry` 每轮热读，`htimeout` 随之每轮重取）。
+- **测试**：`test_hardening_sess.py` 新增 `HeadlessTimeoutTest` 2 项（默认/覆盖/非法值/下限 clamp 断言 + `timeout=1` 真跑 `sleep 30` 验证按时 SIGKILL 且 <15s 返回）；`test_quality_crew.py` 与既有 `test_hardening_sess.py` 的 `fake_headless` mock 签名同步加 `timeout=None`——调用方兼容性已覆盖。
+- **回归**：独立复跑 `env -u INFOCENTER_AGENT python3 -W error::ResourceWarning -m unittest discover -s tests` = **158/158 OK 零告警**（基线 156 → +2 系本 commit 自带）。源码零漂移（末写盘 crew.py 23:31，同 HEAD）。
+
+## 提示级（不阻塞，1 条）
+
+- `headless_timeout` 为新增身份配置字段，README/SKILL/需求文档的配置字段表均尚未覆盖（文档三份已随 `90e6a1f` 提交、冻结于 `ba7f650` 时点）——属 M5+ 文档追补范围，归 pi/cursor 事后复核簇一并处理。
+
+
+---
+
+# 追审 · 文档 23:54 增量（`headless_timeout` 覆盖，2026-10-14 ~23:58 心跳，kimi）
+
+> 背景：上条提示级指出 `headless_timeout` 未被三份 D 线文档覆盖。本轮核查：README.md 与 `需求文档/01-需求整理.md` 于 **23:54 再被编辑**（`90e6a1f` 提交后的新工作树改动，README +7/−3、需求文档 +4/−3），尚未提交。源码零漂移（末写 crew.py 23:31，同 158/158 快照），仅动文档 → 纯对码追审，不跑回归。
+
+## 结论：通过——上条提示级**已消解**（待提交）
+
+- **README**：config 字段表新增 `headless_timeout` 行（缺省 1800、钳制 10 秒～7 天、到期 SIGKILL 进程组）+ 热加载清单补 `headless_timeout` + FAQ 新增「headless 挂死了怎么办」+ 测试计数 156→**158**。逐条对码：`crew.py:89-90` 缺省 1800 ✅、`:425-430` clamp `max(10, min(secs, 7*86400))` ✅、`:1082` `htimeout` 在 F-1 每轮 `config.entry` 热读块内计算 ⇒ 「热加载、改后无需重启」属实 ✅、`:1255` `_run_headless(timeout=HEADLESS_TIMEOUT)` ✅。
+- **需求文档**：R18 表头改「55 commit（截至 23:34）」✅（实测 `da3377c` 为 18:05 起第 55 个 M5 后 commit）、新增 **M5+9 行**（`headless_timeout` 可配 + 缺省/钳制/热加载/+2 回归）对码一致 ✅、基线行补「`da3377c` 后 158/158」——与我 23:45 独立复跑结果一致 ✅。
+- **口径核对**：README 热加载段列 `headless`/`heartbeat_mode`/`heartbeat_prompt`/`headless_timeout`（及未显式传入的 `heartbeat`）——与 `crew.py:1074-1085` 热读块逐项吻合，无夸大。
+
+## 提示级（不阻塞，1 条）
+
+- 两处文档改动**仍未提交**（git status M），且 PLAN §九 表头仍写「54 commit（截至 22:17）」、未含 M5+9/`da3377c`——PLAN 侧已在 opencode 在办案卷 `m1a13b19d489c40271`（PLAN 滞后：da3377c 与 23:34 守护换新）覆盖，不重复上报；文档提交归 pi 收口节奏，不催。
