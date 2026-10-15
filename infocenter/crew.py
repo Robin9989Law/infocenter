@@ -35,6 +35,7 @@ from infocenter.store import (
     beijing_stamp,
     new_window_id,
     normalize_name,
+    pid_alive,
     utcnow,
 )
 from infocenter.paths import ROOT
@@ -235,14 +236,8 @@ def _progress_snapshot(paths: list[Path]):
 
 
 def _pid_alive(pid: int) -> bool:
-    # C-2：pid<=1 不是可管理的目标进程——0 会打整个进程组、1 是 init。一律判死。
-    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
-        return False
-    return True
+    # C-2：口径在 store.pid_alive(policy="managed")。pid<=1 不是可管理的目标进程。
+    return pid_alive(pid, policy="managed")
 
 
 def _load_pid_record(home, key: str) -> dict | None:

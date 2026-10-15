@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from infocenter import DEFAULT_HOST, DEFAULT_PORT, config
 from infocenter.httpapi import MAX_BODY, handle
-from infocenter.store import MailError, Store
+from infocenter.store import MailError, Store, pid_alive
 
 _WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 _MIME = {
@@ -160,14 +160,6 @@ def discover_url(home) -> str:
     return owned_url(home) or f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"
 
 
-def pid_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
-
-
 def healthy(url: str, timeout: float = 0.4) -> bool:
     import urllib.error
     import urllib.request
@@ -185,7 +177,8 @@ def claim(home):
     home.mkdir(parents=True, exist_ok=True)
     url = owned_url(home)
     meta = read_meta(home)
-    if url and meta and pid_alive(int(meta.get("pid") or 0)) and healthy(url):
+    # managed：pid<=1 不算活。旧实现缺这道护栏，pid 0 时 os.kill(0, 0) 会成功。
+    if url and meta and pid_alive(int(meta.get("pid") or 0), policy="managed") and healthy(url):
         return "running", url
     lock_path = home / "server.lock"
     fp = open(lock_path, "a+")
@@ -326,13 +319,13 @@ def stop(home) -> int:
         print("信息中心没有在运行")
         return 0
     pid = int(meta["pid"])
-    if not pid_alive(pid):
+    if not pid_alive(pid, policy="managed"):
         server_json(home).unlink(missing_ok=True)
         print("信息中心没有在运行")
         return 0
     os.kill(pid, signal.SIGTERM)
     for _ in range(30):
-        if not pid_alive(pid):
+        if not pid_alive(pid, policy="managed"):
             server_json(home).unlink(missing_ok=True)
             print("已停止")
             return 0

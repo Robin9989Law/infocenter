@@ -3327,7 +3327,10 @@ class Store:
             actor = normalize_name(agent) if agent else row["agent"]
             next_pid = (
                 None
-                if (row["state"] in {"left", "offline"} or (row["pid"] is not None and _pid_dead(row["pid"])))
+                if (
+                    row["state"] in {"left", "offline"}
+                    or (row["pid"] is not None and not pid_alive(row["pid"], policy="not_dead"))
+                )
                 else row["pid"]
             )
             conn.execute(
@@ -3479,24 +3482,64 @@ class Store:
 # ── 内部辅助函数 ──────────────────────────────────────────────────────────
 
 
-def _pid_dead(pid: int | None) -> bool:
-    if pid is None:
-        return False
+def pid_alive(pid, *, policy: str) -> bool:
+    """进程是否按调用方的口径算「还在」。四套旧判断收成这一处，口径必须写明。
+
+    三种口径对 None、非法值、pid==1、EPERM 的答案不一样，不能用其中一种的否定去代替另一种。
+
+    policy="managed"
+        守护和停服务。只认真正的 int（bool 不算），且 pid>1，并且 os.kill(pid, 0) 成功。
+        None、字符串、bool、pid<=1、进程不存在、EPERM、其他 OSError 都是 False。
+        相对旧 server.pid_alive 的变化：pid<=1 一律 False。旧实现没有这道护栏，
+        os.kill(0, 0) 在 POSIX 上会成功，缺失 pid（int(meta.get("pid") or 0)）会被当成服务还活着。
+
+    policy="running"
+        窗口展示字段 pid_alive。先 int()（字符串 "12" 可以），pid>1 且 kill 成功才 True。
+        None、非法、bool、pid<=1、EPERM、进程不存在都是 False。与旧 store._pid_running 相同。
+
+    policy="not_dead"
+        对账用的「没有证据表明这个 pid 已经死了」。返回 True 表示先别把它当死的。
+        None → True（没有 pid，不算死，也不是「在跑」）。
+        转不成整数 → True（不算死）。
+        pid<=0 → False（算死，而且不发信号；0 会打到整个进程组）。
+        pid>=1 且 kill 成功 → True（含 pid==1；managed/running 把 1 排除）。
+        PermissionError → True（权限不够，不算死）。
+        其他 OSError → False（算死）。
+        与旧 store._pid_dead 取反后逐输入相同。
+    """
+    if policy == "managed":
+        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
+            return False
+        return _pid_kill_alive(pid, permission_counts_alive=False)
+    if policy == "running":
+        try:
+            number = int(pid)
+        except (TypeError, ValueError):
+            return False
+        if number <= 1:
+            return False
+        return _pid_kill_alive(number, permission_counts_alive=False)
+    if policy == "not_dead":
+        if pid is None:
+            return True
+        try:
+            number = int(pid)
+        except (TypeError, ValueError):
+            return True
+        if number <= 0:
+            return False
+        return _pid_kill_alive(number, permission_counts_alive=True)
+    raise ValueError(f"未知的 pid 判活口径：{policy}")
+
+
+def _pid_kill_alive(pid: int, *, permission_counts_alive: bool) -> bool:
     try:
-        pid_int = int(pid)
-    except (TypeError, ValueError):
-        return False
-    if pid_int <= 0:
-        return True
-    try:
-        os.kill(pid_int, 0)
-        return False
-    except ProcessLookupError:
-        return True
+        os.kill(pid, 0)
     except PermissionError:
-        return False
+        return permission_counts_alive
     except OSError:
-        return True
+        return False
+    return True
 
 
 def _pid_value(pid) -> int | None:
@@ -3526,7 +3569,7 @@ def _is_window_gone(win_row: sqlite3.Row | None) -> bool:
         return True
     if win_row["left_at"]:
         return True
-    if win_row["pid"] is not None and _pid_dead(win_row["pid"]):
+    if win_row["pid"] is not None and not pid_alive(win_row["pid"], policy="not_dead"):
         return True
     return False
 
@@ -3738,7 +3781,8 @@ def _mark_dead_windows(conn: sqlite3.Connection, now: str) -> int:
     ).fetchall()
     marked = 0
     for w_row in active_wins:
-        if not _pid_dead(w_row["pid"]):
+        # None 不算死（也没有在跑）。查询已排除 NULL，这里再显式挡一层。
+        if w_row["pid"] is None or pid_alive(w_row["pid"], policy="not_dead"):
             continue
         conn.execute(
             "UPDATE windows SET state = 'left', left_at = COALESCE(left_at, ?) WHERE window_id = ?",
@@ -4177,7 +4221,7 @@ def _upsert_window(
     reviving = row["state"] in {"left", "offline"} and next_state == "active"
     incoming = _pid_value(pid)
     stored = row["pid"]
-    if stored is not None and not _pid_dead(stored):
+    if stored is not None and pid_alive(stored, policy="not_dead"):
         next_pid = stored
     elif incoming is not None:
         next_pid = incoming
@@ -4899,20 +4943,6 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     }
 
 
-def _pid_running(pid) -> bool:
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return False
-    if pid <= 1:
-        return False
-    try:
-        os.kill(pid, 0)
-        return True
-    except OSError:
-        return False
-
-
 def _window_summary(row: sqlite3.Row) -> dict:
     state = row["state"]
     return {
@@ -4925,7 +4955,7 @@ def _window_summary(row: sqlite3.Row) -> dict:
         "activity_at": row["activity_at"],
         "activity_at_beijing": beijing_time(row["activity_at"]) if row["activity_at"] else "",
         "pid": row["pid"],
-        "pid_alive": _pid_running(row["pid"]),
+        "pid_alive": pid_alive(row["pid"], policy="running"),
         "first_seen_at": row["first_seen_at"],
         "first_seen_beijing": beijing_time(row["first_seen_at"]),
         "last_seen_at": row["last_seen_at"],
