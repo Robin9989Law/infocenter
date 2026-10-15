@@ -151,20 +151,24 @@ class HubTest(unittest.TestCase):
             request(self.url, "POST", f"/v1/messages/{sent['id']}/read", "grok", {})
         self.assertEqual(ack.exception.status, 409)
 
-    def test_note_to_self_unknown_agent_and_sender_cannot_ack(self):
+    def test_note_to_self_and_unknown_recipient_is_rejected(self):
         note = request(self.url, "POST", "/v1/messages", "human", {
             "to": "human",
             "subject": "记得",
             "body": "自己留一条",
         })
         self.assertEqual(request(self.url, "GET", "/v1/inbox", "human")["messages"][0]["id"], note["id"])
-        request(self.url, "POST", "/v1/messages", "grok", {
-            "to": "futurebot",
-            "subject": "等你",
-            "body": "先放着",
-        })
+        # 第 5 道兜底（死信拒收）：发给不存在的身份直接拒（422）——
+        # 不许「假装送到了」，也不许悄悄把名字塞进名册。
+        with self.assertRaises(ApiError) as dead:
+            request(self.url, "POST", "/v1/messages", "grok", {
+                "to": "futurebot",
+                "subject": "等你",
+                "body": "先放着",
+            })
+        self.assertEqual(dead.exception.status, 422)
         names = [item["name"] for item in request(self.url, "GET", "/v1/agents", "grok")["agents"]]
-        self.assertIn("futurebot", names)
+        self.assertNotIn("futurebot", names)
         with self.assertRaises(ApiError) as caught:
             request(self.url, "POST", f"/v1/messages/{note['id']}/read", "grok", {})
         self.assertEqual(caught.exception.status, 404)
@@ -390,6 +394,12 @@ class HubTest(unittest.TestCase):
             {"name": "clibot", "launch": "echo hi"},
             {"name": "deskbot", "app": "Safari"},
         ]}), encoding="utf-8")
+        # 服务端的名册才是判「这个身份在不在」的准绳（第 5 道兜底：死信拒收）。
+        # 这个测试故意让 CLI 用一个独立 home，所以得让服务端也认识这几个名字。
+        (self.home / "config.json").write_text(json.dumps({"agents": [
+            {"name": "opencode", "role": "coordinator"},
+            {"name": "fakebot"}, {"name": "clibot"}, {"name": "deskbot"},
+        ]}), encoding="utf-8")
         project = Path(tempfile.mkdtemp(dir=str(self.home))).resolve()
         plan = self.home / "plan.md"
         plan.write_text("# 分工\n- fakebot 负责数据\n", encoding="utf-8")
@@ -596,6 +606,11 @@ class HubTest(unittest.TestCase):
             {"name": "opencode", "role": "coordinator"},
             {"name": "kimi"},
             {"name": "fakebot"},
+        ]}), encoding="utf-8")
+        # 服务端名册同上（死信拒收以服务端名册为准）。
+        (self.home / "config.json").write_text(json.dumps({"agents": [
+            {"name": "opencode", "role": "coordinator"},
+            {"name": "kimi"}, {"name": "fakebot"},
         ]}), encoding="utf-8")
         project = Path(tempfile.mkdtemp(dir=str(self.home))).resolve()
         plan = home / "p.md"

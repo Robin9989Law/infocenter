@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **黄灯对「带目录的相对路径」静默失效**（kimi 2026-10-15 追审阻断①，已复现）：`_preexisting_dirt` 用 `git -C <文件所在目录> status -- <原始路径>` 嗅「拿钥匙前盘上有没有别人的改动」——从仓根 `ic lock infocenter/cli.py` 时，原始相对路径会被 git 当成 `infocenter/infocenter/cli.py`（**路径错位**）⇒ `rc=0`、输出为空 ⇒ 被当成「干净」，**黄灯不亮也不登记**（提交时那句提醒一起消失）。现路径先转绝对再问 git（旧测试全用绝对路径，所以没暴露）。+ 3 项回归（相对路径 / 带目录的相对路径 / 从仓库外跑）
+- **一次拿多个文件、中途失败 ⇒ 前面已成可写的留在「没钥匙却能写」**（kimi 2026-10-15 追审阻断③）：`lock_not_writable` 的回滚只回滚了 DB，**盘上的权限位没收回**——第一个文件已经 chmod 成可写、第二个失败整笔回滚，于是第一个文件「没有锁却可写」，**锁＝只读被静默破坏**且没人知道。现失败时先把事务回滚、再按「这个文件回滚后还有没有活锁」决定是否收回只读（我续期时已持有的那把不动，否则会把别人的写权限打掉）。+ 2 项回归（多文件失败收回 / 续期失败保住自己的）
+- **放钥匙没能改回只读时静默吞掉 `OSError`**（kimi 2026-10-15 提示级）：`_chmod_locked` 只管去 chmod、失败就算了 ⇒ ACL / 只读挂载 / 别的进程又改回去时，「锁＝只读」只剩嘴上说说。现它**返回失败原因**，`ic unlock` 回执带 `stuck`、命令行当场说一句（**只提示不拦**）。+ 1 项回归
+- **`ic queue --merge --id ""` 静默变成「合全部」**（kimi 2026-10-15 提示级）：`--id` 拆完是空列表，跟「没给 id」长得一样，而「没给 id」的语义正是「把还没落的都落掉」——手一滑就把台账全合了，**且不可撤销**。现显式空 id 给干净的 `invalid_id`（不写 id 仍照旧全合）。+ 1 项回归
+- **续期会把登记过的 `dirty_at_lock` 抹掉**（kimi 2026-10-15 提示级）：`--changed` 只嗅命令行点名的路径，续期带进来的 `dirty` 是空的 ⇒ 旧代码照样覆盖，「本来就有别人的改动」这条登记凭空消失、提交那一刻的提醒也没了。现 `ON CONFLICT` 只在**这次嗅到了**才覆盖，空的保留原值。+ 1 项回归
+- **旧排队模型的话还留在注释/报错里**（kimi 2026-10-15 提示级）：「做完通知下一个／30 秒不应就叫下一个顶上／队列里第一个」这些字**模型早拆了**，字还在 ⇒ 后来人照着字去理解就全错。现改成现行口径（「不排队、不通知：记一笔，各人照自己的 TODO 轮」）
 - **冷却一刀切：被冷却的 agent 连「新指令」都收不到**（human 2026-10-15 点名）。冷却本意是治「模型不可用」，但旧实现在冷却期内**完全不收信**（`continue` 跳过 `GET /v1/events`）⇒ 别人发来的高优先级活被一起关在门外。现在冷却期内仍用 `wait=0` 探一句（`_urgent_mail_waiting`），**有高优先级新信就提前结束冷却**、立刻处理（并留日志、清冷却元数据）。**只认「进入冷却之后新到」的信**：失败时游标不前进，那封没投出去的信会一直被看见，拿它当新指令就是「进冷却 → 立刻被自己打断 → 再失败」的死循环（实测：pi 的模型名有歧义时每分钟 36 次 headless、1399 次触发 0 产出、564 次进冷却、279 次提前结束）。
 - **超时被判死 ⇒ 必然空转的死循环**（human 2026-10-15 点名）。旧实现把「连续超时」当「连续失败」⇒ 进 1 小时冷却；而判定超时可以配得比 `HEADLESS_TIMEOUT`(1800s) 短得多（pi 配了 300s）⇒ **慢模型必被判死**。现在**超时不算失败**（`_cooldown_failure`/`_should_cooldown`）：超时不涨失败计数、**永不进冷却**，只按指数退避重试（游标留在原地、下一轮原样重投，封顶 `_HEADLESS_RETRY_MAX`=300s）；额度/鉴权（quota）仍立刻冷却，真失败累计到阈值仍冷却。另把 pi 的 `headless_timeout: 300` 改回默认（1800s）。+ `tests/test_crew_newmail_cooldown.py`（13 项）
 - **提交后自动放钥匙的身份取错（多 agent 共仓时形同不存在）**：`post-commit` 先读 repo-local 的 `infocenter.agent`（一个仓只有一份，多 agent 会互相覆盖）⇒ 别人提交后放不掉自己的钥匙。现**优先取 `INFOCENTER_AGENT`**（守护给每次 headless 运行设的环境变量，才认得出"这次是谁在提交"），repo-local 只作兜底
@@ -17,8 +23,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **测试宿主 env 泄漏三处**（在 agent 会话里跑测试必红）：被测子进程/请求继承宿主的 `INFOCENTER_AGENT`/`INFOCENTER_WINDOW` ⇒ 身份被预绑或窗口被别人先占。`test_quality_mcp._env()`、`test_lock_queue`、`test_m9_locks` 现在进场先清这两个变量（原先靠 test_d2 先行清环境的执行顺序遮蔽，单跑即现形）
 - **`ic lock` 拿了钥匙文件还是 444（chmod 静默失败）**（grok 实测）：`_chmod_writable` 以前是「尽力而为 + 把 `OSError` 悄悄吞掉」⇒ 钥匙在手却写不了、且没人知道为什么，只能再锁一次碰运气。现在它**返回失败原因**、拿钥匙时**复核**是否真的可写；做不到就**整笔回滚 + 报 `lock_not_writable`（带路径 + 原因）**——钥匙要么能用、要么明说不能用（文件还没建、先锁后建仍照旧放行）。同时**放钥匙不再按「这一行的路径」盲写 444**：同一个文件（换写法 / 硬链接 / 大小写不敏感卷）若还有**活锁** ⇒ 保持可写，只有真没人拿了才回只读（否则会把另一个持有者正拿着的写权限当场打掉）。过期回收、窗口离场同一套规矩。+ `tests/test_lock_key_writable.py`（7 项）
 - **`ic queue --merge --id q1,q2` 直接 500**（实测）：`--id` 是 `action="append"`，逗号写法整串被当成一个 id ⇒ store `int()` 抛 `ValueError` ⇒ 未处理异常 ⇒ 500，人只看到「服务器内部错误」。现在 CLI 拆逗号（`q1,q2` / 重复给 / 单条都认），store 坏输入给 **400 `invalid_id`** 并说清该写成什么样。+ `tests/test_queue_merge_id.py`（6 项）
+- **闸门取路径三处静默失效（pi 实测报的 P1，"假绿灯"）**：`_changed_paths`（`ic lock --changed` 与 `ic guard` 的唯一取路径入口）有三个坑，坏起来**不报错**：① `git status --porcelain` 默认把非 ASCII 路径转义成 `"\351\234\200…"` ⇒ 解析出**不存在的路径**，而 lock 与 guard 用同一个假 key、互相自洽、**照样放行**（互斥却已经没了）——本仓 `需求文档/` 整棵在闸门外；② `--porcelain` 是**仓库根**相对，代码却按 cwd 解析 ⇒ 子目录里跑全是假路径；③ rename 按文本 `" -> "` 猜，文件名含 ` -> ` 会切错。现：`git -c core.quotepath=false … -z`（NUL 记录，天然不转义）+ 以 `git rev-parse --show-toplevel` 为基准 + 显式处理 rename 的第二条记录。**外锚同口径**：新增 `_anchor_path()`，相对路径一律以**仓库根**为准（否则在子目录跑 `ic audit` 会报"外锚：无"＝**锚校验被静默跳过**，`--anchor` 还会另写一个锚）。+ `tests/test_gate_paths.py`（8 项，真 git 仓库：中文/空格目录、含 ` -> ` 的文件名、子目录一致性、锁真实路径后另一身份必须 409）
+- **表里放锁不留痕（cursor 实测）**：窗口离场（`leave_window`）与惰性对账判死进程这两条路原来是裸 `DELETE FROM locks` ⇒ 痕迹里只有 `lock`、没有 `unlock`，"这把锁是谁弄没的"查不出来。现统一走 `_release_window_locks()`：先查行、再删、**逐条**写 `unlock` 事件（带 `why`/`window_id`/`held_since`）
+- **痕迹与任务行可能不一致（会让 `ic audit` 变红、之后每次提交都被钩子挡）**：`task_set_status` / `task_update` / `task_bump` 原来把**调用方原文**写进痕迹，而行里存的是**规范化后**的值（标题 trim、`owner` 小写、验收截断）⇒ 重放对不上。现统一**照抄写进行里的值**
+- **任务状态机是死代码 + 一个真漏洞（cursor 实测）**：`_TASK_OWNER_MOVES` / `_TASK_COORD_MOVES` 没被查过，实际只判"是否终态 + 是否 coordinator" ⇒ `doing→todo` 与 `todo→done` 都能走通。其中 `doing→todo` 是**真漏洞**：倒回 todo 等于**解冻规格**，绕开"开工即冻结"。现状态机 = **两张表的并集，对谁都一样**（含 coordinator）；补 `(todo, stopped)`（没开工就放弃是合法收口）
+- **终态任务还能调优先级（cursor 实测）**：`task_bump` 不看终态、也不走 `_task_priority`（曾能到 140）。现终态返回 `task_closed`，优先级统一走 `_task_priority`（封顶 99）
+- **`ic audit --anchor` 可能给"伪造过的链"盖章（洗锚，cursor 实测）**：打锚前不验旧锚 ⇒ 改完再重算哈希后打一次锚，就把旧锚作废了。现**先用现有锚验一次**，不通过直接拒打锚（锚文件一字不动）
+- **窗口离场／进程死不再自动中止案卷（M7，与宪法一致）**：原实现里 `leave_window` 与惰性对账会把主办窗口名下未封卷案卷**自动转 `aborted` 并封卷**，导致"人还在办事、会话一断案卷就死"——grok 实测 11:55 办公室 `w-beh...` 离场后案卷被 `[自动]` 封卷、随后写节点被 `case_sealed` 拒。现按 human 定稿（**案卷只随"事做完"关闭，与办公室/agent 在不在无关**）：程序只做两件**无争议**的事——摘掉主办窗口指针 + 记一行 `[自动]` 说明（**状态不动、不封卷**）；中止/办结**一律显式**（`abort`/`close`，带交接）。`/v1/windows/<id>/leave` 回执改为 `orphaned_cases`（`aborted_cases` 恒为空，保留字段）
+- **`ic lock --force` 不核身份（第 1 道闸的洞）**：CLI 写着"仅 coordinator"，`store.lock_acquire` 只看一个布尔 ⇒ **任意 agent 用 HTTP body 就能抢别人的锁**（与 `lock_release --force` 不对称）。现与放锁一致：`force` 必须 coordinator
+- `ic lock` 回执仍在打裸 UTC（`...Z`）——上一版只改了列表视图、漏了顶层 `expires_at`；补 `expires_at_beijing`，并在回执里写明"**续期＝重复执行同一命令**"
+- `ic locks` 增加"剩 N 分"与**快到期提醒**（cursor：TTL 到了人还在写 ⇒ sweep 放锁、别人进来，"第 1 道闸自己消失"；默认 TTL 内写不完必须能续）
+- **时间统一北京时间（各 agent 机器时区不一致导致对不上表）**：展示层原来用 `.astimezone()`（**机器本地时区**）⇒ 同一封信在不同机器上显示不同时间（实测四家常报四个时刻）。现**固定 UTC+8**：新增 `BEIJING` / `beijing_time()` / `beijing_hhmm()` / `beijing_stamp()`，**存储仍为 UTC**（`...Z`，排序比较用），**所有给人/给 agent 看的字段一律 `*_beijing`**（旧 `*_local` 键**已废弃并改名**：`created_at_local` → `created_at_beijing`、`last_seen_local`、`activity_at_local`、`expires_at_local`、`acquired_at_local`、`updated_at_local`、`first_seen_local` 同理），日志戳、`ic inbox` / `ic send` / `ic lock` / `ic locks` / `ic agents` / `ic task` / `/ui` 看板同步改。+ `tests/test_time_beijing.py`（9 项：**把机器时区改成纽约/伦敦/东京/基里巴斯，展示必须一字不变**）
+- **跨窗认领必须按 workspace 作用域（M6-0，高危静默丢信）**：不做 workspace 过滤的长轮询窗口（常见于他项目的 MCP/CLI 会话）以前会把**别的项目**的信一并软认领；一旦被别窗认领，正确项目的守护/窗口在 `/v1/events` 与 `ic inbox` 里就再也看不到它 ⇒ **派单/来信静默丢失**（实测一次事故里 12+ 封如此被扣住）。现：① 窗口只认领属于自己 workspace 的信，他项目窗口**看得见但不认领**；② 每轮惰性对账回收「认领窗口已离场/已死」或「与信 workspace 不相容」的错位认领（历史脏数据自愈）；③ **窗口离场即释放**其名下认领。+ 新增 `tests/test_m6_claim_scope.py`（5 项）
+- **`headless_timeout` 配置从未生效**：该键不在 `config._KNOWN_KEYS` 里，`config.load()` 会把它丢掉 ⇒ 守护的 `config.entry()` 永远读不到，单轮墙钟上限一直回落 1800s（`+` 新增 `headless_timeout` 与本次空转治理各键的 config 往返回归）
+- **命令注入（高危）**：headless 命令模板把 `{prompt}` 套进引号时的引号逃逸 → 拒绝并提示改法
+- 同一项目「绝对路径 + 裸目录名」合并时归档标记随机翻转（改为永远优先锚点元数据）
+- `POST /v1/crew`（`up`）指向不存在目录返回 400 而非 500
+- `headless_runs` / 守护 meta 遇到损坏（合法 JSON 但非对象）行不再让接口整体 500；负数 `limit` 不再误裁记录
+- `add_project` 返回项补齐 `archived` 等字段，与 `list_projects` 同口径
 
 ### Added
+- **死信拒收：写给「不存在的身份」直接拒（第 5 道闸）**（kimi 2026-10-15 提、human 2026-10-16 拍「要」）。缺口长这样：`--to` 里写个打错的名字或者已经退役的身份，程序照样报「已送出」、库里也留一封信，但**那份投递谁都读不到**——话说了没人听，而且看起来还是成功的。这是不可逆的损失，所以机器在这里兜底：收件人不在册 ⇒ **422 `no_such_recipient`**，报文里直接写清怎么办（让他 `ic register --as <名字>`，或把人加进 `config.json` 名册），**且不留任何残迹**（不建身份、不落信）。**在册 = 库里注册过的 ∪ 名册里列着的**（后一半必须有：`ic crew kickoff` 是**按名册群发**开工信，名册里的新同事可能一次都还没开口）；带点的跨节点名（`robin.kimi`）不归本机名册管，照发给同步层。+ `tests/test_dead_letter.py`（11 项：打错/退役/名册新人/注册过/给自己/广播/立案始信同受管且整笔回滚/回复不受影响/路由 422/配置坏掉也不误拒）
+- **SKILL 副本漂移检查：`ic status` / `ic guard` 各出一行**（kimi 2026-10-15 追审阻断②：README 写了这句承诺，**代码里没有**——先落码兑现）。交互会话读的是**安装副本**（`~/.agents/skills/infocenter/SKILL.md`），仓库那份改了它看不到；两份真相靠人记一定再犯（实测安装副本停在 10-14）。现在两边内容不一致就出一行（**优先软链**：指向仓库那份的不算漂移）；**只提示不拦**（SKILL 正在修订时本来就该先漂着：判断「该不该现在同步」要靠人）。`ic status --json` 里带 `skill_drift`。+ `tests/test_skill_drift.py`（10 项）
 - **`ic probe`：空转采样（只读）——触发数和产出必须并排看**（human 2026-10-15 定）。空转**只看一个数一定会被骗**：实测 pi 每分钟触发 36 次 headless，而从外面看它的"心跳空转轮"一动不动（4→4）；是"触发数 vs 产出"并排看才抓出来的，`outcome` 分布是同一件事的另一半（那 60 次里 57 次 fail ⇒ 模型/配置坏了，不是"它很忙"）。命令：`ic probe [--minutes 60] [--history N] [--no-log] [--watch 秒]`；每次采样往 `~/.infocenter/crew/probe.jsonl` **只增**一行（看趋势），`--history` 只看不采。**产出** = 信 + 案卷节点 + 语义痕迹；**拿钥匙 / 放钥匙 / 锁到期这类机械动作不算产出**（否则锁 churn 会被当成在出活）。**触发数**从守护运行记录里数（`crew.run_stats`），日志每家只留最近 60 条 ⇒ 它只是**下限**，会自己标 `truncated`。判语 `多半坏了` 优先于 `空转`（触发多、产出零）优先于 `出活太稀`；管理台每个身份的气泡上挂一对 `触发 N/产出 M`（`GET /v1/agents?probe_minutes=60`，不正常的标黄）。+ `tests/test_probe.py`（15 项）
 - **案卷的「怎样算完」：一件事的收尾判据**（human 2026-10-15 定：任务一多，没人写清"做成什么算做成"，"做完没有"就靠事后吵）。案卷新增 `acceptance`（**一列**，≤400 字，`ic case <id> --acceptance "…"`；**owner 或 coordinator 能写**，封卷后不可改），立案（`POST /v1/cases`）也能带。它**不替代里程碑**：里程碑是路标，这一行是"做成什么算做成"；**空着不拦**——`ic cases` 与控制台标 **⚠ 没写怎样算完**。README 另立「收尾判据：什么样算做完」一节：四件事（全量绿 + 工作区干净 + 看板记一笔 + 无残留 TODO）核对着收尾；另记两条纪律：**减法轮**（每若干个新增任务来一轮"只删不加"）、**账别混**（想测机制就别插手）。+ `tests/test_case_acceptance.py`（13 项）
 - **拿不到钥匙怎么办：记进自己的 TODO，照自己的轮**（human 定稿，**能不沟通就不沟通**）：「沟通效率太低，而且随 agent 数量递减；agent 多了，反正就是无需乱做」。
@@ -68,25 +94,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **身份迁移**：`omp` 退役、由 `pi` 接管；清除幽灵身份 `coordinator`
 - 测试数量从 16 增加到 158（A 质量 / B 联邦 / C 发布 / D 窗口·案卷·应用 + M5 最后评审加固），全量零 `ResourceWarning`
 
-### Fixed
-- **闸门取路径三处静默失效（pi 实测报的 P1，"假绿灯"）**：`_changed_paths`（`ic lock --changed` 与 `ic guard` 的唯一取路径入口）有三个坑，坏起来**不报错**：① `git status --porcelain` 默认把非 ASCII 路径转义成 `"\351\234\200…"` ⇒ 解析出**不存在的路径**，而 lock 与 guard 用同一个假 key、互相自洽、**照样放行**（互斥却已经没了）——本仓 `需求文档/` 整棵在闸门外；② `--porcelain` 是**仓库根**相对，代码却按 cwd 解析 ⇒ 子目录里跑全是假路径；③ rename 按文本 `" -> "` 猜，文件名含 ` -> ` 会切错。现：`git -c core.quotepath=false … -z`（NUL 记录，天然不转义）+ 以 `git rev-parse --show-toplevel` 为基准 + 显式处理 rename 的第二条记录。**外锚同口径**：新增 `_anchor_path()`，相对路径一律以**仓库根**为准（否则在子目录跑 `ic audit` 会报"外锚：无"＝**锚校验被静默跳过**，`--anchor` 还会另写一个锚）。+ `tests/test_gate_paths.py`（8 项，真 git 仓库：中文/空格目录、含 ` -> ` 的文件名、子目录一致性、锁真实路径后另一身份必须 409）
-- **表里放锁不留痕（cursor 实测）**：窗口离场（`leave_window`）与惰性对账判死进程这两条路原来是裸 `DELETE FROM locks` ⇒ 痕迹里只有 `lock`、没有 `unlock`，"这把锁是谁弄没的"查不出来。现统一走 `_release_window_locks()`：先查行、再删、**逐条**写 `unlock` 事件（带 `why`/`window_id`/`held_since`）
-- **痕迹与任务行可能不一致（会让 `ic audit` 变红、之后每次提交都被钩子挡）**：`task_set_status` / `task_update` / `task_bump` 原来把**调用方原文**写进痕迹，而行里存的是**规范化后**的值（标题 trim、`owner` 小写、验收截断）⇒ 重放对不上。现统一**照抄写进行里的值**
-- **任务状态机是死代码 + 一个真漏洞（cursor 实测）**：`_TASK_OWNER_MOVES` / `_TASK_COORD_MOVES` 没被查过，实际只判"是否终态 + 是否 coordinator" ⇒ `doing→todo` 与 `todo→done` 都能走通。其中 `doing→todo` 是**真漏洞**：倒回 todo 等于**解冻规格**，绕开"开工即冻结"。现状态机 = **两张表的并集，对谁都一样**（含 coordinator）；补 `(todo, stopped)`（没开工就放弃是合法收口）
-- **终态任务还能调优先级（cursor 实测）**：`task_bump` 不看终态、也不走 `_task_priority`（曾能到 140）。现终态返回 `task_closed`，优先级统一走 `_task_priority`（封顶 99）
-- **`ic audit --anchor` 可能给"伪造过的链"盖章（洗锚，cursor 实测）**：打锚前不验旧锚 ⇒ 改完再重算哈希后打一次锚，就把旧锚作废了。现**先用现有锚验一次**，不通过直接拒打锚（锚文件一字不动）
-- **窗口离场／进程死不再自动中止案卷（M7，与宪法一致）**：原实现里 `leave_window` 与惰性对账会把主办窗口名下未封卷案卷**自动转 `aborted` 并封卷**，导致"人还在办事、会话一断案卷就死"——grok 实测 11:55 办公室 `w-beh...` 离场后案卷被 `[自动]` 封卷、随后写节点被 `case_sealed` 拒。现按 human 定稿（**案卷只随"事做完"关闭，与办公室/agent 在不在无关**）：程序只做两件**无争议**的事——摘掉主办窗口指针 + 记一行 `[自动]` 说明（**状态不动、不封卷**）；中止/办结**一律显式**（`abort`/`close`，带交接）。`/v1/windows/<id>/leave` 回执改为 `orphaned_cases`（`aborted_cases` 恒为空，保留字段）
-- **`ic lock --force` 不核身份（第 1 道闸的洞）**：CLI 写着"仅 coordinator"，`store.lock_acquire` 只看一个布尔 ⇒ **任意 agent 用 HTTP body 就能抢别人的锁**（与 `lock_release --force` 不对称）。现与放锁一致：`force` 必须 coordinator
-- `ic lock` 回执仍在打裸 UTC（`...Z`）——上一版只改了列表视图、漏了顶层 `expires_at`；补 `expires_at_beijing`，并在回执里写明"**续期＝重复执行同一命令**"
-- `ic locks` 增加"剩 N 分"与**快到期提醒**（cursor：TTL 到了人还在写 ⇒ sweep 放锁、别人进来，"第 1 道闸自己消失"；默认 TTL 内写不完必须能续）
-- **时间统一北京时间（各 agent 机器时区不一致导致对不上表）**：展示层原来用 `.astimezone()`（**机器本地时区**）⇒ 同一封信在不同机器上显示不同时间（实测四家常报四个时刻）。现**固定 UTC+8**：新增 `BEIJING` / `beijing_time()` / `beijing_hhmm()` / `beijing_stamp()`，**存储仍为 UTC**（`...Z`，排序比较用），**所有给人/给 agent 看的字段一律 `*_beijing`**（旧 `*_local` 键**已废弃并改名**：`created_at_local` → `created_at_beijing`、`last_seen_local`、`activity_at_local`、`expires_at_local`、`acquired_at_local`、`updated_at_local`、`first_seen_local` 同理），日志戳、`ic inbox` / `ic send` / `ic lock` / `ic locks` / `ic agents` / `ic task` / `/ui` 看板同步改。+ `tests/test_time_beijing.py`（9 项：**把机器时区改成纽约/伦敦/东京/基里巴斯，展示必须一字不变**）
-- **跨窗认领必须按 workspace 作用域（M6-0，高危静默丢信）**：不做 workspace 过滤的长轮询窗口（常见于他项目的 MCP/CLI 会话）以前会把**别的项目**的信一并软认领；一旦被别窗认领，正确项目的守护/窗口在 `/v1/events` 与 `ic inbox` 里就再也看不到它 ⇒ **派单/来信静默丢失**（实测一次事故里 12+ 封如此被扣住）。现：① 窗口只认领属于自己 workspace 的信，他项目窗口**看得见但不认领**；② 每轮惰性对账回收「认领窗口已离场/已死」或「与信 workspace 不相容」的错位认领（历史脏数据自愈）；③ **窗口离场即释放**其名下认领。+ 新增 `tests/test_m6_claim_scope.py`（5 项）
-- **`headless_timeout` 配置从未生效**：该键不在 `config._KNOWN_KEYS` 里，`config.load()` 会把它丢掉 ⇒ 守护的 `config.entry()` 永远读不到，单轮墙钟上限一直回落 1800s（`+` 新增 `headless_timeout` 与本次空转治理各键的 config 往返回归）
-- **命令注入（高危）**：headless 命令模板把 `{prompt}` 套进引号时的引号逃逸 → 拒绝并提示改法
-- 同一项目「绝对路径 + 裸目录名」合并时归档标记随机翻转（改为永远优先锚点元数据）
-- `POST /v1/crew`（`up`）指向不存在目录返回 400 而非 500
-- `headless_runs` / 守护 meta 遇到损坏（合法 JSON 但非对象）行不再让接口整体 500；负数 `limit` 不再误裁记录
-- `add_project` 返回项补齐 `archived` 等字段，与 `list_projects` 同口径
 
 ## [0.4.0] - 2026-10-14
 

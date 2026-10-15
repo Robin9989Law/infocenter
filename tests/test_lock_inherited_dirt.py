@@ -62,6 +62,21 @@ class StoreDirtyAtLockTest(unittest.TestCase):
         self.assertEqual(guard["inherited"][0]["path"], self.resolved)
         self.assertIn("ic queue", guard["inherited"][0]["dirty"])
 
+    def test_续期不会抹掉已登记的脏改动(self):
+        """kimi 2026-10-15 提示级：`--changed` 续期带进来的 dirt 是**空的**
+        （它只嗅命令行点名的路径），旧代码照样覆盖 `dirty_at_lock` ⇒
+        登记过的脏改动凭空消失，提交那一刻的提醒也就没了。
+        """
+        first = self.store.lock_acquire(
+            "cursor", [str(self.target)], dirty={str(self.target): "+1/-0：别人留下的那行"}
+        )
+        self.assertTrue(first["dirty_at_lock"])
+        again = self.store.lock_acquire("cursor", [str(self.target)], dirty={})  # 续期，这次没嗅到
+        self.assertEqual(again["dirty_at_lock"][self.resolved], "+1/-0：别人留下的那行")
+        self.assertEqual(
+            self.store.lock_list()["locks"][0]["dirty_at_lock"], "+1/-0：别人留下的那行"
+        )
+
     def test_干净拿钥匙就不吭声(self):
         self.store.lock_acquire("cursor", [str(self.target)])
         guard = self.store.guard_changes("cursor", [str(self.target)])
@@ -141,6 +156,47 @@ class PreexistingDirtTest(unittest.TestCase):
 
     def test_不给路径就不查(self):
         self.assertEqual(_preexisting_dirt(subprocess, None), {})
+
+    def _dirt_from(self, cwd: Path, rel: str) -> dict:
+        """站到 `cwd` 下、按**相对路径**问一句（命令行本来就常这么写）。"""
+        here = os.getcwd()
+        try:
+            os.chdir(cwd)
+            return _preexisting_dirt(subprocess, [rel])
+        finally:
+            os.chdir(here)
+
+    def test_相对路径也认得出脏改动(self):
+        """kimi 2026-10-15 报的洞（已复现）：`ic lock a.py` 这种相对路径，
+        配上 `-C <文件所在目录>` 会被 git 当成 `a.py/a.py`（路径错位）⇒ rc=0、输出为空
+        ⇒ 「本来就有脏改动」被当成「干净」，黄灯静默不亮、也不登记。
+        """
+        self.tracked.write_text("print(1)\nprint(2)  # 别人留的一行\n", encoding="utf-8")
+        dirt = self._dirt_from(self.repo, "a.py")
+        self.assertIn("a.py", dirt)
+        self.assertTrue(dirt["a.py"].startswith("+1/-0"))
+        self.assertIn("别人留的一行", dirt["a.py"])
+
+    def test_带目录的相对路径也认得出(self):
+        """`ic lock infocenter/cli.py` 那种写法：错位会变成 `infocenter/infocenter/cli.py`。"""
+        sub = self.repo / "pkg"
+        sub.mkdir()
+        f = sub / "b.py"
+        f.write_text("x = 1\n", encoding="utf-8")
+        _git(self.repo, "add", "pkg/b.py")
+        _git(self.repo, "commit", "-q", "-m", "add")
+        f.write_text("x = 1\ny = 2  # 别人留的\n", encoding="utf-8")
+        dirt = self._dirt_from(self.repo, "pkg/b.py")
+        self.assertIn("pkg/b.py", dirt)
+        self.assertTrue(dirt["pkg/b.py"].startswith("+1/-0"))
+
+    def test_从别的目录跑也认得出(self):
+        """站在仓库外面也一样（`-C` 就是为这个用的）：路径先转绝对，再问 git。"""
+        self.tracked.write_text("print(1)\nprint(4)  # 别人留的一行\n", encoding="utf-8")
+        outside = Path(self.tmp.name).parent
+        rel = os.path.relpath(self.tracked, outside)
+        dirt = self._dirt_from(outside, rel)
+        self.assertIn(rel, dirt)
 
 
 if __name__ == "__main__":

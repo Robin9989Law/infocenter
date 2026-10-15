@@ -784,6 +784,25 @@ class Store:
                     )
             else:
                 recipients = recipients_in
+                # 第 5 道兜底（human 2026-10-16 定；kimi 2026-10-15 提的「死信拒收」）：
+                # 发给**不存在**（打错名字 / 已退休）的身份，程序会当作成功——而那封信谁也收不到，
+                # 话说了没人听是不可逆的损失。所以在这里直接拒（422）。
+                # 在册 = 库里注册过 ∪ 名册（config.json）里列着（kickoff 按名册群发，
+                # 新同事可能一次都还没开口，只看库会误拒）。
+                # 带点的「跨节点名」（`robin.kimi`）不归本地名册管，交给同步层导出。
+                known = _known_names(conn, self.path.parent)
+                unknown = [
+                    name for name in recipients
+                    if not _is_wire_name(name) and name not in known
+                ]
+                if unknown:
+                    raise MailError(
+                        "no_such_recipient",
+                        "没有这些身份：" + "、".join(unknown)
+                        + "（先核对名字；新同事让他 `ic register --as <名字>` 报个到，"
+                        + "或把人加进 config.json 的名册）",
+                        422,
+                    )
                 for name in recipients:
                     _upsert(conn, name, None)
             message_id = new_id()
@@ -2505,7 +2524,12 @@ class Store:
                         ON CONFLICT(path) DO UPDATE SET
                             agent = excluded.agent, window_id = excluded.window_id,
                             task_id = excluded.task_id, note = excluded.note,
-                            dirty_at_lock = excluded.dirty_at_lock,
+                            -- 续期（`--changed` 把已在手里的路径再锁一遍）时别把登记过的脏改动抹掉：
+                            -- 这次没嗅到（`--changed` 只嗅命令行点名的路径）不等于"盘上就干净"，
+                            -- 抹掉等于让提交那一刻的提醒凭空消失。
+                            dirty_at_lock = CASE
+                                WHEN excluded.dirty_at_lock = '' THEN locks.dirty_at_lock
+                                ELSE excluded.dirty_at_lock END,
                             acquired_at = excluded.acquired_at, expires_at = excluded.expires_at
                         """,
                         (path, agent, window_id, task, note_text, dirt, now, expires),
@@ -2527,6 +2551,16 @@ class Store:
                 ]
                 if unwritable:
                     # 拿不到可写的钥匙就不算拿到钥匙：整笔回滚，并当场说清为什么（不静默、不猜）。
+                    #
+                    # 回滚要回滚**干净**：DB 由事务回滚，盘上的权限位也得收回去。
+                    # 否则（kimi 2026-10-15 报的洞）一次拿多个文件、中途失败时，前面**已经改成可写**
+                    # 的文件会留在「没有钥匙却可写」的状态——锁＝只读被静默破坏，还没人知道。
+                    conn.rollback()
+                    live = [row["path"] for row in conn.execute("SELECT path FROM locks").fetchall()]
+                    for path in wanted:
+                        if any(_same_file(held_path, path) for held_path in live):
+                            continue  # 回滚后这个文件仍有活锁（多半是我自己续期的那把）：别动盘面
+                        _chmod_locked(path)
                     raise MailError(
                         "lock_not_writable",
                         "拿到钥匙了，但这些文件没能变成可写："
@@ -2594,7 +2628,7 @@ class Store:
                         )
             targets = [row["path"] for row in rows]
             released = len(rows)
-            _restore_readonly(conn, rows)
+            stuck = _restore_readonly(conn, rows)
             for row in rows:
                 _emit_task_event(
                     conn, row["task_id"] or "", row["agent"], "unlock", "", "",
@@ -2613,21 +2647,23 @@ class Store:
             "released": targets,
             "released_count": released,
             "force": bool(force),
+            # 放完钥匙仍是可写的（chmod 没落地 / ACL / 只读挂载）：不是"放好了"，得说一声
+            "stuck": stuck,
             # 不看谁在等、不点名、不发信：待改条数照旧挂在库里，各人照自己的 TODO 轮。
             "pending_left": pending_left,
         }
 
-    # ── 不排队：把改动"留着"，做完**通知**下一个；30 秒不应 ⇒ 叫下一个顶上 ──
+    # ── 「不排队」：拿不到钥匙就把改动**记一笔**留在库里；不通知、不点名、不排序 ──
     def _queue_head(self, path: str) -> tuple[int, str]:
-        """这个文件排队几个人、第一个是谁。"""
+        """这个文件被几个人记了笔，以及现在谁正拿着钥匙。"""
         queue = self.list_queue(path)
         with self._session(readonly=True) as conn:
             row = conn.execute("SELECT agent FROM locks WHERE path = ?", (path,)).fetchone()
         return queue["count"], (row["agent"] if row else "")
 
-    # ── 排队改同一个文件：拿不到钥匙就把改动**提**上来，由**第一个排队的**接手合并 ──
-    # human 定稿：排队 ≠ 派活。默认**谁提谁落**——持有者改完直接放钥匙，队列依次往下轮，
-    # 轮到的那个**只落自己那一条**；"合并"只是**可选加速**（愿意才合，合了要写明按谁的要求改了什么）。
+    # ── 改同一个文件：拿不到钥匙就把改动**记一笔**（`ic queue`），之后照自己的 TODO 轮 ──
+    # human 定稿：**不排队、不通知**——谁想做谁做，先拿到钥匙的那个做；
+    # 「合并」只是**可选加速**（愿意才合，合了要写明按谁的要求改了什么），不是派活。
 
     def queue_change(
         self,
@@ -2737,7 +2773,8 @@ class Store:
             if holder is not None and holder["agent"] != agent and not is_coord:
                 raise MailError(
                     "not_yours",
-                    f"{target} 的钥匙在 {holder['agent']} 手里：合并只能由**拿钥匙的人**做（按规矩它应是队列里第一个）",
+                    f"{target} 的钥匙在 {holder['agent']} 手里：合并只能由**拿钥匙的人**做"
+                    "（规矩：不许替别人收口；要收口请 coordinator 来）",
                     403,
                 )
             if holder is None and not is_coord:
@@ -4408,23 +4445,38 @@ def _lock_paths(paths) -> list[str]:
     return out
 
 
-def _chmod_locked(path: str) -> None:
+def _chmod_locked(path: str) -> str | None:
     """**锁＝只读**：没人拿钥匙时，文件只能读、不能改（`u+w` 去掉、别人的写位也去掉）。
 
     为什么落到文件系统（而不只是数据库里记一笔）：这样**所有**写者都被挡住——
     带插件的、不带插件的、`shell > file`、别的 agent 的编辑器，一律先得拿钥匙。
     读权限**一个都不动**（可以只读）。
+
+    返回 `None` = 已经是只读（或文件不在，不用管）；返回一句短话 = **没能**变回只读，原因在此。
+    （kimi 2026-10-15 追的提示级：旧版 here 把 `OSError` 静默吞掉——改不回去就没人知道，
+    「锁＝只读」就只剩嘴上说说。现在把原因交出去，由调用方摆到人眼前。）
     """
     try:
         mode = os.stat(path).st_mode & 0o7777
-    except OSError:
-        return  # 不存在/没权限：不动（写文件前先锁的路径本来就可能还没建）
+    except FileNotFoundError:
+        return None  # 不存在（还没建 / 已经删了）：没什么可锁的
+    except OSError as exc:
+        return f"读权限位失败：{exc.strerror or exc}"
     readonly = mode & ~0o222
-    if readonly != mode:
-        try:
-            os.chmod(path, readonly)
-        except OSError:
-            pass
+    if readonly == mode:
+        return None
+    try:
+        os.chmod(path, readonly)
+    except OSError as exc:
+        return f"改回只读失败：{exc.strerror or exc}"
+    # 复核一次：ACL、只读挂载、或别的进程又把它改回去，都在这里当场暴露
+    try:
+        after = os.stat(path).st_mode & 0o7777
+    except OSError as exc:
+        return f"复核权限位失败：{exc.strerror or exc}"
+    if after & 0o222:
+        return "权限位没落地（改完仍是可写）"
+    return None
 
 
 def _chmod_writable(path: str) -> str | None:
@@ -4550,21 +4602,27 @@ def _lock_expiry(now_iso: str, ttl: int) -> str:
     return (base + timedelta(seconds=ttl)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _restore_readonly(conn: sqlite3.Connection, rows) -> None:
+def _restore_readonly(conn: sqlite3.Connection, rows) -> dict[str, str]:
     """放钥匙 ⇒ 文件**变回只读**（锁＝只读；读不受影响）。
 
     **但**：同一个文件（换种写法、硬链接、大小写不敏感卷）若还有**活着的**钥匙，就不能
     444——那会把另一个持有者正拿在手里的写权限当场打掉：他拿着钥匙、文件却变只读，
     只能再锁一次（grok 实测踩到的就是这个形态）。**一个文件的权限位由「还有没有人拿着
     这个文件的钥匙」决定，不是由「这次放掉的那一行路径」决定。**
+
+    返回**没能变回只读**的那几个 `{路径: 原因}`（空 = 都收干净了），让人能当场说一句。
     """
     remaining = conn.execute("SELECT path FROM locks").fetchall()
+    stuck: dict[str, str] = {}
     for row in rows:
         path = row["path"]
         if any(_same_file(other["path"], path) for other in remaining):
             _chmod_writable(path)  # 还有人拿着这个文件 ⇒ 保持可写
-        else:
-            _chmod_locked(path)
+            continue
+        why = _chmod_locked(path)
+        if why:
+            stuck[path] = why
+    return stuck
 
 
 def _release_window_locks(conn: sqlite3.Connection, window_id: str, now: str, why: str) -> int:
@@ -4951,6 +5009,27 @@ def _workspace_scope(value: str | None, scope: str | None) -> bool:
     if not (left_bare or right_bare or (left.is_absolute() and right.is_absolute())):
         return False
     return bool(right.name) and left.name.casefold() == right.name.casefold()
+
+
+def _known_names(conn: sqlite3.Connection, home=None) -> set[str]:
+    """在册的身份 = 库里注册过的 ∪ 名册（config.json）里列着的。
+
+    为什么不只看库：`ic crew kickoff` 是**按名册群发**开工信，名册里的新同事可能一次都还没
+    开口（`agents` 表里还没有他）——只看库会把这些人当成「不存在」而把整封 kickoff 拒掉。
+    读不到配置就不较真：宁可漏拒，不可误拒。
+    """
+    names = {row[0] for row in conn.execute("SELECT name FROM agents")}
+    if home:
+        try:
+            from infocenter import config as _config
+
+            for item in _config.load(home).get("agents") or []:
+                name = str((item or {}).get("name") or "").strip().lower()
+                if name:
+                    names.add(name)
+        except Exception:
+            pass
+    return names
 
 
 def _upsert(conn: sqlite3.Connection, name: str, description: str | None) -> None:

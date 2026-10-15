@@ -37,6 +37,32 @@ class SplitIdsTest(unittest.TestCase):
         self.assertEqual(_split_ids(["", " , "]), [])
 
 
+class MergeIdCliTest(unittest.TestCase):
+    """显式给了个空 id（`--id ""` / `--id ","`）**不许**静默当成「没给 id」。
+
+    为什么单独钉死（kimi 2026-10-15 提示级）：不写 id 的语义是「把还没落的都落掉」＝合全部，
+    而合并**不可撤销**；`--id ""` 拆完就是空列表，跟「没给」长得一模一样，于是手一滑就把台账全合了。
+    """
+
+    def _run(self, argv):
+        import contextlib
+        import io
+
+        from infocenter import cli
+
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = cli.main(argv)
+        return code, err.getvalue()
+
+    def test_显式空id_给干净的400而不是合全部(self):
+        for raw in ("", " , "):
+            code, err = self._run(["--as", "opencode", "queue", "some/path.py", "--merge", "--id", raw])
+            self.assertEqual(code, 1)
+            self.assertIn("invalid_id", err)
+            self.assertIn("合全部", err)
+
+
 class MergeIdTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

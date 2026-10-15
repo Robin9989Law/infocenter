@@ -106,6 +106,77 @@ class LockKeyWritableTest(unittest.TestCase):
         self.store.lock_acquire("cursor", [target], ttl=600)
         self.assertEqual(_mode(self.target), 0o644)
 
+    def _fail_chmod_for(self, doomed: Path):
+        """让某个路径的 chmod 一定失败（ACL / 只读挂载 / 权限不足那类），别的照常。"""
+        real_chmod = os.chmod
+        bad = os.path.realpath(str(doomed))
+
+        def fake_chmod(path, mode, *args, **kwargs):
+            if os.path.realpath(str(path)) == bad:
+                raise PermissionError(1, "Operation not permitted")
+            return real_chmod(path, mode, *args, **kwargs)
+
+        return mock.patch("infocenter.store.os.chmod", side_effect=fake_chmod)
+
+    def test_multi_lock_failure_puts_back_the_files_already_made_writable(self):
+        """kimi 2026-10-15 报的洞：一次拿多个文件、中途失败时，
+        前面**已经改成可写**的文件必须收回去——否则等于「没拿到钥匙却能写」，
+        锁＝只读当场破功，而且没人知道。"""
+        second = self.home / "second.py"
+        second.write_text("y\n", encoding="utf-8")
+        os.chmod(second, 0o444)
+
+        with self._fail_chmod_for(second):
+            with self.assertRaises(MailError) as ctx:
+                self.store.lock_acquire("cursor", [str(self.target), str(second)], ttl=600)
+
+        self.assertEqual(ctx.exception.code, "lock_not_writable")
+        self.assertEqual(self._paths(), [], "整笔回滚：一把钥匙都不该留下")
+        self.assertEqual(_mode(self.target), 0o444, "前面已经改成可写的那个要收回去")
+        self.assertEqual(_mode(second), 0o444)
+
+    def test_failed_renewal_keeps_my_own_key_writable(self):
+        """续期时中途失败：我已经拿着钥匙的那个文件**不能**被收回成只读（我的锁还在）。"""
+        second = self.home / "second.py"
+        second.write_text("y\n", encoding="utf-8")
+        os.chmod(second, 0o444)
+        self.store.lock_acquire("cursor", [str(self.target)], ttl=600)
+        self.assertEqual(_mode(self.target), 0o644)
+
+        with self._fail_chmod_for(second):
+            with self.assertRaises(MailError):
+                self.store.lock_acquire("cursor", [str(self.target), str(second)], ttl=600)
+
+        self.assertEqual(
+            [os.path.realpath(p) for p in self._paths()],
+            [os.path.realpath(str(self.target))],
+            "回滚后我还是只拿着原来那把",
+        )
+        self.assertEqual(_mode(self.target), 0o644, "我的钥匙还在 ⇒ 我的文件要保持可写")
+
+    def test_release_that_cannot_go_readonly_is_reported(self):
+        """放钥匙时若没能改回只读（ACL / 只读挂载 / 别的进程又改回去），必须说出来——
+        旧版在这里静默吞 `OSError`（kimi 2026-10-15 提示级），「锁＝只读」只剩嘴上说说。"""
+        self.store.lock_acquire("cursor", [str(self.target)], ttl=600)
+        self.assertEqual(_mode(self.target), 0o644)
+        real_chmod = os.chmod
+        bad = os.path.realpath(str(self.target))
+
+        def fake_chmod(path, mode, *args, **kwargs):
+            # 只挡"改回只读"那一下（去掉写位），别影响拿钥匙时的"改成可写"
+            if os.path.realpath(str(path)) == bad and not (mode & 0o200):
+                raise PermissionError(1, "Operation not permitted")
+            return real_chmod(path, mode, *args, **kwargs)
+
+        with mock.patch("infocenter.store.os.chmod", side_effect=fake_chmod):
+            res = self.store.lock_release("cursor", [str(self.target)])
+
+        self.assertEqual(self._paths(), [], "钥匙照放（库里那行清掉了）")
+        self.assertIn(
+            bad, [os.path.realpath(p) for p in res["stuck"]], "改不回去要说出来，别静默"
+        )
+        self.assertIn("改回只读失败", list(res["stuck"].values())[0])
+
     def test_chmod_that_silently_does_not_land_is_caught(self):
         """grok 的症状本体：chmod「成功」了但权限位没落地，文件仍是 444——复核当场抓出来。"""
         real_chmod = os.chmod

@@ -11,6 +11,15 @@ from infocenter.paths import home_dir
 from infocenter.server import read_meta, serve, stop
 from infocenter.store import MailError, beijing_stamp, normalize_name
 
+# 各 agent 实际加载的 SKILL 安装位点（交互会话读的是这些副本，不是仓库里那份）。
+# 约定：优先做成软链（安装副本 → 仓库副本，一份真相）；不能软链的，由 `ic status` /
+# `ic guard` 比对内容，不一致就出一行（只提示，不拦）。见 README 的「作用域」那节。
+SKILL_INSTALL_HINTS = (
+    "~/.agents/skills/infocenter/SKILL.md",
+    "~/.config/opencode/skill/infocenter/SKILL.md",
+    "~/.claude/skills/infocenter/SKILL.md",
+)
+
 
 # C-16：全局参数分两段处理。
 # - 子命令之前的全局参数由 `_peel_globals` 只在「遇到子命令前」剥离，不再在任意位置无脑
@@ -549,9 +558,18 @@ def main(argv=None) -> int:
             )
         elif args.cmd == "queue":
             if args.merge:
+                ids = _split_ids(args.ids)
+                if args.ids is not None and not ids:
+                    # `--id ""` / `--id ","`：**说清楚**，别静默当成「没给 id」——
+                    # 那会变成「合全部」，而合并是不可撤销的（kimi 2026-10-15 提示级）。
+                    raise MailError(
+                        "invalid_id",
+                        "`--merge` 得点名要合哪几条（`--id q271` 或 `--id q271,q272`）；"
+                        "空着会被当成「合全部」，太危险，所以这里直接拒。要全合就把 id 逐条列上。",
+                    )
                 payload = call(
                     args.url, agent, "POST", "/v1/locks/queue/merge",
-                    {"path": args.path, "ids": _split_ids(args.ids)}, home=home,
+                    {"path": args.path, "ids": ids}, home=home,
                 )
             elif args.note or args.patch_file:
                 payload = call(
@@ -862,6 +880,42 @@ def _install_commit_hook(subprocess, cwd=None) -> int:
     return 0
 
 
+def skill_drift_lines(repo_skill: Path | None = None, hints=None) -> list[str]:
+    """仓库那份 SKILL 与各 agent 实际加载的**安装副本**比一比：内容不一样就出一行。
+
+    为什么要这个（2026-10-15 实测）：交互会话读的是**安装副本**（`~/.agents/skills/...`），
+    仓库改了那份它看不到；两份真相靠人记一定再犯。规矩是**优先软链**（安装副本 → 仓库那份，
+    一份真相），不能软链的就在这里比对。
+    **只提示、不拦**（跟黄灯一个口径）：判断"该不该现在同步"要靠人（SKILL 正在修订时本来就该先漂着）。
+
+    参数只为测试方便：默认拿仓库里那份，hints 是一串安装位点。
+    """
+    repo = repo_skill or (Path(__file__).resolve().parents[1] / "skills" / "infocenter" / "SKILL.md")
+    if not repo.exists():
+        return []
+    try:
+        want = repo.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    lines: list[str] = []
+    for hint in hints if hints is not None else SKILL_INSTALL_HINTS:
+        copy = Path(hint).expanduser()
+        try:
+            if not copy.exists():
+                continue
+            if os.path.samefile(copy, repo):
+                continue  # 软链到仓库那份 = 一份真相，不算漂移
+            got = copy.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if got != want:
+            lines.append(
+                f"  ⚠ SKILL 副本漂移：{copy} 与仓库那份不一样（会话读的是副本，改动看不到；"
+                "能软链就软链，不能就重装一份）"
+            )
+    return lines
+
+
 def _hook_warning() -> str:
     """钩子没装就冒一句——闸门只在「有人手动跑 ic guard」时生效，这必须让人知道。"""
     import subprocess
@@ -966,11 +1020,14 @@ def _preexisting_dirt(subprocess, paths) -> dict[str, str]:
     out: dict[str, str] = {}
     for path in paths or []:
         try:
-            # 用 `-C <文件所在目录>`：这样跟调用方当前在哪个目录无关，
-            # 问的就是"这个文件在它自己那个仓库里是什么状态"。
-            where = str(Path(path).parent)
+            # 一律换成**绝对路径**再问 git。实测（kimi 2026-10-15 报的洞，已复现）：
+            # `ic lock infocenter/cli.py` 这种相对路径 + `-C <文件所在目录>` 会被 git
+            # 当成 `infocenter/infocenter/cli.py`（错位）⇒ rc=0、输出为空 ⇒
+            # 「本来就有脏改动」被当成「干净」，黄灯静默不亮、也不登记。
+            real = str(Path(path).expanduser().resolve())
+            where = str(Path(real).parent)
             status = subprocess.run(
-                ["git", "-C", where, "status", "--porcelain", "--", str(path)],
+                ["git", "-C", where, "status", "--porcelain", "--", real],
                 capture_output=True, text=True, timeout=10,
             )
             if status.returncode != 0 or not status.stdout.strip():
@@ -978,7 +1035,7 @@ def _preexisting_dirt(subprocess, paths) -> dict[str, str]:
             if status.stdout.lstrip().startswith("??"):
                 continue  # 新文件还没进 git：那不是"上一手留下的"
             numstat = subprocess.run(
-                ["git", "-C", where, "diff", "--numstat", "--", str(path)],
+                ["git", "-C", where, "diff", "--numstat", "--", real],
                 capture_output=True, text=True, timeout=10,
             )
             added = removed = "?"
@@ -988,7 +1045,7 @@ def _preexisting_dirt(subprocess, paths) -> dict[str, str]:
                 added, removed = cols[0], cols[1]
             preview = ""
             diff = subprocess.run(
-                ["git", "-C", where, "diff", "--unified=0", "--", str(path)],
+                ["git", "-C", where, "diff", "--unified=0", "--", real],
                 capture_output=True, text=True, timeout=10,
             )
             for text_line in (diff.stdout or "").splitlines():
@@ -1247,6 +1304,7 @@ def _status(args, home: Path, agent: str) -> int:
         print(json.dumps({
             "url": url, "pid": meta.get("pid"), "agent": agent,
             "unread": mine, "unread_by_agent": {name: count for name, count in unread.items() if count},
+            "skill_drift": skill_drift_lines(),
         }, ensure_ascii=False))
         return 0
     pid = meta.get("pid")
@@ -1259,6 +1317,8 @@ def _status(args, home: Path, agent: str) -> int:
         print("各家未读: " + ", ".join(f"{name} {count}" for name, count in backlog))
     else:
         print("各家未读: 都清零了")
+    for line in skill_drift_lines():
+        print(line)
     return 0
 
 
@@ -1487,6 +1547,8 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
         warn = _hook_warning()
         if warn:
             print(warn)
+        for line in skill_drift_lines():
+            print(line)
         return
     if cmd == "lock" and not as_json:
         rows = payload.get("locks") or []
@@ -1514,6 +1576,8 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
             count = len(payload.get("released") or [])
         suffix = "（强制清场）" if payload.get("force") else ""
         print(f"已放锁 {count} 个{suffix}")
+        for path, why in (payload.get("stuck") or {}).items():
+            print(f"  ⚠ {path} 没能变回只读（{why}）—— 「锁＝只读」这会儿是纸面上的，别指望它挡人")
         for item in payload.get("pending_left") or []:
             print(f"  📥 {item['path']} 还有 {item['count']} 条待改（各人照自己的 TODO 轮，不必互相说）")
         return
