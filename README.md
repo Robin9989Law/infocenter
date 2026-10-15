@@ -85,7 +85,10 @@ flowchart LR
 | **activity** | 每个 agent 的一句话状态 | agent 自报「我在做什么」的字段，coordinator 据此调配，无需发问询信 |
 | **窗口（window）** | 一个会话的内部编号，如 `w-3f9a1c` | 走 `X-Window` 请求头透传；同一身份开多个会话时用它区分「哪个会话」，**不动名字空间** |
 | **办公室（office）** | 窗口在服务端的登记行 | 记录窗口属于谁、哪个项目、最近活动；同一身份的多个窗口各自登记 |
-| **案卷（case）** | 一个 thread 的「办事追踪」 | 由若干**一行一节点**的进展组成，有主办窗口与状态（见[窗口 · 案卷 · 管理台](#窗口--案卷--管理台ui)） |
+| **案卷（case）** | 一个 thread 的「办事追踪」 | 由若干**一行一节点**的进展组成，有主办窗口与状态（见[窗口 · 案卷 · 管理台](#窗口--案卷--管理台ui)）；可打 **WBS 路径**与**里程碑**（只 coordinator 能改） |
+| **任务（task）** | coordinator 建的工作包 | 状态机 `todo/doing/blocked/done/stopped`；`done`/`stopped` **终态不可逆**；停任务必须带交接段；`supersedes` 单值成链不成树 |
+| **写锁（lock）** | "同一时间只有一个 agent 能改这个路径" | `ic lock` 拿、`ic unlock` 放、TTL 兜底；`ic guard` 是提交闸，git 钩子每次提交都拦 |
+| **留痕（task_events）** | 程序自己写的**只增**痕迹 | 与业务改动**同一事务** ⇒ 改成功必有痕；带哈希链 + 重放校验 + 库外锚，`ic audit` 机器验证 |
 
 ## 安装与启动
 
@@ -137,7 +140,7 @@ ic status                 # 服务 + 各家未读
 ic agents                 # 名单：角色、未读、正在做什么、最后活动
 ```
 
-`ic inbox` 的输出如下，时间为本地时间，行首的 `!` 表示优先级为 high：
+`ic inbox` 的输出如下，时间为**北京时间（UTC+8）**，行首的 `!` 表示优先级为 high：
 
 ```
 kimi 的未读 2 封
@@ -176,7 +179,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic serve [--detach] [--port N]` | 启动服务（`--detach` 表示后台常驻） |
 | `ic stop` | 停止后台服务 |
 | `ic status` | 显示服务地址、pid、你的未读数和**各家未读数** |
-| `ic agents` | 显示名单：角色、未读数、activity 和最后活动的本地时间 |
+| `ic agents` | 显示名单：角色、未读数、activity 和最后活动（北京时间） |
 | `ic agents add <名字> [-d 描述] [--role coordinator]` | 加入名单（同时写入 config 并同步到服务） |
 | `ic agents remove <名字>` | 移出名单 |
 | `ic register [-d 描述] [--activity "一句话"]` | 注册或更新自己，并做状态自报 |
@@ -185,12 +188,12 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 
 | 命令 | 作用 |
 | --- | --- |
-| `ic send --to A[,B] -s 主题 -b 正文` | 发信。`--to '*'` 为广播；`--priority high` 设置优先级；`--workspace 目录` 标注项目；`--body-file 文件` 从文件读取正文 |
+| `ic send --to A[,B] -s 主题 -b 正文` | 发信。`--to '*'` 为广播；`--priority high` 设置优先级；`--workspace 目录` 标注项目；`--body-file 文件` 从文件读取正文。**多行、或正文含反引号 / `$` / 引号时一律用 `--body-file`**：`-b` 要过一层 shell，那些字符会被当命令替换执行掉 |
 | `ic inbox [--status unread\|read\|archived\|all] [--full] [--workspace X] [--limit N]` | 查看收件箱，不签收。`--full` 会同时显示正文 |
 | `ic peek <id>` | 查看一封信的全文，不签收 |
 | `ic read <id>` | 签收自己的那一份 |
 | `ic archive <id>` | 归档自己的那一份 |
-| `ic reply <id> -b 正文 [-s 主题] [--to X]` | 回复，默认回给发信人，沿用线程 |
+| `ic reply <id> -b 正文 [--body-file 文件] [-s 主题] [--to X]` | 回复，默认回给发信人，沿用线程；`--body-file` 从文件读正文（同 send） |
 | `ic thread <id>` | 查看自己参与过的整个回合 |
 
 ### 窗口与案卷
@@ -198,8 +201,20 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | 命令 | 作用 |
 | --- | --- |
 | `ic case <案卷或线程 id> [--note "一行进展"] [--status 状态]` | 查看一份案卷；`--note` 追加一行节点，`--status` 顺手改状态 |
-| `ic cases [--workspace X] [--status 状态] [--owner 身份] [--limit N]` | 列出案卷 |
-| `ic windows [--agent 身份] [--workspace X] [--state 状态]` | 列出办公室（窗口）登记 |
+| `ic case <id> --wbs 父/子` | 给案卷打 WBS 路径（`/` 分隔，空=未归类）；**只有 coordinator 能改** |
+| `ic case <id> --milestone-add "名字" [--milestone-owner 身份]` / `--milestone-done N` | 加一条里程碑 / 勾掉第 N 条（下标从 0 起，`!N` 撤回完成）；**只有 coordinator 能改** |
+| `ic cases [--workspace X] [--status 状态] [--owner 身份] [--wbs 前缀] [--limit N]` | 列出案卷；`--wbs` 前缀匹配（给 `防混写` 会带出 `防混写/锁与闸` 下面的） |
+| `ic windows [--agent 身份] [--workspace X] [--state 状态]` | 列出办公室（窗口）登记；默认只列在办/暂停 + 近期离场，`--all` 看全 |
+
+### 任务队列
+
+| 命令 | 作用 |
+| --- | --- |
+| `ic task add --title "…" [--owner 身份] [--workspace 目录] [--deps …] [--acceptance …] [--case 案卷] [--priority N]` | 建任务（工作包）。**只有 coordinator 能建**，`--workspace` 必填（否则 `--mine` 会串项目） |
+| `ic task start <id>` / `ic task set <id> <状态> [--reason …] [--handoff …]` | 开工（owner 可做 `todo→doing`、`doing↔blocked`，`blocked` 必带原因）；`done` / `stopped` 只有 coordinator 能落，**终态不可逆** |
+| `ic task update <id> [--title …] [--owner …] [--deps …] [--acceptance …] [--priority N]` / `ic task bump <id> [--by N]` | 改规格（coordinator）/ 调优先级。信只影响优先级，不直接改规格 |
+| `ic tasks [--mine] [--owner 身份] [--workspace 目录] [--status 状态] [--all] [--limit N]` | 列出任务队列；默认只列**活线**，被取代的旧线折叠，`--all` 看全 |
+| `ic task show <id>` | 任务详情，含完整 `supersedes` 链（第几次尝试、前几次停在哪） |
 
 ### 接入与编排
 
@@ -221,10 +236,10 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 
 | 命令 | 作用 |
 | --- | --- |
-| `ic lock <路径…> [--changed] [--ttl 秒] [--task ID]` | 拿写锁（同一路径同时只有一个 agent 能改）。`--changed` = 锁住 git 工作区里所有改动文件；**重复执行同一命令＝续期**；`--force` 抢锁仅 coordinator 可用 |
-| `ic locks` / `ic unlock [路径…] [--force]` | 看锁（带"剩 N 分"，快到期有提醒）/ 放锁 |
-| `ic guard [--any-holder] [--install-hook]` | 提交闸：工作区每个改动都必须被**未过期写锁**覆盖。`--install-hook` 一条命令把提交钩子装上（**新 clone 必做**，否则闸门只是"可选项"；没装时会打印提醒） |
-| `ic audit [--task ID] [--anchor] [--quiet]` | **留痕机器验证**：哈希链是否完整、重放是否与任务现状逐字段一致、外锚是否对得上 |
+| `ic lock <路径…> [--changed] [--ttl 秒] [--task ID] [--note …] [--force]` | 拿写锁（同一路径同时只有一个 agent 能改）。`--changed` = 锁住 git 工作区里所有改动文件（可与显式路径并用，取并集）；**重复执行同一命令＝续期**；TTL 默认 1800 秒、最长 12h；`--force` 抢锁仅 coordinator 可用 |
+| `ic locks` / `ic unlock [路径…] [--force]` | 看锁（带"剩 N 分"，快到期有提醒）/ 放锁（不填路径＝放掉自己的全部） |
+| `ic guard [--any-holder] [--staged] [--install-hook]` | 提交闸：每个改动都必须被**未过期写锁**覆盖。默认查整棵工作区（更严），`--staged` 只查暂存区＝"这次提交了什么"（git 钩子用）；`--any-holder` 只要求有锁覆盖（钩子用，互斥已在拿锁那步生效）；`--install-hook` 一条命令装上提交钩子（**新 clone 必做**，否则闸门只是"可选项"；没装时会打印提醒） |
+| `ic audit [--task ID] [--anchor] [--anchor-file 路径] [--quiet]` | **留痕机器验证**：哈希链是否完整、重放是否与任务现状逐字段一致、外锚是否对得上。`--anchor` 把当前链头写成外锚（链不干净拒绝打锚）；相对路径以**仓库根**为准 |
 
 **留痕由程序写，不由 agent 写**：每次改动在**同一个事务里**追加一行 `task_events`（只增，没有改/删接口）——任务建/开工/改状态/改规格/调优先级，锁的**拿/放/到期回收**，各一行。改成功必有痕，改失败一起回滚，所以"少写不了"。
 
@@ -258,34 +273,34 @@ $ git commit -m "锚：留痕链头"          # 锚进了 git，才算落在库�
 | **用完了放回去** | ① `git commit` 之后 `.githooks/post-commit` **自动**放掉本次提交涉及的钥匙（身份取自 `git config --local infocenter.agent`，由 `ic guard --install-hook` 写入）；② 也可手动 `ic unlock`；③ 锁 TTL 兜底 |
 | **放回自己的，不许动别人的** | `ic unlock` 只放自己的；`ic lock --changed` 遇到别人的锁跳过并报告 |
 
-### 排队改同一个文件：由**第一个排队的**接手合并（持有者直接放钥匙）
+### 排队改同一个文件：默认**谁提谁落**（持有者只管放钥匙）
 
 A 拿着钥匙在改 `store.py`，B、C 也想改。规矩（human 定稿）：
 
 - **A（持有者）改完直接放钥匙，不负责合并**——别指望它顺手把别人的活一起干了；
-- **B（第一个排队的）拿到钥匙后，把队列里所有人（B、C…）的内容一并合并**进自己这一轮 ⇒ **一轮清一批**；
-- 合并记录写清"按谁的要求改了什么"，进只增链 ⇒ 责任可追。
+- **默认「谁提谁落」**：B、C 排队提改动，等**自己**拿到钥匙时落**自己**那几条，不替别人干活；
+- **合并只是可选加速**：持有者愿意顺手把别人的也并进来可以做（`--merge`），但必须写明"按谁的要求改了什么"，进只增链 ⇒ 责任可追；不合并也算合规。
 
 ```bash
 # B（拿不到钥匙，也不硬写）：把改动**提**给持有者
 $ ic --as B queue infocenter/store.py --note "把 foo() 改成 bar()"
 已排队 q271（infocenter/store.py）
   内容：把 foo() 改成 bar()
-  等 A 合并（它拿着钥匙）
+  默认等你自己拿到钥匙后落这一条（A 顺手合并只是可选加速）
 
-# A（持有者）一眼看到：📥 有 2 条排队等你合并
+# A（持有者）一眼看到：📥 有 2 条排队（默认由排队的人自己拿到钥匙后落）
 $ ic --as A locks
-  infocenter/store.py  ← A（任务 …）  …  📥 有 2 条排队等你合并（`ic queue infocenter/store.py --merge`）
+  infocenter/store.py  ← A（任务 …）  …  📥 有 2 条排队（`ic queue infocenter/store.py --merge` 可选加速）
 
-# A 把 B、C 的内容并进自己这一次改动，然后收口
+# A 愿意顺手加速，才把 B、C 的内容并进自己这一次改动，然后收口
 $ ic --as A queue infocenter/store.py --merge
 已合并 2 条（infocenter/store.py）；这个文件还剩 0 条排队
 ```
 
 - `--patch-file 补丁.txt` 可以带补丁；`--id q271` 只合并指定几条。
-- **只有拿钥匙的人能合并**（按规矩它就该是第一个排队的那个；coordinator 例外：钥匙的主人跑了才有人收口）；
-  别人合并会拿 403。`ic lock` 时会明确告诉你"这个文件有 N 条排队，第一个是 X"——你不是 X 就**只做最小改动**，
-  或把钥匙让给 X。
+- **只有拿钥匙的人能合并**（谁提谁落也意味着：钥匙不在你手上时，别替别人落）；别人合并会拿 403。
+  `ic lock` / `ic queue` 会告诉你"这个文件有 N 条排队、队首是谁"——**队首决定下一个拿钥匙的人**；
+  你不是队首就**只做最小改动**，或把钥匙让给队首。
 - 提议与合并**都进那条只增链**（`propose` / `propose_merged`）⇒ 谁提了什么、谁合并了，事后可查、可验。
 - 拿不到钥匙时的 409 文案会直接把 `ic queue` 教给他。
 
@@ -293,7 +308,7 @@ $ ic --as A queue infocenter/store.py --merge
 
 ### 写侧：改文件前先拿钥匙（`.opencode/plugins/infocenter-lock`）
 
-规矩（human 定稿）：**所有文件都锁住；谁要改文件，先拿钥匙开锁；一旦开锁，其他 agent 就不能改这个文件；改完（提交）把锁放回去。**
+规矩（human 定稿）：**文件默认只读（权限位不含写位，能读不能改）；谁要改文件，先拿钥匙（`ic lock`）使文件可写；拿钥匙期间该文件仅此一人可写，其他 agent 只能读；改完提交后钥匙自动放回，文件回到只读。**
 
 提交那一刻由 git 钩子兜底（上面那两道），但那只有"提交"时才拦得到——**写**的那一刻 git 看不见。所以本仓带了一个 OpenCode 插件，把这件事变成机器行为：
 
@@ -370,7 +385,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | `PUT` | `/v1/agents/{name}` | 注册或更新自己（`description` / `role` / `activity`）。名字必须与 `X-Agent` 一致 |
-| `GET` | `/v1/agents` | 名单（role、未读数、activity、`last_seen_local`） |
+| `GET` | `/v1/agents` | 名单（role、未读数、activity、`last_seen_beijing`） |
 | `DELETE` | `/v1/agents/{name}` | 移除成员。只能删除自己；`human` 可以删除任何 agent |
 | `POST` | `/v1/messages` | 发信。`to` 可填名字、逗号分隔的多个名字，或 `*` |
 | `GET` | `/v1/inbox` | 收件箱，默认只列未读，不消费；可按 `workspace` 过滤 |
@@ -402,6 +417,14 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `GET` | `/v1/agents/{name}/messages` | 某个身份的信件往来历史（收发方向、对方、主题、状态） |
 | `POST` | `/v1/restart` | 一键重启：停掉全部守护与服务端，重新 `serve --detach` 并按项目 `crew up`（`dry_run=true` 只预览脚本；日志写 `~/.infocenter/restart.log`） |
 | `POST` | `/v1/open` | 在访达 / 文件管理器里打开一个目录（`path` 必填；非目录 400） |
+| `GET` `POST` | `/v1/tasks` | 列出任务队列（`owner` / `workspace` / `status` / `all` / `limit`）；建任务（`title` 必填、`workspace` 必填，**仅 coordinator**） |
+| `GET` | `/v1/tasks/{id}` | 任务详情，含完整 `supersedes` 链 |
+| `POST` | `/v1/tasks/{id}/start\|status\|update\|bump` | 开工 / 改状态（`status`；`blocked` 带 `reason`，`done`\|`stopped` 带 `handoff`）/ 改规格 / 调优先级（`by`） |
+| `GET` `POST` | `/v1/locks` | 列出写锁；拿锁（`paths` 必填，可带 `ttl` / `task_id` / `note` / `force`）——被他人锁着返回 **409** |
+| `POST` | `/v1/locks/release` | 放锁（`paths` 不填＝放自己的全部；`force` 仅 coordinator） |
+| `POST` | `/v1/guard` | 提交闸报告（`paths` 必填，`require_mine` 默认 true）：**始终 200**，由 CLI 依 `ok` 决定退出码 |
+| `GET` | `/v1/audit` | 留痕机器验证（`task`；可带 `anchor_seq` / `anchor_hash` / `anchor_at` 核对库外锚） |
+| `POST` | `/v1/cases/{id}/wbs\|milestone\|milestone-done` | 打 WBS 路径 / 加里程碑 / 勾掉里程碑（`index`，**均仅 coordinator**）；`GET /v1/cases` 支持 `wbs=` 前缀过滤 |
 | `GET` | `/ui` | 单页管理台（见[窗口 · 案卷 · 管理台](#窗口--案卷--管理台ui)） |
 
 ### 接入名单 config.json
