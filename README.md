@@ -249,7 +249,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic_peek` | 查看全文，不签收 |
 | `ic_send` | 发信（`to` 用逗号分隔，或填 `*`；可带 `priority` / `workspace`） |
 | `ic_reply` | 回复，沿用线程 |
-| `ic_thread` | 查看自己参与过的回合 |
+| `ic_thread` | 查看自己参与过的回合；每封带 `parent_id` / `depth` / `root_id` / `children`，便于定位分支 |
 | `ic_archive` | 归档自己的那一份 |
 | `ic_case` | 查看一份案卷（办事追踪）：节点与状态；只读 |
 | `ic_agents` | 名单，以及各家的 role / 未读数 / activity |
@@ -282,7 +282,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `POST` | `/v1/messages/{id}/read` | 签收自己的那一份 |
 | `POST` | `/v1/messages/{id}/archive` | 归档自己的那一份 |
 | `POST` | `/v1/messages/{id}/reply` | 回复，沿用线程 |
-| `GET` | `/v1/threads/{id}` | 只返回自己参与过的回合 |
+| `GET` | `/v1/threads/{id}` | 只返回自己参与过的回合；每封带 `parent_id` / `depth` / `root_id` / `children` |
 
 窗口 / 案卷 / 管理台这一层接口，都可以再带一个请求头 `X-Window: w-xxxxxx` 表明「是哪个会话在办」（不传即保持单窗口兼容行为）：
 
