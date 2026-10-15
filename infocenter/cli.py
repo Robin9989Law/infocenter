@@ -1377,19 +1377,8 @@ _SYNC_EXIT_2 = {
     "invalid_peers",
     "invalid_outbox",
 }
-_SYNC_COUNT_KEYS = (
-    "exported",
-    "imported",
-    "receipts_out",
-    "receipts_in",
-    "skipped",
-    "rejected",
-    "conflict",
-)
-
-
 def _sync(args, home: Path) -> int:
-    from infocenter.sync import run_sync
+    from infocenter.sync import COUNT_KEYS, run_sync
 
     try:
         payload = run_sync(home, args.dir, args.sync_cmd)
@@ -1399,7 +1388,7 @@ def _sync(args, home: Path) -> int:
     if args.json:
         print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
     else:
-        print(" ".join(f"{key}={payload[key]}" for key in _SYNC_COUNT_KEYS))
+        print(" ".join(f"{key}={payload[key]}" for key in COUNT_KEYS))
     return 0
 
 
