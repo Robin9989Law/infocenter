@@ -463,6 +463,64 @@ class CaseStatusNeedsNoteTest(unittest.TestCase):
         self.assertIn("status_needs_note", err)
 
 
+class SealPendingMilestoneTest(unittest.TestCase):
+    """封卷前的一盏灯：还有里程碑没勾就念出来——**只提示、不拦**。
+
+    实测（2026-10-16）：先封卷、后勾最后一个里程碑 ⇒ 被 `case_sealed` 拒，只能 `reopen` → 补勾 → 再封，
+    白折腾三下。封卷不可逆，账该在动手前摆到眼前；但**不拦**（判断归人，机器只负责别让它悄悄发生）。
+    """
+
+    def _run(self, argv, case=None, error=None):
+        calls = []
+
+        def fake_call(url, agent, method, path, body=None, query=None, **kw):
+            calls.append((method, path, body))
+            if method == "GET":
+                if error is not None:
+                    raise error
+                return case
+            return {"ok": 1}
+
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(cli, "call", fake_call):
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                code = cli.main(argv)
+        return code, out.getvalue(), err.getvalue(), calls
+
+    def test_还有里程碑没勾_念出来但照旧封(self):
+        case = {"id": "cid", "milestones": [{"name": "甲", "done": True}, {"name": "乙", "done": False}]}
+        code, out, err, calls = self._run(
+            ["--as", "x", "case", "cid", "--note", "收工", "--status", "办结"], case=case
+        )
+        self.assertEqual(code, 0, err)
+        self.assertIn("还有 1 个里程碑没勾", out)
+        self.assertIn("乙", out)
+        self.assertTrue(any(m == "POST" for m, _p, _b in calls), "只是提示，不许拦动手")
+
+    def test_都勾了就不吭声(self):
+        case = {"id": "cid", "milestones": [{"name": "甲", "done": True}]}
+        code, out, _err, _calls = self._run(
+            ["--as", "x", "case", "cid", "--note", "收工", "--status", "办结"], case=case
+        )
+        self.assertEqual(code, 0)
+        self.assertNotIn("⚠", out)
+
+    def test_不是封卷就不多发这一趟(self):
+        _code, _out, _err, calls = self._run(
+            ["--as", "x", "case", "cid", "--note", "在办", "--status", "待谁"]
+        )
+        self.assertFalse(any(m == "GET" for m, _p, _b in calls), "非封卷不该白问一趟")
+
+    def test_读不到案卷也不挡人(self):
+        code, out, err, calls = self._run(
+            ["--as", "x", "case", "cid", "--note", "收工", "--status", "办结"],
+            error=client.ApiError(404, {"error": "not_found"}),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertNotIn("⚠", out)
+        self.assertTrue(any(m == "POST" for m, _p, _b in calls))
+
+
 
 if __name__ == "__main__":
     unittest.main()

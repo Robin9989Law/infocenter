@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from infocenter import DEFAULT_HOST, DEFAULT_PORT, __version__, config
-from infocenter.client import call, ensure_server, healthy, request, resolve_url
+from infocenter.client import ApiError, call, ensure_server, healthy, request, resolve_url
 from infocenter.paths import home_dir
 from infocenter.server import read_meta, serve, stop
 from infocenter.store import MailError, _parse_utc, beijing_stamp, normalize_name
@@ -450,6 +450,9 @@ def main(argv=None) -> int:
                     "`ic case <id> --note \"为什么改\" --status 待谁`。"
                     "（`--milestone-*` / `--acceptance` 那几条路都不带状态。）",
                 )
+            # 黄灯（**不拦**）：封卷不可逆（要改只能 `reopen`），所以动手前把"还有里程碑没勾"摆到眼前。
+            for line in _seal_pending_milestone_lines(args, agent, home):
+                print(line)
             if args.milestone_add:
                 body = {"name": args.milestone_add}
                 if args.milestone_owner:
@@ -883,6 +886,38 @@ def _install_commit_hook(subprocess, cwd=None) -> int:
     print(f"提交闸已装（幂等）：core.hooksPath = .githooks，钩子 {hook}")
     print("  以后每次 git commit / merge 都会自动跑两道：`ic guard --quiet --any-holder --staged` + `ic audit --quiet`。")
     return 0
+
+
+# 封卷（不可逆）的两个状态：办结 / 中止。给"封卷前的一盏灯"用。
+SEALING_CASE_STATUSES = {"办结", "中止", "done", "aborted"}
+
+
+def _seal_pending_milestone_lines(args, agent: str, home) -> list[str]:
+    """封卷前的一盏黄灯：还有里程碑没勾，就把它们念出来（**只提示、不拦**）。
+
+    为什么加（2026-10-16 实测）：先封卷、后勾最后一个里程碑 ⇒ 被 `case_sealed` 拒，
+    只能 `reopen` → 补勾 → 再封，白折腾三下。封卷不可逆，账该在动手前摆到眼前。
+    读不到案卷（不存在 / 服务不在 / 任何错）⇒ 一个字都不说：黄灯不能挡住动手。
+    """
+    status = str(getattr(args, "status", "") or "").strip().lower()
+    if status not in SEALING_CASE_STATUSES or not getattr(args, "note", None):
+        return []
+    try:
+        case = call(args.url, agent, "GET", f"/v1/cases/{args.id}", home=home)
+    except (ApiError, SystemExit, OSError, ValueError, KeyError):
+        return []
+    items = case.get("milestones") if isinstance(case, dict) else None
+    pending = [
+        str(item.get("name") or "（没名字）")
+        for item in (items or [])
+        if isinstance(item, dict) and not item.get("done")
+    ]
+    if not pending:
+        return []
+    return [
+        f"  ⚠ 这一卷还有 {len(pending)} 个里程碑没勾：{'、'.join(pending)}",
+        "     封卷之后里程碑就改不动了（要补勾得先 reopen 再封）——照旧封卷，这里只提示、不拦。",
+    ]
 
 
 def skill_drift_lines(repo_skill: Path | None = None, hints=None) -> list[str]:
