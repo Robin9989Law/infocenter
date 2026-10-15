@@ -507,6 +507,9 @@ def main(argv=None) -> int:
                     if not args.quiet:
                         print("工作区没有改动，无需加锁")
                     return 0
+            # 只嗅**命令行点名**的路径：`--changed` 带进来的，是"我自己刚改完的那批"，
+            # 本来就该是脏的，说了也是噪音。
+            dirty = _preexisting_dirt(subprocess, args.paths or [])
             payload = call(
                 args.url, agent, "POST", "/v1/locks",
                 {
@@ -515,6 +518,7 @@ def main(argv=None) -> int:
                     "task_id": args.task_id,
                     "note": args.note,
                     "force": bool(args.force),
+                    "dirty": dirty,
                     # --changed 的语义是"锁我这批脏文件"：别人锁着的脏文件不是我该拿的，跳过并报告
                     "skip_locked": bool(args.changed),
                 },
@@ -930,6 +934,56 @@ def _staged_paths(subprocess) -> list[str]:
     )
 
 
+def _preexisting_dirt(subprocess, paths) -> dict[str, str]:
+    """拿钥匙**之前**先看一眼：这些文件盘上是不是**本来就有**没提交的改动。
+
+    有 ⇒ 那摊改动**多半不是这次写的**（上一手没提交干净就把钥匙还了/过期了，
+    盘上留着"半成品"，谁后拿到钥匙，提交时就会把它一起带走、记在自己名下）。
+    实测（2026-10-15）：cursor 提交了代码但描述它那行的 `CHANGELOG.md` 改动没提交，
+    后来 kimi 拿到钥匙、我又拿到钥匙 —— 谁提交谁就把那行算成自己的。
+
+    这里只**看**、只登记（交给服务端记在锁上），**不拦**：判断"这摊活是不是我的"要靠人，
+    机器只负责在拿钥匙、提交这两个当口把信息摆到眼前（看板那一路的精神）。
+    不在 git 仓库 / 文件还没被跟踪 / git 不可用 ⇒ 一律跳过（不猜、不报）。
+    """
+    out: dict[str, str] = {}
+    for path in paths or []:
+        try:
+            # 用 `-C <文件所在目录>`：这样跟调用方当前在哪个目录无关，
+            # 问的就是"这个文件在它自己那个仓库里是什么状态"。
+            where = str(Path(path).parent)
+            status = subprocess.run(
+                ["git", "-C", where, "status", "--porcelain", "--", str(path)],
+                capture_output=True, text=True, timeout=10,
+            )
+            if status.returncode != 0 or not status.stdout.strip():
+                continue  # 干净，或这儿不是 git 仓库：没什么可说的
+            if status.stdout.lstrip().startswith("??"):
+                continue  # 新文件还没进 git：那不是"上一手留下的"
+            numstat = subprocess.run(
+                ["git", "-C", where, "diff", "--numstat", "--", str(path)],
+                capture_output=True, text=True, timeout=10,
+            )
+            added = removed = "?"
+            line = (numstat.stdout or "").splitlines()
+            if numstat.returncode == 0 and line:
+                cols = line[0].split("\t")
+                added, removed = cols[0], cols[1]
+            preview = ""
+            diff = subprocess.run(
+                ["git", "-C", where, "diff", "--unified=0", "--", str(path)],
+                capture_output=True, text=True, timeout=10,
+            )
+            for text_line in (diff.stdout or "").splitlines():
+                if text_line.startswith("+") and not text_line.startswith("+++"):
+                    preview = text_line[1:].strip()[:60]
+                    break
+            out[path] = f"+{added}/-{removed}" + (f"：{preview}" if preview else "")
+        except (OSError, subprocess.SubprocessError):
+            continue
+    return out
+
+
 def _mcp_identity(args) -> str | None:
     import os
 
@@ -1200,6 +1254,11 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 print(f"  被别人锁着: {item['path']}  ← {item['holder']}")
             print("  规矩：写文件前先 `ic lock <路径>`；拿不到就 `ic queue <路径> --note \"要改什么\"`")
             print("       （写进你自己的 TODO），然后去做别的。不要发信、不要硬写、不要干等。")
+        for item in payload.get("inherited") or []:
+            print(
+                f"  ⚠ {item['path']}：拿钥匙时盘上就已经有别处来的改动（{item['dirty']}）"
+            )
+            print("      → 不是你写的就先别提交：先弄清它是谁的（这次的提交会把它一起带走）")
         warn = _hook_warning()
         if warn:
             print(warn)
@@ -1220,6 +1279,9 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
             first = item.get("first") or "?"
             mine = "（就是你）" if first == payload.get("agent") else ""
             print(f"  📥 {item['path']} 还有 {item['count']} 条待改（各自照自己的 TODO 轮）")
+        for path, what in (payload.get("dirty_at_lock") or {}).items():
+            print(f"  ⚠ {path} 在你拿钥匙**之前**盘上就有没提交的改动（{what}）")
+            print("      → 不是你刚写的那些，就先弄清是谁的：提交时它们会跟你的一起走、算在你名下")
         return
     if cmd == "unlock" and not as_json:
         count = payload.get("released_count")

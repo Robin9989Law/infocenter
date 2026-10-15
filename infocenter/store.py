@@ -354,6 +354,7 @@ class Store:
                     window_id TEXT,
                     task_id TEXT,
                     note TEXT NOT NULL DEFAULT '',
+                    dirty_at_lock TEXT NOT NULL DEFAULT '',
                     acquired_at TEXT NOT NULL,
                     expires_at TEXT NOT NULL
                 );
@@ -366,6 +367,12 @@ class Store:
                 conn.execute("ALTER TABLE agents ADD COLUMN activity TEXT NOT NULL DEFAULT ''")
             if "activity_at" not in agent_cols:
                 conn.execute("ALTER TABLE agents ADD COLUMN activity_at TEXT NOT NULL DEFAULT ''")
+
+            lock_cols = {row[1] for row in conn.execute("PRAGMA table_info(locks)")}
+            if "dirty_at_lock" not in lock_cols:
+                # 拿钥匙那一刻，盘上是否**本来就有**没提交的改动（有 ⇒ 那不是这次写的）。
+                # 只读现场用，不参与任何判定。
+                conn.execute("ALTER TABLE locks ADD COLUMN dirty_at_lock TEXT NOT NULL DEFAULT ''")
 
             delivery_cols = {row[1] for row in conn.execute("PRAGMA table_info(deliveries)")}
             if "claimed_by" not in delivery_cols:
@@ -2345,6 +2352,7 @@ class Store:
         ttl: int = LOCK_TTL,
         force: bool = False,
         skip_locked: bool = False,
+        dirty: dict | None = None,
     ) -> dict:
         """拿锁（可一次拿多个路径）。
 
@@ -2352,6 +2360,9 @@ class Store:
         - `skip_locked=True`（`ic lock --changed` 用）：别人锁着的**跳过并在 `skipped` 里报告**，
           其余照拿。理由：`--changed` 的语义是"锁我这批脏文件"，而别人锁着的脏文件**本来就不是我的**
           （实测撞车成因：`--changed` 把对方的在飞文件、连外锚文件一起抓走 ⇒ 互相死锁）。
+        - `dirty`（可选，`{路径: 摘要}`）：**拿钥匙那一刻盘上本来就有**的未提交改动。
+          由命令行嗅出来（`git diff`）后带进来登记，好让提交那一刻再提醒一句：
+          "这套改动不是这次拿钥匙写的"。这里**不做任何判定**，只登记。
         """
         agent = normalize_name(agent)
         window_id = normalize_window(window_id)
@@ -2361,6 +2372,11 @@ class Store:
         expires = _lock_expiry(now, ttl_seconds)
         note_text = _task_text(note, 400)
         task = normalize_case_id(task_id) if task_id else None
+        dirty_text = {
+            str(key): _task_text(str(val), 200)
+            for key, val in (dirty or {}).items()
+            if str(val).strip()
+        }
         with self._session(immediate=True) as conn:
             if force:  # 抢锁＝不可逆干扰，只有 coordinator 能做（与 lock_release 对称）
                 _must_coordinator(conn, agent)
@@ -2411,16 +2427,23 @@ class Store:
                         if r["path"] != path and _same_file(r["path"], path)
                     ]:
                         conn.execute("DELETE FROM locks WHERE path = ?", (stale,))
+                    # 拿钥匙这一刻盘上本来就有的未提交改动（换写法/硬链接也算同一个文件）
+                    dirt = dirty_text.get(path, "")
+                    if not dirt and dirty_text:
+                        dirt = next(
+                            (val for key, val in dirty_text.items() if _same_file(key, path)), ""
+                        )
                     conn.execute(
                         """
-                        INSERT INTO locks(path, agent, window_id, task_id, note, acquired_at, expires_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO locks(path, agent, window_id, task_id, note, dirty_at_lock, acquired_at, expires_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(path) DO UPDATE SET
                             agent = excluded.agent, window_id = excluded.window_id,
                             task_id = excluded.task_id, note = excluded.note,
+                            dirty_at_lock = excluded.dirty_at_lock,
                             acquired_at = excluded.acquired_at, expires_at = excluded.expires_at
                         """,
-                        (path, agent, window_id, task, note_text, now, expires),
+                        (path, agent, window_id, task, note_text, dirt, now, expires),
                     )
                 for path in wanted:
                     _emit_task_event(
@@ -2465,6 +2488,9 @@ class Store:
                 "expires_at_beijing": beijing_time(expires),  # 给人看：北京时间
                 "locks": [_lock_view(r) for r in rows],
                 "skipped": skipped,  # 别人锁着、这次跳过的（只可能是 --changed 那一类）
+                # 拿钥匙前盘上本来就有的未提交改动（不是这次写的）：登记下来，
+                # 提交那一刻由 `ic guard` 再提醒一句
+                "dirty_at_lock": {r["path"]: r["dirty_at_lock"] for r in rows if r["dirty_at_lock"]},
             }
         self._signal()
         return res
@@ -2718,6 +2744,7 @@ class Store:
         unlocked: list[str] = []
         mine: list[dict] = []
         foreign: list[dict] = []
+        inherited: list[dict] = []
         for path in wanted:
             # 跟拿钥匙同一套身份：硬链接 / 大小写不同的写法也算盖住了。
             # 只比字符串的话，人拿着钥匙、闸门却说「没锁」，就会被推向 --no-verify。
@@ -2727,6 +2754,11 @@ class Store:
                 unlocked.append(path)
             elif (not require_mine) or row["agent"] == agent or is_coord:
                 mine.append({"path": path, "holder": row["agent"]})
+                if row["dirty_at_lock"]:
+                    # 拿钥匙时盘上就已经有别处来的改动：这次提交会把它们一起带走（黄灯，不拦）
+                    inherited.append(
+                        {"path": path, "holder": row["agent"], "dirty": row["dirty_at_lock"]}
+                    )
             else:
                 foreign.append({"path": path, "holder": row["agent"]})
         return {
@@ -2737,6 +2769,7 @@ class Store:
             "covered": mine,
             "unlocked": unlocked,
             "locked_by_others": foreign,
+            "inherited": inherited,
         }
 
     def sweep(self, now: str | None = None) -> dict:
@@ -4471,6 +4504,7 @@ def _lock_view(row: sqlite3.Row) -> dict:
         "window_id": row["window_id"] or "",
         "task_id": row["task_id"] or "",
         "note": row["note"] or "",
+        "dirty_at_lock": row["dirty_at_lock"] or "",
         "acquired_at": row["acquired_at"],
         "acquired_at_beijing": beijing_time(row["acquired_at"]),
         "expires_at": row["expires_at"],

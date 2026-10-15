@@ -520,6 +520,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 skip_locked=bool(body.get("skip_locked")),
                 ttl=body.get("ttl", LOCK_TTL),
                 force=_flag(query.get("force", ["0"])[0]) or bool(body.get("force")),
+                dirty=body.get("dirty") if isinstance(body.get("dirty"), dict) else None,
             )
 
     if path == "/v1/guard":
