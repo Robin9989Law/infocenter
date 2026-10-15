@@ -182,6 +182,8 @@ def main(argv=None) -> int:
     case.add_argument("--milestone-owner", dest="milestone_owner", default=None, help="里程碑负责人")
     case.add_argument("--milestone-done", dest="milestone_done", default=None,
                       help="勾掉第 N 条里程碑（下标从 0 起；加 ! 前缀=撤回完成，如 '!0'）")
+    case.add_argument("--acceptance", default=None,
+                      help="写「怎样算完」：一行验收（≤400 字；owner 或 coordinator 能写）")
 
     cases = sub.add_parser("cases", help="列出案卷")
     cases.add_argument("--workspace", default=None)
@@ -250,6 +252,14 @@ def main(argv=None) -> int:
     unlock = sub.add_parser("unlock", help="放写锁（默认只放自己的）")
     unlock.add_argument("paths", nargs="*", help="要放的路径；不填 = 放掉自己的全部锁")
     unlock.add_argument("--force", action="store_true", help="清场（仅 coordinator）")
+
+    probe = sub.add_parser(
+        "probe", help="空转采样（**只读**）：把每家的 headless 触发数和产出并排摆出来"
+    )
+    probe.add_argument("--minutes", type=float, default=60, help="看最近多少分钟（默认 60）")
+    probe.add_argument("--history", type=int, default=0, help="看采样台账里最近 N 次的趋势")
+    probe.add_argument("--no-log", action="store_true", help="这次不写进采样台账（只看一眼）")
+    probe.add_argument("--watch", type=float, default=0, help="每 N 秒采一次，直到 Ctrl-C（常驻探针）")
 
     tasks = sub.add_parser("tasks", help="列出任务队列")
     tasks.add_argument("--mine", action="store_true", help="只看我的（按 workspace 隔离，默认 cwd）")
@@ -347,6 +357,8 @@ def main(argv=None) -> int:
         agent = args.agent or _env_agent()
         if args.cmd == "status":
             return _status(args, home, agent)
+        if args.cmd == "probe":
+            return _probe(args, home, agent)
         if args.cmd == "agents":
             if args.action == "list":
                 payload = call(args.url, agent, "GET", "/v1/agents", home=home)
@@ -437,6 +449,11 @@ def main(argv=None) -> int:
                     body["note"] = args.note
                 payload = call(
                     args.url, agent, "POST", f"/v1/cases/{args.id}/milestone-done", body, home=home
+                )
+            elif args.acceptance is not None:
+                payload = call(
+                    args.url, agent, "POST", f"/v1/cases/{args.id}/acceptance",
+                    {"acceptance": args.acceptance}, home=home,
                 )
             elif args.note:
                 body = {"note": args.note, "action": "note"}
@@ -1011,6 +1028,208 @@ def _read_body(body: str | None, body_file: str | None) -> str:
     return body
 
 
+def _probe_log_path(home: Path) -> Path:
+    from infocenter import crew
+
+    return crew.state_dir(home) / "probe.jsonl"
+
+
+# 判语代码 → 人话（看趋势时用）
+_PROBE_VERDICT_WORDS = {
+    "broken": "多半坏了",
+    "idle": "空转",
+    "thin": "出活太稀",
+}
+
+
+def _probe_note(item: dict) -> str:
+    bits = []
+    cooldown = item.get("cooldown") or {}
+    if cooldown.get("kind"):
+        bits.append(f"在冷却（{cooldown['kind']}）")
+    if not item.get("alive") and item.get("autonomous"):
+        bits.append("守护没在跑")
+    if item.get("truncated"):
+        bits.append("触发数只是下限（运行记录只留最近 60 条）")
+    return "、".join(bits)
+
+
+def _probe_lines(probe: dict) -> list[str]:
+    """把一次采样变人话。**触发和产出必须并排**——只看一个数会被骗。"""
+    agents = probe.get("agents") or []
+    totals = probe.get("totals") or {}
+    minutes = probe.get("minutes")
+    try:
+        minutes_text = f"{float(minutes):g}"
+    except (TypeError, ValueError):
+        minutes_text = str(minutes)
+    out = [
+        f"空转采样（最近 {minutes_text} 分钟，{probe.get('at_beijing')}）"
+        "——只读，不改任何状态",
+    ]
+    if not agents:
+        out.append("  （这一窗口里没有任何动静）")
+    for item in agents:
+        line = (
+            f"  {str(item.get('agent')):<9} 触发 {item.get('triggers', 0)}"
+            f" / 产出 {item.get('produced', 0)}"
+            f"（信 {item.get('messages', 0)} · 案卷 {item.get('case_nodes', 0)}"
+            f" · 痕迹 {item.get('traces', 0)}）"
+            f"  机械 {item.get('machinery', 0)}"
+        )
+        note = _probe_note(item)
+        if note:
+            line += f"  ← {note}"
+        out.append(line)
+        if item.get("verdict") not in {"ok", "quiet"}:
+            out.append(f"      ⚠ {item.get('why')}")
+        activity = str(item.get("activity") or "").strip()
+        if activity:
+            out.append(f"      在做：{activity[:60]}")
+    out.append(
+        f"  合计：触发 {totals.get('triggers', 0)} / 产出 {totals.get('produced', 0)}"
+        f" / 机械动作 {totals.get('machinery', 0)}（拿钥匙、放钥匙这类不算产出）"
+    )
+    flagged = [i for i in agents if i.get("verdict") in _PROBE_VERDICT_WORDS]
+    if flagged:
+        out.append("  要看的：" + "；".join(f"{i.get('agent')}——{i.get('why')}" for i in flagged))
+    else:
+        out.append("  要看的：无（没有哪家在空转）")
+    return out
+
+
+def _probe_log(path: Path, probe: dict) -> None:
+    """这次采样追加一行进台账（**只增**，看趋势用）。写不进去也不影响这一眼。"""
+    record = {
+        "at": probe.get("at"),
+        "at_beijing": probe.get("at_beijing"),
+        "minutes": probe.get("minutes"),
+        "totals": probe.get("totals") or {},
+        "agents": {
+            str(item.get("agent")): {
+                "triggers": item.get("triggers", 0),
+                "produced": item.get("produced", 0),
+                "machinery": item.get("machinery", 0),
+                "verdict": item.get("verdict", ""),
+            }
+            for item in (probe.get("agents") or [])
+        },
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def _probe_history_raw(path: Path, limit: int) -> list[dict]:
+    try:
+        limit = max(0, int(limit))
+    except (TypeError, ValueError):
+        limit = 0
+    if not limit:
+        return []
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+    rows: list[dict] = []
+    for line in lines[-limit:]:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict):
+            rows.append(rec)
+    return rows
+
+
+def _probe_history(path: Path, limit: int) -> list[str]:
+    rows = _probe_history_raw(path, limit)
+    if not rows:
+        return [f"  采样台账还没有记录（{path}；`ic probe` 每采一次写一行）"]
+    out = [f"采样台账（最近 {len(rows)} 次）"]
+    for rec in rows:
+        totals = rec.get("totals") or {}
+        stamp = str(rec.get("at_beijing") or "")[11:19] or str(rec.get("at") or "")[:19]
+        flagged = [
+            f"{name} {_PROBE_VERDICT_WORDS.get(str(row.get('verdict')))}"
+            for name, row in (rec.get("agents") or {}).items()
+            if str(row.get("verdict")) in _PROBE_VERDICT_WORDS
+        ]
+        out.append(
+            f"  {stamp}  触发 {totals.get('triggers', 0)}"
+            f" / 产出 {totals.get('produced', 0)}"
+            + ("   ⚠ " + "、".join(flagged) if flagged else "   ✓")
+        )
+    return out
+
+
+def _probe(args, home: Path, agent: str) -> int:
+    """空转采样（**只读**）：把每家的 headless「触发数」和「产出」并排摆出来。
+
+    为什么非要有这一条：空转**只看一个数一定会被骗**。实测 pi 每分钟触发 36 次 headless，
+    而从外面看它的"心跳空转轮"一动不动（4→4）——是"触发数 vs 产出"并排看才抓出来的；
+    `outcome` 分布是同一件事的另一半（那 60 次里 57 次 fail ⇒ 模型/配置坏了，不是"它很忙"）。
+    """
+    import time
+
+    log_path = _probe_log_path(home)
+
+    def sample(write: bool) -> dict:
+        payload = call(
+            args.url, agent, "GET", "/v1/probe",
+            query={"minutes": str(args.minutes)}, home=home,
+        )
+        probe = payload.get("probe") or {}
+        if write:
+            _probe_log(log_path, probe)
+        return probe
+
+    if args.history:
+        # 看趋势是"看"，不是"采"：不往台账里再添一行。
+        probe = sample(write=False)
+        if args.json:
+            print(json.dumps(
+                {"probe": probe, "history": _probe_history_raw(log_path, args.history)},
+                ensure_ascii=False, indent=2,
+            ))
+            return 0
+        for line in _probe_lines(probe):
+            print(line)
+        for line in _probe_history(log_path, args.history):
+            print(line)
+        return 0
+
+    if args.watch:
+        try:
+            while True:
+                probe = sample(write=not args.no_log)
+                if args.json:
+                    print(json.dumps(probe, ensure_ascii=False))
+                else:
+                    print(f"──── {beijing_stamp()} ────")
+                    for line in _probe_lines(probe):
+                        print(line)
+                time.sleep(max(5.0, float(args.watch)))
+        except KeyboardInterrupt:
+            print(f"\n常驻探针停了。台账：{log_path}（`ic probe --history 10` 看趋势）")
+            return 0
+
+    probe = sample(write=not args.no_log)
+    if args.json:
+        print(json.dumps(probe, ensure_ascii=False, indent=2))
+        return 0
+    for line in _probe_lines(probe):
+        print(line)
+    if args.no_log:
+        print("  （这次没写台账：--no-log）")
+    else:
+        print(f"  台账：{log_path}（`ic probe --history 10` 看趋势）")
+    return 0
+
+
 def _status(args, home: Path, agent: str) -> int:
     url = resolve_url(args.url, home)
     meta = read_meta(home) or {}
@@ -1188,6 +1407,10 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
         else:
             print("人话: 还没有（看板上的说法只能由 coordinator 用 `ic case <id> --note \"…\"` 写）")
         stones = payload.get("milestones") or []
+        if payload.get("acceptance"):
+            print(f"怎样算完: {payload['acceptance']}")
+        else:
+            print("怎样算完: 还没写（`ic case <id> --acceptance \"…\"`，owner 或 coordinator 能写）")
         if stones:
             print(f"里程碑 {payload.get('milestones_done', 0)}/{len(stones)}：")
             for index, item in enumerate(stones):
@@ -1207,6 +1430,8 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
             total = item.get("milestones_total") or 0
             reached = f"  里程碑 {item.get('milestones_done', 0)}/{total}" if total else ""
             marks = []
+            if not item.get("acceptance") and not item.get("sealed"):
+                marks.append("没写怎样算完")
             if item.get("human_stale"):
                 marks.append("人话过期")
             if item.get("stalled"):

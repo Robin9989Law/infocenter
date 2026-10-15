@@ -4,9 +4,97 @@ import json
 from urllib.parse import parse_qs, unquote, urlparse
 
 from infocenter import __version__, config
-from infocenter.store import LOCK_TTL, MailError, Store, normalize_name, normalize_window
+from infocenter.store import (
+    LOCK_TTL,
+    MailError,
+    Store,
+    beijing_time,
+    iso_ago,
+    normalize_name,
+    normalize_window,
+    utcnow,
+)
 
 MAX_BODY = 1_000_000
+
+
+def _probe_payload(store: Store, minutes: float) -> dict:
+    """**空转采样**（只读，不改任何状态）：把"触发"和"产出"并排摆出来。
+
+    触发数从守护的运行记录里数（`crew.run_stats`），产出从库里数（`store.probe_counts`）。
+    两个都要看：只看触发会把"每分钟 36 次、0 产出"看成"很忙"；只看产出又看不出它在原地踏步。
+    """
+    from infocenter import crew
+
+    home = store.path.parent
+    since = iso_ago(minutes)
+    counts = store.probe_counts(since)
+    runs = crew.run_stats(home, since)
+    # 谁在冷却里（守护 meta）：冷却中不触发是**正常**的，别当成"死了"。
+    cooldowns: dict[str, dict] = {}
+    for state_file in sorted(crew.state_dir(home).glob("*.json")):
+        try:
+            meta = json.loads(state_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict) or not meta.get("cooldown_kind"):
+            continue
+        agent = str(meta.get("agent") or state_file.stem.split("--", 1)[0])
+        cooldowns[agent] = {
+            "kind": meta.get("cooldown_kind"),
+            "until_ts": meta.get("cooldown_until_ts"),
+        }
+    alive = {row["agent"] for row in crew.running_daemons(home) if row.get("alive")}
+    # 谁"本该有个守护在跑"（config 里配了 headless/launch）——没配的（例如 human、前台 coordinator），
+    # 守护不在是正常的，别当成故障喊。
+    try:
+        roster = config.load(home).get("agents", []) or []
+    except Exception:  # 配置读不到也不该让采样失败
+        roster = []
+    autonomous = {
+        str(item.get("name") or "")
+        for item in roster
+        if str(item.get("headless") or "").strip() or str(item.get("launch") or "").strip()
+    }
+    agents: list[dict] = []
+    for name in sorted(set(counts) | set(runs)):
+        item = dict(
+            counts.get(name)
+            or {
+                "agent": name,
+                "traces": 0,
+                "machinery": 0,
+                "messages": 0,
+                "case_nodes": 0,
+                "activity": "",
+                "activity_at": "",
+            }
+        )
+        item.setdefault("produced", 0)
+        run = runs.get(name) or {}
+        item["triggers"] = int(run.get("triggers") or 0)
+        item["outcomes"] = run.get("outcomes") or {}
+        item["truncated"] = bool(run.get("truncated"))
+        item["alive"] = name in alive
+        item["autonomous"] = name in autonomous
+        item["cooldown"] = cooldowns.get(name) or {}
+        verdict, why = crew.idle_verdict(item["triggers"], item["produced"], item["outcomes"])
+        item["verdict"] = verdict
+        item["why"] = why
+        agents.append(item)
+    moment = utcnow()
+    return {
+        "at": moment,
+        "at_beijing": beijing_time(moment),
+        "minutes": minutes,
+        "since": since,
+        "agents": agents,
+        "totals": {
+            "triggers": sum(item["triggers"] for item in agents),
+            "produced": sum(item["produced"] for item in agents),
+            "machinery": sum(item["machinery"] for item in agents),
+        },
+    }
 
 OPENAPI = {
     "openapi": "3.0.3",
@@ -138,6 +226,21 @@ OPENAPI = {
         },
         "/v1/cases/{id}/close": {
             "post": {"summary": "办结案卷（结案封档只读，释放归属）", "responses": {"200": {"description": "case"}}}
+        },
+        "/v1/cases/{id}/acceptance": {
+            "post": {
+                "summary": "写案卷的「怎样算完」（owner 或 coordinator；空串 = 撤掉）",
+                "responses": {"200": {"description": "case"}},
+            }
+        },
+        "/v1/probe": {
+            "get": {
+                "summary": "空转采样（只读）：每家的 headless 触发数与产出并排看",
+                "parameters": [
+                    {"name": "minutes", "in": "query", "schema": {"type": "number"}, "description": "窗口（分钟，默认 60）"}
+                ],
+                "responses": {"200": {"description": "probe"}},
+            }
         },
         "/v1/windows": {
             "get": {"summary": "列出办公室（窗口）", "responses": {"200": {"description": "windows"}}},
@@ -337,7 +440,36 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         roster = {a.get("name") for a in config.load(store.path.parent).get("agents", [])}
         for a in agents:
             a["roster"] = a.get("name") in roster
+        probe_minutes = query.get("probe_minutes", [None])[0]
+        if probe_minutes:
+            # 看板上给每家挂一对数（触发 / 产出）——"这一家在动，还是在原地踏步"。
+            # 控制台按同一次采样渲染，所以这里合并进去，不额外再发一个请求。
+            try:
+                minutes_f = float(probe_minutes)
+            except (TypeError, ValueError):
+                minutes_f = 60.0
+            probe = _probe_payload(store, minutes_f)
+            by_agent = {item["agent"]: item for item in probe["agents"]}
+            for a in agents:
+                spot = by_agent.get(a.get("name") or "")
+                if spot:
+                    a["probe"] = {
+                        "minutes": probe["minutes"],
+                        "triggers": spot["triggers"],
+                        "produced": spot["produced"],
+                        "machinery": spot["machinery"],
+                        "truncated": spot["truncated"],
+                        "verdict": spot["verdict"],
+                        "why": spot["why"],
+                    }
         return 200, {"agents": agents}
+
+    if method == "GET" and path == "/v1/probe":
+        try:
+            minutes = float(query.get("minutes", ["60"])[0])
+        except (TypeError, ValueError):
+            minutes = 60.0
+        return 200, {"probe": _probe_payload(store, max(0.0, minutes))}
 
     if method == "GET" and path.startswith("/v1/agents/") and path.endswith("/messages"):
         name = normalize_name(path[len("/v1/agents/") : -len("/messages")].strip("/"))
@@ -640,6 +772,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 pid=req_pid,
                 wbs_path=body.get("wbs_path", body.get("wbs")),
                 milestones=body.get("milestones"),
+                acceptance=_opt_str(body, "acceptance"),
             )
             return 201, created
 
@@ -689,6 +822,15 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                     case_id,
                     agent=agent,
                     wbs_path=body.get("wbs_path", body.get("wbs")),
+                    window_id=window_id,
+                )
+            if action == "acceptance":
+                if "acceptance" not in body:
+                    raise MailError("invalid_acceptance", "需要提供 acceptance（空串 = 撤掉）", 400)
+                return 200, store.case_acceptance_set(
+                    case_id,
+                    agent=agent,
+                    acceptance=body.get("acceptance"),
                     window_id=window_id,
                 )
             if action == "milestone":

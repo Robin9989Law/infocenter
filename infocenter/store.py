@@ -72,6 +72,16 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def iso_ago(minutes: float) -> str:
+    """`minutes` 分钟之前的 UTC ISO（跟 `utcnow()` 同一口径 ⇒ 能直接比字符串）。采样窗口用。"""
+    try:
+        minutes = float(minutes)
+    except (TypeError, ValueError):
+        minutes = 0.0
+    moment = datetime.now(timezone.utc) - timedelta(minutes=max(0.0, minutes))
+    return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def _parse_utc(iso: str) -> datetime | None:
     try:
         return datetime.strptime(str(iso), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
@@ -295,6 +305,7 @@ class Store:
                     sealed INTEGER NOT NULL DEFAULT 0,
                     wbs_path TEXT NOT NULL DEFAULT '',
                     milestones TEXT NOT NULL DEFAULT '[]',
+                    acceptance TEXT NOT NULL DEFAULT '',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     closed_at TEXT
@@ -389,6 +400,9 @@ class Store:
                 conn.execute("ALTER TABLE cases ADD COLUMN wbs_path TEXT NOT NULL DEFAULT ''")
             if "milestones" not in case_cols:
                 conn.execute("ALTER TABLE cases ADD COLUMN milestones TEXT NOT NULL DEFAULT '[]'")
+            if "acceptance" not in case_cols:
+                # 「怎样算完」：一行验收，写清这件事做成什么算做成。空 = 没说清（看板标出来，但不拦）。
+                conn.execute("ALTER TABLE cases ADD COLUMN acceptance TEXT NOT NULL DEFAULT ''")
 
             project_cols = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
             if "archived" not in project_cols:
@@ -1361,6 +1375,7 @@ class Store:
         pid: int | None = None,
         wbs_path: str | None = None,
         milestones=None,
+        acceptance: str | None = None,
     ) -> dict:
         agent = normalize_name(agent or "human")
         owner_window = normalize_window(owner_window)
@@ -1400,6 +1415,8 @@ class Store:
         init_note = _node_note(note or ("认领 → 在办" if owner_window else "立案"))
         wbs = _wbs_path(wbs_path)
         stone_json = _milestones_json(milestones)
+        # 「怎样算完」：一行验收。空 = 没说清（看板会标出来，机器不拦）。
+        acc = _task_text(acceptance, CASE_ACCEPTANCE_MAX)
         now = utcnow()
         with self._session(immediate=True) as conn:
             existing = _find_case(conn, cid)
@@ -1425,12 +1442,12 @@ class Store:
                 """
                 INSERT INTO cases(
                     id, thread_id, title, workspace, status, owner_agent, owner_window,
-                    waiting_for, sealed, wbs_path, milestones, created_at, updated_at, closed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, NULL)
+                    waiting_for, sealed, wbs_path, milestones, acceptance, created_at, updated_at, closed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
                     cid, cid, title_text, workspace, init_status, owner_agent, owner_window,
-                    wbs, stone_json, now, now,
+                    wbs, stone_json, acc, now, now,
                 ),
             )
             _insert_node(
@@ -1490,6 +1507,54 @@ class Store:
                 window_id=window_id,
                 action="wbs",
                 note=_node_note(f"归入 WBS：{path or '（未归类）'}"),
+                status=row["status"],
+                auto=False,
+                now=now,
+            )
+            out = _case_view(conn, _find_case(conn, cid))
+        self._signal()
+        return out
+
+    def case_acceptance_set(
+        self,
+        case_id: str,
+        agent: str,
+        acceptance: str | None,
+        window_id: str | None = None,
+    ) -> dict:
+        """写案卷的「**怎样算完**」（一行验收，空串 = 撤掉）。
+
+        human 定的毛病（2026-10-15）：任务一多，**没人写清"做成什么算做成"**，于是
+        "做完没有"全靠事后吵。案卷是控制包，它这一层也要有一句标准。
+        谁能写：该案卷的 owner，或 coordinator（跟 `ic task add --acceptance` 一个口径：
+        自己的活自己写清标准）。**空着不拦**，看板会把它标出来。
+        """
+        cid = normalize_case_id(case_id)
+        text = _task_text(acceptance, CASE_ACCEPTANCE_MAX)
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            row = _find_case(conn, cid)
+            if row is None:
+                raise MailError("not_found", f"没有找到案卷：{cid}", 404)
+            if row["sealed"] or row["status"] in SEALED_STATUSES:
+                raise MailError("case_sealed", f"案卷 {cid} 已封卷，不能再改「怎样算完」", 409)
+            if agent != (row["owner_agent"] or "") and not _is_coordinator(conn, agent):
+                owner = row["owner_agent"] or "（还没人）"
+                raise MailError(
+                    "not_yours",
+                    f"只有该案卷的 owner（{owner}）或 coordinator 能写「怎样算完」",
+                    403,
+                )
+            conn.execute(
+                "UPDATE cases SET acceptance = ?, updated_at = ? WHERE id = ?", (text, now, cid)
+            )
+            _insert_node(
+                conn,
+                case_id=cid,
+                agent=agent,
+                window_id=window_id,
+                action="acceptance",
+                note=_node_note(f"怎样算完：{text or '（撤掉）'}"),
                 status=row["status"],
                 auto=False,
                 now=now,
@@ -2726,6 +2791,60 @@ class Store:
             "now": now,
             "queued_total": len(pending),
         }
+
+    def probe_counts(self, since: str) -> dict:
+        """窗口内每家的**产出**与机械动作计数（只读，不改任何状态）。`ic probe` 用。
+
+        **空转要成对看**：只数"触发"会被骗（实测 pi 每分钟 36 次 headless，而在外面看
+        它的心跳计数一动不动）。这里给出"产出"这一半；另一半（**触发数**）由
+        `crew.run_stats` 从运行记录里数——两边并排摆出来，才看得出谁在原地踏步。
+        """
+        with self._session(readonly=True) as conn:
+            rows: dict[str, dict] = {}
+
+            def row_for(name) -> dict:
+                key = str(name or "")
+                return rows.setdefault(
+                    key,
+                    {
+                        "agent": key,
+                        "traces": 0,
+                        "machinery": 0,
+                        "messages": 0,
+                        "case_nodes": 0,
+                        "activity": "",
+                        "activity_at": "",
+                    },
+                )
+
+            for row in conn.execute(
+                "SELECT agent, action, COUNT(*) AS c FROM task_events WHERE at >= ?"
+                " GROUP BY agent, action",
+                (since,),
+            ):
+                item = row_for(row["agent"])
+                if row["action"] in PROBE_MACHINERY_ACTIONS:
+                    item["machinery"] += int(row["c"] or 0)
+                else:
+                    item["traces"] += int(row["c"] or 0)
+            for row in conn.execute(
+                "SELECT from_agent AS name, COUNT(*) AS c FROM messages WHERE created_at >= ?"
+                " GROUP BY from_agent",
+                (since,),
+            ):
+                row_for(row["name"])["messages"] += int(row["c"] or 0)
+            for row in conn.execute(
+                "SELECT agent, COUNT(*) AS c FROM case_nodes WHERE created_at >= ? GROUP BY agent",
+                (since,),
+            ):
+                row_for(row["agent"])["case_nodes"] += int(row["c"] or 0)
+            for row in conn.execute("SELECT name, activity, activity_at FROM agents"):
+                item = row_for(row["name"])
+                item["activity"] = row["activity"] or ""
+                item["activity_at"] = row["activity_at"] or ""
+        for item in rows.values():
+            item["produced"] = item["traces"] + item["messages"] + item["case_nodes"]
+        return rows
 
     def guard_changes(self, agent: str, paths, require_mine: bool = True) -> dict:
         """**提交闸**：工作区里每个被改的文件都必须被一个**未过期锁**覆盖。
@@ -4226,6 +4345,8 @@ def _node_view(row: sqlite3.Row) -> dict:
 TASK_STATUSES = ("todo", "doing", "blocked", "stopped", "done")
 TASK_TERMINAL = ("stopped", "done")
 TASK_ACCEPTANCE_MAX = 200
+# 案卷的「怎样算完」：比任务的一行验收宽一点（一件事的做成标准往往要一句话讲清几件）。
+CASE_ACCEPTANCE_MAX = 400
 TASK_TEXT_MAX = 2000
 TASK_HANDOFF_MAX = 4000
 # owner 含本人与 coordinator；coord 仅 coordinator。不允许暂停/回退/换规格。
@@ -4513,6 +4634,13 @@ def _lock_view(row: sqlite3.Row) -> dict:
     }
 
 
+# 机器自己在地板上走的那几步，不算「产出」——空转观测要看的是人看得见的动静：
+# 信、案卷节点、任务/队列痕迹。拿钥匙、放钥匙、锁到期、旧的通知模型都只是原地踏步。
+PROBE_MACHINERY_ACTIONS = {
+    "lock", "unlock", "lock_expire", "claim", "claim_release", "offer", "offer_expired",
+}
+
+
 TASK_EVENT_FIELDS = (
     "workspace", "case_id", "owner", "title", "status",
     "blocked_reason", "deps", "acceptance", "handoff", "supersedes", "priority",
@@ -4700,6 +4828,8 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         "waiting_for": row["waiting_for"],
         "wbs_path": row["wbs_path"] or "",
         "wbs": row["wbs_path"] or "",  # 别名，给人读
+        # 「怎样算完」：空 = 这事没有说清做成什么算做成（看板标出来，不拦）
+        "acceptance": row["acceptance"] or "",
         "human_note": (human or {}).get("note", ""),
         "human_by": (human or {}).get("agent", ""),
         "human_at": (human or {}).get("created_at", ""),

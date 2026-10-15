@@ -314,7 +314,7 @@ async function loadCases() {
   render();
 }
 async function loadAgents() {
-  try { const data = await api("/v1/agents"); state.agents = data.agents || []; }
+  try { const data = await api("/v1/agents?probe_minutes=60"); state.agents = data.agents || []; }
   catch (e) { console.error("loadAgents", e); }
   render();
 }
@@ -509,6 +509,7 @@ function render() {
         <div class="title">${escapeHtml(c.title)}${runIdx >= 0 ? runBadge(state.runs[runIdx], runIdx) : ''}</div>
         <div class="meta"><span class="cid copy" data-copy="${cid}" title="点击复制案卷编号">${cid}</span> <span class="status ${cls}">${escapeHtml(st)}</span> ${owner ? '主办 ' + escapeHtml(owner) : ''}</div>
         <div class="meta">[${escapeHtml(c.wbs_path || "未归类")}]${(c.milestones_total || 0) ? ' · 里程碑 ' + (c.milestones_done || 0) + '/' + c.milestones_total : ''}</div>
+        ${c.acceptance ? `<div class="meta">怎样算完：${escapeHtml(c.acceptance)}</div>` : (c.sealed ? '' : '<div class="meta stale">⚠ 没写「怎样算完」——做成什么算做成，没人说得清</div>')}
         ${(c.human_stale || c.stalled) ? `<div class="meta stale">${[c.human_stale ? '⚠ 人话过期（等 coordinator 重写）' : '', c.stalled ? '⚠ 停滞 ' + c.stalled_hours + 'h（没人动，看看要不要叫人/收工）' : ''].filter(Boolean).join(' · ')}</div>` : ''}
         <div class="meta">${escapeHtml(c.human_note || last)}</div>
       </div>`;
@@ -560,7 +561,7 @@ function render() {
       const isHuman = a.name === "human";
       const hd = state.headless.some(h => h.agent === a.name && h.alive);
       return `<span class="chip ${a.role === "coordinator" ? "coord" : ""} ${isHuman ? "human" : ""}" data-agent="${escapeHtml(a.name)}" title="${escapeHtml(a.activity || "")}">
-        <b>${escapeHtml(a.name)}</b>${a.role === "coordinator" ? '<span class="role">coord</span>' : ""}${hd ? ' <span class="hd" title="headless 正在跑">&#9889;</span>' : ""}<span class="unread">未读 ${a.unread || 0}</span>
+        <b>${escapeHtml(a.name)}</b>${a.role === "coordinator" ? '<span class="role">coord</span>' : ""}${hd ? ' <span class="hd" title="headless 正在跑">&#9889;</span>' : ""}<span class="unread">未读 ${a.unread || 0}</span>${a.probe ? `<span class="${a.probe.verdict === 'ok' || a.probe.verdict === 'quiet' ? 'unread' : 'stale'}" title="${escapeHtml(a.probe.why || '')}——最近 ${a.probe.minutes} 分钟的 headless 触发数 / 产出（机械动作 ${a.probe.machinery} 次不算产出）${a.probe.truncated ? '；触发数只是下限' : ''}">触发 ${a.probe.triggers}/产出 ${a.probe.produced}</span>` : ""}
       </span>`;
     }).join("");
     agEl.querySelectorAll(".chip[data-agent]").forEach(c => c.addEventListener("click", () => openSettings(c.dataset.agent === "human" ? "human" : "agent", c.dataset.agent)));
@@ -844,6 +845,7 @@ function openSettings(kind, id) {
       <div class="kv"><b>标题</b>${escapeHtml(c.title || "")}</div>
       <div class="kv"><b>WBS</b>${escapeHtml(c.wbs_path || "（未归类）")}</div>
       <div class="kv"><b>人话</b>${escapeHtml(c.human_note || "（还没有：看板上的说法只由 coordinator 写）")}${c.human_stale ? ' <span class="stale">⚠ 人话过期</span>' : ''}</div>
+      <div class="kv"><b>怎样算完</b>${c.acceptance ? escapeHtml(c.acceptance) : '<span class="stale">还没写</span>（做成什么算做成，得有人写清：`ic case ' + escapeHtml(id) + ' --acceptance "…"`）'}</div>
       <div class="kv"><b>里程碑</b>${(c.milestones || []).length === 0 ? "—"
         : c.milestones.map((m, i) => `<div>${m.done ? "✔" : "·"} ${escapeHtml(m.name)}${m.owner ? "（" + escapeHtml(m.owner) + "）" : ""}</div>`).join("")}</div>
       <div class="kv"><b>状态</b>${escapeHtml(st)}</div>

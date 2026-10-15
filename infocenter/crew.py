@@ -33,6 +33,7 @@ from infocenter.store import (
     MailError,
     _workspace_scope,
     beijing_stamp,
+    iso_ago,
     new_window_id,
     normalize_name,
     utcnow,
@@ -41,6 +42,9 @@ from infocenter.paths import ROOT
 
 SESSION_PREFIX = "ic-crew"
 DEFAULT_POLL = 300
+# 每家的运行记录只留最近这么多条（日志不能无限长）。**代价**：更早的触发数会被截掉，
+# 所以按窗口数触发数时只能当**下限**用（见 run_stats 的 truncated）。
+RUNS_KEEP = 60
 
 CONVENTIONS = """---
 合作约定（kickoff 自动附加）：
@@ -882,8 +886,8 @@ def _record_run(home, key: str, rec: dict) -> None:
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         lines = path.read_text(encoding="utf-8").splitlines()
-        if len(lines) > 60:
-            path.write_text("\n".join(lines[-60:]) + "\n", encoding="utf-8")
+        if len(lines) > RUNS_KEEP:
+            path.write_text("\n".join(lines[-RUNS_KEEP:]) + "\n", encoding="utf-8")
     except OSError:
         pass
 
@@ -916,6 +920,75 @@ def headless_runs(home, project: str | None = None, limit: int = 30) -> list[dic
             out.append(rec)
     out.sort(key=lambda r: str(r.get("end") or ""), reverse=True)
     return out[:limit]
+
+
+def run_stats(home, since: str, project: str | None = None) -> dict:
+    """窗口内每家的 headless **触发数 + 结果分布**（只读运行记录，不碰任何状态）。`ic probe` 用。
+
+    **空转要成对看**：只数"触发"会被骗——实测 pi 每分钟 36 次 headless，而在外面看
+    它的心跳计数一动不动（4→4）；`outcome` 分布也是同一件事的另一半
+    （那 60 次运行里 57 次 fail，一眼就知道是模型/配置坏了，而不是"它在忙"）。
+
+    日志每家只留最近 `RUNS_KEEP` 条 ⇒ 触发数**可能偏低**：窗口里的记录顶满了整个文件时，
+    更早的已经被截掉，这时标 `truncated=True`（"至少这么多"）。
+    """
+    target = _resolve_dir(project) if project else None
+    out: dict[str, dict] = {}
+    for path in sorted(state_dir(home).glob("*.runs.jsonl")):
+        try:
+            lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        except OSError:
+            continue
+        capped = len(lines) >= RUNS_KEEP
+        rows: list[dict] = []
+        for line in lines:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            # 半写/被外部改坏的日志可能是合法 JSON 但非对象，跳过（别让一条坏行毁掉整次采样）
+            if not isinstance(rec, dict):
+                continue
+            directory = rec.get("dir") or ""
+            if target and (_resolve_dir(directory) if directory else None) != target:
+                continue
+            if str(rec.get("start") or "") < since:
+                continue
+            rows.append(rec)
+        if not rows:
+            continue
+        truncated = capped and len(rows) == len(lines)
+        for rec in rows:
+            agent = str(rec.get("agent") or path.name.split("--", 1)[0])
+            row = out.setdefault(
+                agent, {"agent": agent, "triggers": 0, "outcomes": {}, "truncated": False}
+            )
+            row["triggers"] += 1
+            outcome = str(rec.get("outcome") or "?")
+            row["outcomes"][outcome] = row["outcomes"].get(outcome, 0) + 1
+            row["truncated"] = row["truncated"] or truncated
+    return out
+
+
+def idle_verdict(triggers: int, produced: int, outcomes: dict | None = None) -> tuple[str, str]:
+    """空转判语：把"触发"和"产出"并排看，给一句话。**只提示**，不拦、不改任何状态。
+
+    判语只用来让看板/人一眼看出哪家不对：`broken`（多半坏了）比 `idle`（原地踏步）更具体，
+    所以先判它是哪个。
+    """
+    triggers = max(0, int(triggers or 0))
+    produced = max(0, int(produced or 0))
+    outcomes = outcomes or {}
+    failed = sum(int(v or 0) for k, v in outcomes.items() if k in {"fail", "timeout", "interrupted"})
+    if triggers >= 5 and failed * 2 >= triggers:
+        return "broken", f"{triggers} 次触发里 {failed} 次没跑成功（多半是模型/配置不对）"
+    if triggers >= 10 and produced == 0:
+        return "idle", f"{triggers} 次触发、0 产出：原地踏步"
+    if triggers >= 10 and produced * 5 < triggers:
+        return "thin", f"{triggers} 次触发只有 {produced} 件产出：出活太稀"
+    if triggers == 0 and produced == 0:
+        return "quiet", "这一窗口里没有动静"
+    return "ok", f"{triggers} 次触发 / {produced} 件产出"
 
 
 def running_daemons(home) -> list[dict]:
