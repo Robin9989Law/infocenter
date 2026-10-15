@@ -11,6 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **冷却一刀切：被冷却的 agent 连「新指令」都收不到**（human 2026-10-15 点名）。冷却本意是治「模型不可用」，但旧实现在冷却期内**完全不收信**（`continue` 跳过 `GET /v1/events`）⇒ 别人发来的高优先级活被一起关在门外。现在冷却期内仍用 `wait=0` 探一句（`_urgent_mail_waiting`），**有高优先级新信就提前结束冷却**、立刻处理（并留日志、清冷却元数据）。
 - **超时被判死 ⇒ 必然空转的死循环**（human 2026-10-15 点名）。旧实现把「连续超时」当「连续失败」⇒ 进 1 小时冷却；而判定超时可以配得比 `HEADLESS_TIMEOUT`(1800s) 短得多（pi 配了 300s）⇒ **慢模型必被判死**。现在**超时不算失败**（`_cooldown_failure`/`_should_cooldown`）：超时不涨失败计数、**永不进冷却**，只按指数退避重试（游标留在原地、下一轮原样重投，封顶 `_HEADLESS_RETRY_MAX`=300s）；额度/鉴权（quota）仍立刻冷却，真失败累计到阈值仍冷却。另把 pi 的 `headless_timeout: 300` 改回默认（1800s）。+ `tests/test_crew_newmail_cooldown.py`（13 项）
 - **提交后自动放钥匙的身份取错（多 agent 共仓时形同不存在）**：`post-commit` 先读 repo-local 的 `infocenter.agent`（一个仓只有一份，多 agent 会互相覆盖）⇒ 别人提交后放不掉自己的钥匙。现**优先取 `INFOCENTER_AGENT`**（守护给每次 headless 运行设的环境变量，才认得出"这次是谁在提交"），repo-local 只作兜底
+- **`ic queue` 的退路被「锁＝只读」挡死**（独立评审实测）：任何被锁过又放回的文件都停在只读态，包括 `TODO-<名字>.md` 自己 ⇒ 拿不到钥匙走 `ic queue` 时，库里提议已落、但往 TODO 写那行撞 `PermissionError`（`todo_unwritable`），半个成功。现 `_todo_add` 对只读 TODO 临时加 u+w、写完把权限位原样恢复（程序自己的合规写入，与拿/放钥匙的 chmod 同源）。+ `tests/test_review_kimi.py`（只读 TODO 写穿 / 权限位恢复 / 幂等）
+- **`ic lock --ttl` 的 30 秒下限只写在码里**：`_lock_ttl` 一直是 `max(30, …)`，`--ttl 3` 实际拿 30s，但 help 只说「默认 1800，最长 12h」。help 补「最短 30」
+- **测试宿主 env 泄漏三处**（在 agent 会话里跑测试必红）：被测子进程/请求继承宿主的 `INFOCENTER_AGENT`/`INFOCENTER_WINDOW` ⇒ 身份被预绑或窗口被别人先占。`test_quality_mcp._env()`、`test_lock_queue`、`test_m9_locks` 现在进场先清这两个变量（原先靠 test_d2 先行清环境的执行顺序遮蔽，单跑即现形）
 
 ### Added
 - **拿不到钥匙怎么办：记进自己的 TODO，照自己的轮**（human 定稿，**能不沟通就不沟通**）：「沟通效率太低，而且随 agent 数量递减；agent 多了，反正就是无需乱做」。
