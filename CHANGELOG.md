@@ -8,24 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- **冷却一刀切：被冷却的 agent 连「新指令」都收不到**（human 2026-10-15 点名）。冷却本意是治「模型不可用」，但旧实现在冷却期内**完全不收信**（`continue` 跳过 `GET /v1/events`）⇒ 别人发来的高优先级活被一起关在门外。现在冷却期内仍用 `wait=0` 探一句（`_urgent_mail_waiting`），**有高优先级新信就提前结束冷却**、立刻处理（并留日志、清冷却元数据）。
+- **冷却一刀切：被冷却的 agent 连「新指令」都收不到**（human 2026-10-15 点名）。冷却本意是治「模型不可用」，但旧实现在冷却期内**完全不收信**（`continue` 跳过 `GET /v1/events`）⇒ 别人发来的高优先级活被一起关在门外。现在冷却期内仍用 `wait=0` 探一句（`_urgent_mail_waiting`），**有高优先级新信就提前结束冷却**、立刻处理（并留日志、清冷却元数据）。**只认「进入冷却之后新到」的信**：失败时游标不前进，那封没投出去的信会一直被看见，拿它当新指令就是「进冷却 → 立刻被自己打断 → 再失败」的死循环（实测：pi 的模型名有歧义时每分钟 36 次 headless、1399 次触发 0 产出、564 次进冷却、279 次提前结束）。
 - **超时被判死 ⇒ 必然空转的死循环**（human 2026-10-15 点名）。旧实现把「连续超时」当「连续失败」⇒ 进 1 小时冷却；而判定超时可以配得比 `HEADLESS_TIMEOUT`(1800s) 短得多（pi 配了 300s）⇒ **慢模型必被判死**。现在**超时不算失败**（`_cooldown_failure`/`_should_cooldown`）：超时不涨失败计数、**永不进冷却**，只按指数退避重试（游标留在原地、下一轮原样重投，封顶 `_HEADLESS_RETRY_MAX`=300s）；额度/鉴权（quota）仍立刻冷却，真失败累计到阈值仍冷却。另把 pi 的 `headless_timeout: 300` 改回默认（1800s）。+ `tests/test_crew_newmail_cooldown.py`（13 项）
 - **提交后自动放钥匙的身份取错（多 agent 共仓时形同不存在）**：`post-commit` 先读 repo-local 的 `infocenter.agent`（一个仓只有一份，多 agent 会互相覆盖）⇒ 别人提交后放不掉自己的钥匙。现**优先取 `INFOCENTER_AGENT`**（守护给每次 headless 运行设的环境变量，才认得出"这次是谁在提交"），repo-local 只作兜底
-- **`ic queue` 的退路被「锁＝只读」挡死**（独立评审实测）：任何被锁过又放回的文件都停在只读态，包括 `TODO-<名字>.md` 自己 ⇒ 拿不到钥匙走 `ic queue` 时，库里提议已落、但往 TODO 写那行撞 `PermissionError`（`todo_unwritable`），半个成功。现 `_todo_add` 对只读 TODO 临时加 u+w、写完把权限位原样恢复（程序自己的合规写入，与拿/放钥匙的 chmod 同源）。+ `tests/test_review_kimi.py`（只读 TODO 写穿 / 权限位恢复 / 幂等）
+- **`ic queue` 往只读 TODO 写那行不再自己 chmod**（q416）：被锁过又放回的文件停在只读态，包括提出者自己的 `TODO-<名字>.md`。库里提议落成后，`_todo_add` 若发现该文件已是 444，先 `lock` 自己的 TODO（拿到钥匙后服务端把它改成可写），写入再 `unlock` 放回只读；拿不到钥匙就 `todo_unwritable` 停下，**不再临时加 u+w**。文件还不存在、或本来就可写：仍直接写、不拿锁。+ `tests/test_todo_handoff.py`（只读时先拿钥匙、写完放回只读；钥匙被占则停且不改权限）与 `tests/test_review_kimi.py`（没钥匙不 chmod；可写路径不变）
 - **`ic lock --ttl` 的 30 秒下限只写在码里**：`_lock_ttl` 一直是 `max(30, …)`，`--ttl 3` 实际拿 30s，但 help 只说「默认 1800，最长 12h」。help 补「最短 30」
 - **测试宿主 env 泄漏三处**（在 agent 会话里跑测试必红）：被测子进程/请求继承宿主的 `INFOCENTER_AGENT`/`INFOCENTER_WINDOW` ⇒ 身份被预绑或窗口被别人先占。`test_quality_mcp._env()`、`test_lock_queue`、`test_m9_locks` 现在进场先清这两个变量（原先靠 test_d2 先行清环境的执行顺序遮蔽，单跑即现形）
+- **`ic lock` 拿了钥匙文件还是 444（chmod 静默失败）**（grok 实测）：`_chmod_writable` 以前是「尽力而为 + 把 `OSError` 悄悄吞掉」⇒ 钥匙在手却写不了、且没人知道为什么，只能再锁一次碰运气。现在它**返回失败原因**、拿钥匙时**复核**是否真的可写；做不到就**整笔回滚 + 报 `lock_not_writable`（带路径 + 原因）**——钥匙要么能用、要么明说不能用（文件还没建、先锁后建仍照旧放行）。同时**放钥匙不再按「这一行的路径」盲写 444**：同一个文件（换写法 / 硬链接 / 大小写不敏感卷）若还有**活锁** ⇒ 保持可写，只有真没人拿了才回只读（否则会把另一个持有者正拿着的写权限当场打掉）。过期回收、窗口离场同一套规矩。+ `tests/test_lock_key_writable.py`（7 项）
+- **`ic queue --merge --id q1,q2` 直接 500**（实测）：`--id` 是 `action="append"`，逗号写法整串被当成一个 id ⇒ store `int()` 抛 `ValueError` ⇒ 未处理异常 ⇒ 500，人只看到「服务器内部错误」。现在 CLI 拆逗号（`q1,q2` / 重复给 / 单条都认），store 坏输入给 **400 `invalid_id`** 并说清该写成什么样。+ `tests/test_queue_merge_id.py`（6 项）
 
 ### Added
 - **拿不到钥匙怎么办：记进自己的 TODO，照自己的轮**（human 定稿，**能不沟通就不沟通**）：「沟通效率太低，而且随 agent 数量递减；agent 多了，反正就是无需乱做」。
   - `ic queue <路径> --note "要改什么"` ⇒ 库里**只增**记一笔（谁提的、要改什么，可查）**＋自动写进提出者自己的 `TODO-<名字>.md`**（这才是"别忘了"；心跳提示词本来就是"读自己的 TODO → 推进下一件"）。`--patch-file` 可带补丁；`--no-todo` 只记库里。
   - **不排队、不通知、不点名、不按顺序**：轮到那条时 `ic lock`——**能拿到就做，拿不到就跳过做下一条**；那一笔留在台账里等下次。放钥匙只报"这个文件还有 N 条待改"，**不点下一位、不发信**（点名＝沟通，能免则免）。落地后 `ic queue <路径> --merge --id qN` 把自己那笔勾掉（只有拿钥匙的人／coordinator 能勾）。
   - 期间曾实现过"通知下一个 + 30 秒超时顶上"（确实跑通了），按 human 裁定**已拆掉**——收敛为共享状态上的静默协调。+ `tests/test_lock_queue.py`（15 项）与 `tests/test_todo_handoff.py`（8 项）
-  新增 `ic queue`：`ic queue <路径> --note "…" [--patch-file f]` **提议**（**不需要钥匙**）／`ic locks` 显示排队条数／`ic queue` 看全部未落地（带 `position`/`is_first`/`next_up` 队首）／`ic queue <路径> --merge [--id qN]` **可选合并**（只有拿钥匙的人能做，coordinator 例外：钥匙主人不在时收口；非持有者 403、没钥匙且非 coordinator 409）。
-  接力：**放钥匙时**如实报告「还有 N 条在等 → 下一位 X」（只报告、不拦）；**拿钥匙时**告知「有 N 条排队（队首 X）」，非队首的人被提醒让位。提议与合并都进**只增链**（`propose`/`propose_merged`）。
-  + `tests/test_lock_queue.py`（16 项：免钥匙提议 / 可见条数 / 权限矩阵 / 按 id 部分合并 / 留痕与 audit / HTTP 往返 / 接力报告）
-  新增 `ic queue`：`ic queue <路径> --note "…" [--patch-file f]` **提议**（**不需要钥匙**）／`ic locks` 显示该文件排队条数／`ic queue <路径> --merge [--id qN]` **合并**（**只有拿钥匙的人**能做；coordinator 例外：钥匙主人不在时收口；非持有者 403、没钥匙且非 coordinator 409）／`ic queue` 看全部未合并（合并过的保留历史）。
-  接力细节：`list_queue` 给出 `position`/`is_first`/`next_up`；**放钥匙时**如实报告「还有 N 条没合并 → 随钥匙交给第一个排队的 X」（只报告、不拦）；**拿钥匙时**若队列非空就告知「有 N 条排队，第一个是 X（就是你／不是你）」，非第一位的人被提醒**只做最小改动或让位**。
-  提议与合并都进**只增链**（`propose`/`propose_merged`）⇒ 谁提了什么、谁合并了可查、可审计。+ `tests/test_lock_queue.py`（16 项：免钥匙提议 / 可见条数 / 权限矩阵 / 按 id 部分合并 / 留痕与 audit / HTTP 往返 / 接力报告）
 - **`ic reply --body-file`**（pi 报、grok 落）：`--body` 的正文进 shell 会被反引号当命令执行 ⇒ 与 `ic send` 对称，正文可从文件读（两个都不给/都给都有明确报错）。+ `tests/test_reply_body_file.py`
 - **一把钥匙 + 用完放回去 + 锁＝只读**（human 定稿的口径，落到机制）：
   - **单钥匙**：锁按路径唯一，但"文件"不只等于"路径字符串"——新增 inode 比对（`_same_file`/`_fingerprint`），`./a`、绝对路径、符号链接、**硬链接**、macOS 大小写不敏感下的 `A.py`/`a.py` 都只算同一个文件（换个写法绕不过去）；同一文件的旧写法残留会把那一把换掉，**且只换那一把**
