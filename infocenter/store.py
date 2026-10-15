@@ -2432,8 +2432,21 @@ class Store:
                 rows = conn.execute(
                     "SELECT * FROM locks WHERE path IN (%s)" % ",".join("?" * len(wanted)), wanted
                 ).fetchall()
-                for path in wanted:
-                    _chmod_writable(path)  # 钥匙在手 ⇒ 这个文件现在可写；放锁时再变回只读
+                unwritable = [
+                    (path, why)
+                    for path in wanted
+                    if (why := _chmod_writable(path))  # 钥匙在手 ⇒ 文件必须**真的**变可写
+                ]
+                if unwritable:
+                    # 拿不到可写的钥匙就不算拿到钥匙：整笔回滚，并当场说清为什么（不静默、不猜）。
+                    raise MailError(
+                        "lock_not_writable",
+                        "拿到钥匙了，但这些文件没能变成可写："
+                        + "；".join(f"{path}（{why}）" for path, why in unwritable)
+                        + "。先看权限位/ACL（`ls -le`），别硬写（`sudo`/`chmod` 都不许）；"
+                        "再 `ic lock` 一次通常就能成。",
+                        500,
+                    )
             else:
                 rows = []
             queued = [
@@ -2490,7 +2503,7 @@ class Store:
                         )
             targets = [row["path"] for row in rows]
             released = len(rows)
-            _restore_readonly(rows)
+            _restore_readonly(conn, rows)
             for row in rows:
                 _emit_task_event(
                     conn, row["task_id"] or "", row["agent"], "unlock", "", "",
@@ -4249,18 +4262,34 @@ def _chmod_locked(path: str) -> None:
             pass
 
 
-def _chmod_writable(path: str) -> None:
-    """**拿钥匙期间可写**：只给 owner 加写位，读位不动。"""
+def _chmod_writable(path: str) -> str | None:
+    """**拿钥匙期间可写**：只给 owner 加写位，读位不动。
+
+    返回 `None` = 现在真的可写（或文件还没建，先锁后建是合法的）；返回一个短句 = 做不到，原因在此。
+
+    实测踩过：grok 拿着 `store.py` 的钥匙，文件却还是 444，得再锁一次才成——旧版这里是
+    「尽力而为 + 静默吞掉 OSError」，chmod 没落地谁都不知道，人只能自己猜。**拿钥匙的人必须
+    立刻知道权限位没落地**，而不是写到一半撞 `PermissionError`。
+    """
     try:
         mode = os.stat(path).st_mode & 0o7777
-    except OSError:
-        return
+    except FileNotFoundError:
+        return None  # 还没这个文件：正常（先锁、后建；建的时候本来就可写）
+    except OSError as exc:
+        return f"读权限位失败：{exc.strerror or exc}"
     writable = mode | 0o200
     if writable != mode:
         try:
             os.chmod(path, writable)
-        except OSError:
-            pass
+        except OSError as exc:
+            return f"改成可写失败：{exc.strerror or exc}"
+    # 复核一次：ACL、只读挂载、或别的进程又把它改回去，都在这里当场暴露
+    try:
+        if os.stat(path).st_mode & 0o200:
+            return None
+    except OSError as exc:
+        return f"复核不了：{exc.strerror or exc}"
+    return "权限位没落地（复核仍是只读）"
 
 
 def _fingerprint(path: str) -> tuple[int, int] | None:
@@ -4356,10 +4385,21 @@ def _lock_expiry(now_iso: str, ttl: int) -> str:
     return (base + timedelta(seconds=ttl)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _restore_readonly(rows) -> None:
-    """放钥匙 ⇒ 文件**变回只读**（锁＝只读；读不受影响）。"""
+def _restore_readonly(conn: sqlite3.Connection, rows) -> None:
+    """放钥匙 ⇒ 文件**变回只读**（锁＝只读；读不受影响）。
+
+    **但**：同一个文件（换种写法、硬链接、大小写不敏感卷）若还有**活着的**钥匙，就不能
+    444——那会把另一个持有者正拿在手里的写权限当场打掉：他拿着钥匙、文件却变只读，
+    只能再锁一次（grok 实测踩到的就是这个形态）。**一个文件的权限位由「还有没有人拿着
+    这个文件的钥匙」决定，不是由「这次放掉的那一行路径」决定。**
+    """
+    remaining = conn.execute("SELECT path FROM locks").fetchall()
     for row in rows:
-        _chmod_locked(row["path"])
+        path = row["path"]
+        if any(_same_file(other["path"], path) for other in remaining):
+            _chmod_writable(path)  # 还有人拿着这个文件 ⇒ 保持可写
+        else:
+            _chmod_locked(path)
 
 
 def _release_window_locks(conn: sqlite3.Connection, window_id: str, now: str, why: str) -> int:
@@ -4372,7 +4412,7 @@ def _release_window_locks(conn: sqlite3.Connection, window_id: str, now: str, wh
     if not rows:
         return 0
     conn.execute("DELETE FROM locks WHERE window_id = ?", (window_id,))
-    _restore_readonly(rows)
+    _restore_readonly(conn, rows)
     for row in rows:
         _emit_task_event(
             conn, row["task_id"] or "", row["agent"], "unlock", "", "",
@@ -4402,7 +4442,7 @@ def _locks_sweep(conn: sqlite3.Connection, now_iso: str) -> int:
     if not rows:
         return 0
     conn.execute("DELETE FROM locks WHERE expires_at <= ?", (now_iso,))
-    _restore_readonly(rows)
+    _restore_readonly(conn, rows)
     for row in rows:
         _emit_task_event(
             conn, row["task_id"] or "", row["agent"], "lock_expire", "", "",
