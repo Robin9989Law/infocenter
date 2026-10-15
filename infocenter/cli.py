@@ -232,6 +232,8 @@ def main(argv=None) -> int:
                        help="合并排队的改动（**只有拿钥匙的人**或 coordinator 能做）")
     queue.add_argument("--id", dest="ids", action="append", default=None, help="只合并这几条（q<seq>）")
     queue.add_argument("--task", default=None, help="提议关联的任务")
+    queue.add_argument("--no-todo", action="store_true",
+                       help="只在库里留提议，不往自己的 TODO-<名字>.md 里写一行（默认**要写**：别忘了）")
 
     locks = sub.add_parser("locks", help="看现在谁锁了什么（写锁）")
     lock = sub.add_parser("lock", help="拿写锁：同一时间只有一个 agent 能改同一路径")
@@ -535,6 +537,17 @@ def main(argv=None) -> int:
                      "task": args.task},
                     home=home,
                 )
+                if not args.no_todo:
+                    holder = payload.get("held_by")
+                    note = (payload.get("note") or "").strip().replace("\n", " ")
+                    if len(note) > 80:
+                        note = note[:80] + "…"
+                    where = f"（钥匙在 {holder} 手里）" if holder else "（现在没人拿钥匙，直接 lock 就能做）"
+                    payload["todo_file"] = _todo_add(
+                        agent,
+                        f"改 {payload.get('path')}：{note[:80]}{where}"
+                        f" —— 提议 {payload.get('id')}；轮到这条时 `ic lock <路径>` **能拿到钥匙就做**",
+                    )
             else:
                 payload = call(
                     args.url, agent, "GET", "/v1/locks/queue",
@@ -631,7 +644,7 @@ def main(argv=None) -> int:
     if args.cmd == "audit" and getattr(args, "quiet", False):
         # 给 git 钩子用：一个字都不打，只给退出码
         return 0 if isinstance(payload, dict) and payload.get("ok") else 1
-    _emit(args.json, args.cmd, payload)
+    _emit(args.json, args.cmd, payload, args=args, agent=agent, home=home)
     if args.cmd in ("guard", "audit") and isinstance(payload, dict) and not payload.get("ok"):
         return 1
     return 0
@@ -640,6 +653,34 @@ def main(argv=None) -> int:
 ANCHOR_HEADER = (
     "# 留痕外锚（链头）：这一行连同 git 一起提交。库被整表重做 / 链被改时，`ic audit` 靠它查出来。\n"
 )
+
+
+def _todo_path(agent: str) -> Path:
+    """提出者自己的 TODO 文件（与 crew 的约定一致：`TODO-<名字>.md`，在项目目录里）。"""
+    return Path.cwd() / f"TODO-{agent}.md"
+
+
+def _todo_add(agent: str, line: str) -> str:
+    """**把"拿不到钥匙、先别忘"的事写进自己的 TODO**（human 定稿：等的 agent 的 todo 得有这个事）。
+
+    写进文件（不是只留库里）才叫"别忘了"：agent 的心跳提示词本来就是"读自己的 TODO-<名字>.md
+    → 推进下一件"，所以这一行会被它下一次心跳捡起来 —— 轮到那条时**能拿到钥匙就做**。
+    """
+    path = _todo_path(agent)
+    entry = f"- [ ] {line}"
+    try:
+        if path.exists():
+            text = path.read_text(encoding="utf-8")
+            if entry in text:
+                return str(path)
+            if not text.endswith("\n"):
+                text += "\n"
+            path.write_text(text + entry + "\n", encoding="utf-8")
+        else:
+            path.write_text(f"# TODO · {agent}\n\n{entry}\n", encoding="utf-8")
+    except OSError as exc:
+        raise MailError("todo_unwritable", f"写不进 TODO 文件 {path}：{exc}", 500) from None
+    return str(path)
 
 
 def _anchor_path(value) -> "Path":
@@ -964,7 +1005,7 @@ def _sync(args, home: Path) -> int:
     return 0
 
 
-def _emit(as_json: bool, cmd: str, payload) -> None:
+def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) -> None:
     if cmd == "agents" and isinstance(payload, dict) and "agents" not in payload:
         if "config_removed" in payload:
             if payload.get("config_removed") or payload.get("removed"):
@@ -1112,12 +1153,7 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
         for item in payload.get("queued") or []:
             first = item.get("first") or "?"
             mine = "（就是你）" if first == payload.get("agent") else ""
-            print(
-                f"  📥 {item['path']} 有 {item['count']} 条排队，第一个是 {first}{mine}"
-                f" → 按规矩由**第一个排队的**接手合并（`ic queue {item['path']} --merge`）"
-            )
-            if first != payload.get("agent"):
-                print("     你不是第一个：只做你自己的最小改动，或把钥匙让给 TA（别顺手吃掉别人的活）")
+            print(f"  📥 {item['path']} 还有 {item['count']} 条待改（各自照自己的 TODO 轮）")
         return
     if cmd == "unlock" and not as_json:
         count = payload.get("released_count")
@@ -1125,11 +1161,8 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             count = len(payload.get("released") or [])
         suffix = "（强制清场）" if payload.get("force") else ""
         print(f"已放锁 {count} 个{suffix}")
-        for item in payload.get("handover") or []:
-            print(
-                f"  📥 {item['path']} 还有 {item['count']} 条排队没合并"
-                f" → 随钥匙交给第一个排队的 {item.get('next_up') or '?'}（按规矩由 TA 接手合并）"
-            )
+        for item in payload.get("pending_left") or []:
+            print(f"  📥 {item['path']} 还有 {item['count']} 条待改（各人照自己的 TODO 轮，不必互相说）")
         return
     if cmd == "queue" and not as_json:
         if payload.get("path") and "merged" in payload:
@@ -1140,28 +1173,29 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             return
         if payload.get("id") and payload.get("note") is not None and "seq" in payload:
             holder = payload.get("held_by")
-            print(f"已排队 {payload['id']}（{payload['path']}）")
+            print(f"已记下 {payload['id']}（{payload['path']}）")
             print(f"  内容：{payload.get('note') or '（见补丁）'}")
             if holder:
-                print(f"  现在钥匙在 {holder} 手里：它改完**直接放钥匙**（不负责合并）")
-            print("  → 按规矩：**第一个排队的**拿到钥匙后，把这一整批一并合并（你排第几看 `ic queue <路径>`）")
+                print(f"  现在钥匙在 {holder} 手里（它做完直接放钥匙）")
+            if not holder:
+                print(f"  现在没人拿钥匙：直接 `ic lock {payload['path']}` 就做，别等")
+            if payload.get("todo_file"):
+                print(f"  ✍️ 已写进你的 TODO：{payload['todo_file']}")
+                print("     先去做别的（别干等）；照你自己的 TODO 往下走，**轮到这条时能拿到钥匙就做**")
+            print("  → 谁提谁落：这条是你的活，钥匙到手就落")
             return
         pending = payload.get("pending") or []
         total = payload.get("count", len(pending))
-        next_up = payload.get("next_up") or ""
-        print(f"排队中的改动 {total} 条" + (f"；下一个接手的：{next_up}（第一个排队的）" if next_up else ""))
+        print(f"待改清单 {total} 条（不排队、不通知：各人照自己的 TODO 轮，能做就做）")
         for item in pending:
             who = item.get("held_by")
-            tag = "①" if item.get("is_first") else f"{item.get('position')}"
             print(
-                f"  {tag} {item.get('id')}  {item.get('path')}  ← {item.get('agent')}"
+                f"  {item.get('id')}  {item.get('path')}  ← {item.get('agent')}"
                 f"（{item.get('at_beijing','')}）"
             )
             print(f"      要改：{item.get('note') or '（见补丁）'}")
-            if item.get("is_first"):
-                print("      → 按规矩：谁来拿钥匙谁就该把**这一批**一并合并（第一个排队的先拿）")
-            elif who:
-                print(f"      → 钥匙在 {who} 手里；持有者改完直接放，由第一个排队的接手合并")
+            if who:
+                print(f"      → 钥匙在 {who} 手里：能拿到就做，拿不到就跳过、做你 TODO 的下一件")
         if not pending:
             print("  （没有排队；`ic queue <路径> --note \"我要改什么\"` 可以提一条）")
         return
@@ -1176,7 +1210,7 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             print(
                 f"  {item['path']}  ← {item['agent']}{task}  到 "
                 f"{item.get('expires_at_beijing') or item['expires_at']}（剩 {left // 60} 分）{soon}"
-                + (f"  📥 有 {queued} 条排队（`ic queue {item['path']}` 看；谁拿钥匙谁合并）" if queued else "")
+                + (f"  📥 有 {queued} 条待改（`ic queue {item['path']}` 看）" if queued else "")
             )
         return
     if cmd == "tasks" and not as_json:

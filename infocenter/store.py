@@ -2397,8 +2397,8 @@ class Store:
                     "locked",
                     "这些路径正被别人锁着："
                     + "、".join(f"{h['path']}（{h['agent']}，自 {h['since']}）" for h in held)
-                    + "；别硬写：把你的改动排队给持有者（`ic queue <路径> --note \"我要改什么\"`），"
-                    "由它一次合并；或回信给 coordinator",
+                    + "；别硬写：排队等钥匙（`ic queue <路径> --note \"我要改什么\"`）——"
+                    "**谁提谁落**，轮到你时你落自己这一条；或回信给 coordinator",
                     409,
                 )
             for path in wanted:
@@ -2499,31 +2499,32 @@ class Store:
                      "held_since": row["acquired_at"]},
                     now,
                 )
-        handover = []
+        pending_left = []
         for path in targets:
             queue = self.list_queue(path)
             if queue["count"]:
-                handover.append(
-                    {"path": path, "count": queue["count"], "next_up": queue["next_up"]}
-                )
+                pending_left.append({"path": path, "count": queue["count"]})
         self._signal()
         return {
             "agent": agent,
             "released": targets,
             "released_count": released,
             "force": bool(force),
-            # 持有者**直接放**即可（不要求它合并）；没合并的排队随钥匙交给**第一个排队的**。
-            "handover": handover,
+            # 不看谁在等、不点名、不发信：待改条数照旧挂在库里，各人照自己的 TODO 轮。
+            "pending_left": pending_left,
         }
 
+    # ── 不排队：把改动"留着"，做完**通知**下一个；30 秒不应 ⇒ 叫下一个顶上 ──
     def _queue_head(self, path: str) -> tuple[int, str]:
         """这个文件排队几个人、第一个是谁。"""
         queue = self.list_queue(path)
-        return queue["count"], queue["next_up"]
+        with self._session(readonly=True) as conn:
+            row = conn.execute("SELECT agent FROM locks WHERE path = ?", (path,)).fetchone()
+        return queue["count"], (row["agent"] if row else "")
 
     # ── 排队改同一个文件：拿不到钥匙就把改动**提**上来，由**第一个排队的**接手合并 ──
-    # human 定稿：出现排队改同一个文件时，**由第一个排队的 agent 接手，把队列里所有人的内容一并合并**。
-    # 持有者**不负责合并**——它改完直接放钥匙；队列里第 1 个拿钥匙时把整批并进自己这一轮（一轮清一批）。
+    # human 定稿：排队 ≠ 派活。默认**谁提谁落**——持有者改完直接放钥匙，队列依次往下轮，
+    # 轮到的那个**只落自己那一条**；"合并"只是**可选加速**（愿意才合，合了要写明按谁的要求改了什么）。
 
     def queue_change(
         self,
@@ -2604,16 +2605,11 @@ class Store:
                 "merged": int(row["seq"]) in merged,
             }
             (done if item["merged"] else pending).append(item)
-        for index, item in enumerate(pending, start=1):
-            item["position"] = index
-            item["is_first"] = index == 1
-        first = pending[0]["agent"] if pending else ""
         return {
             "pending": pending,
             "merged": done if include_done else [],
             "count": len(pending),
-            # 规矩：持有者**直接放钥匙**；由**第一个排队的**接手，把队列里所有人的内容一并合并。
-            "next_up": first,
+            # 规矩（human 定稿）：**不排队、不通知**——各人照自己的 TODO 轮，能做就做，不做就下一个。
         }
 
     def merge_queue(
@@ -2623,10 +2619,11 @@ class Store:
         ids=None,
         note: str | None = None,
     ) -> dict:
-        """**合并排队内容**：由**拿钥匙的人**做——按规矩它应当就是**第一个排队的**那个
-        （持有者直接放钥匙、不负责合并）；coordinator 例外（钥匙主人不在时收口）。
+        """**合并排队内容**（**可选加速，不是义务**）：谁拿钥匙谁可以做；coordinator 例外（钥匙主人不在时收口）。
 
-        合并时请把队列里**所有人**的内容一并并进自己这一轮改动（一轮清一批）。
+        默认规矩是**谁提谁落**：轮到你时只落你自己那条，别人那条留给它自己。
+        只有当队列里恰好就是"你正在改的那一行"、或极小改动时，顺手合才划算——合了就要写清
+        「按谁的要求改了什么」（自动记 `ids`，`note` 里补一句更好）。
         """
         agent = normalize_name(agent)
         target = _lock_paths([path])[0]
@@ -2732,7 +2729,11 @@ class Store:
             claims = _release_stale_claims(conn, now)
         if expired or dead or claims:
             self._signal()
-        return {"expired_locks": expired, "dead_windows": dead, "released_claims": claims}
+        return {
+            "expired_locks": expired,
+            "dead_windows": dead,
+            "released_claims": claims,
+        }
 
     def audit_events(self, task_id: str | None = None, anchor: dict | None = None) -> dict:
         """**机器验证留痕**：① 哈希链完整（防篡改/防删行）；② 每个任务「重放痕迹 == 当前行」；

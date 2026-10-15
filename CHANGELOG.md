@@ -8,7 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **排队改同一个文件：由第一个排队的 agent 接手合并**（human 定稿）：**持有者改完直接放钥匙、不负责合并**；**队列第 1 个拿到钥匙时，把整批排队内容并进自己这一轮** ⇒ 一轮清一批（避免「你改完放锁→我拿钥匙改→放锁→他再来」）。
+- **拿不到钥匙怎么办：记进自己的 TODO，照自己的轮**（human 定稿，**能不沟通就不沟通**）：「沟通效率太低，而且随 agent 数量递减；agent 多了，反正就是无需乱做」。
+  - `ic queue <路径> --note "要改什么"` ⇒ 库里**只增**记一笔（谁提的、要改什么，可查）**＋自动写进提出者自己的 `TODO-<名字>.md`**（这才是"别忘了"；心跳提示词本来就是"读自己的 TODO → 推进下一件"）。`--patch-file` 可带补丁；`--no-todo` 只记库里。
+  - **不排队、不通知、不点名、不按顺序**：轮到那条时 `ic lock`——**能拿到就做，拿不到就跳过做下一条**；那一笔留在台账里等下次。放钥匙只报"这个文件还有 N 条待改"，**不点下一位、不发信**（点名＝沟通，能免则免）。落地后 `ic queue <路径> --merge --id qN` 把自己那笔勾掉（只有拿钥匙的人／coordinator 能勾）。
+  - 期间曾实现过"通知下一个 + 30 秒超时顶上"（确实跑通了），按 human 裁定**已拆掉**——收敛为共享状态上的静默协调。+ `tests/test_lock_queue.py`（15 项）与 `tests/test_todo_handoff.py`（8 项）
+  新增 `ic queue`：`ic queue <路径> --note "…" [--patch-file f]` **提议**（**不需要钥匙**）／`ic locks` 显示排队条数／`ic queue` 看全部未落地（带 `position`/`is_first`/`next_up` 队首）／`ic queue <路径> --merge [--id qN]` **可选合并**（只有拿钥匙的人能做，coordinator 例外：钥匙主人不在时收口；非持有者 403、没钥匙且非 coordinator 409）。
+  接力：**放钥匙时**如实报告「还有 N 条在等 → 下一位 X」（只报告、不拦）；**拿钥匙时**告知「有 N 条排队（队首 X）」，非队首的人被提醒让位。提议与合并都进**只增链**（`propose`/`propose_merged`）。
+  + `tests/test_lock_queue.py`（16 项：免钥匙提议 / 可见条数 / 权限矩阵 / 按 id 部分合并 / 留痕与 audit / HTTP 往返 / 接力报告）
   新增 `ic queue`：`ic queue <路径> --note "…" [--patch-file f]` **提议**（**不需要钥匙**）／`ic locks` 显示该文件排队条数／`ic queue <路径> --merge [--id qN]` **合并**（**只有拿钥匙的人**能做；coordinator 例外：钥匙主人不在时收口；非持有者 403、没钥匙且非 coordinator 409）／`ic queue` 看全部未合并（合并过的保留历史）。
   接力细节：`list_queue` 给出 `position`/`is_first`/`next_up`；**放钥匙时**如实报告「还有 N 条没合并 → 随钥匙交给第一个排队的 X」（只报告、不拦）；**拿钥匙时**若队列非空就告知「有 N 条排队，第一个是 X（就是你／不是你）」，非第一位的人被提醒**只做最小改动或让位**。
   提议与合并都进**只增链**（`propose`/`propose_merged`）⇒ 谁提了什么、谁合并了可查、可审计。+ `tests/test_lock_queue.py`（16 项：免钥匙提议 / 可见条数 / 权限矩阵 / 按 id 部分合并 / 留痕与 audit / HTTP 往返 / 接力报告）
