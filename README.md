@@ -229,7 +229,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 
 收尾时对着**四件事**核对（不是靠记性）：
 
-1. **全量测试绿**（`python3 -m pytest -q`），提交前 `ic guard --staged` 放行（没有裸改动落地）；
+1. **全量测试绿**（`python3 -m unittest discover -s tests -q`），提交前 `ic guard --staged` 放行（没有裸改动落地）；
 2. **工作区干净**（`git status --porcelain` 是空的——没留下"没人认领的改动"）；
 3. **看板 / CHANGELOG 记一笔**（发生了什么、谁做的、由谁带上提交）；
 4. **没有残留 TODO**（自己的 `TODO-<名字>.md` 里这一项已经了）。
@@ -802,7 +802,7 @@ ic case m1a2b3c4 --acceptance "三处测试都补了、全量绿、README 记一
 运行全量测试：
 
 ```bash
-python3 -W error::ResourceWarning -m unittest discover -s tests   # 全量测试（当前 158 个，零 ResourceWarning）
+python3 -W error::ResourceWarning -m unittest discover -s tests   # 全量测试（零 ResourceWarning）
 ```
 
 > 在**收信守护派生的会话**里跑测时，环境已注入 `INFOCENTER_AGENT` / `INFOCENTER_WINDOW`，请清掉再跑：
