@@ -9,7 +9,7 @@ from infocenter import DEFAULT_HOST, DEFAULT_PORT, __version__, config
 from infocenter.client import call, ensure_server, healthy, request, resolve_url
 from infocenter.paths import home_dir
 from infocenter.server import read_meta, serve, stop
-from infocenter.store import MailError, beijing_stamp, normalize_name
+from infocenter.store import MailError, _parse_utc, beijing_stamp, normalize_name
 
 # 各 agent 实际加载的 SKILL 安装位点（交互会话读的是这些副本，不是仓库里那份）。
 # 约定：优先做成软链（安装副本 → 仓库副本，一份真相）；不能软链的，由 `ic status` /
@@ -39,15 +39,6 @@ _RECENT_LEFT_SECONDS = 3600
 _RECENT_LEFT_TEXT = "1 小时"
 _PRESENT_WINDOW_STATES = {"active", "paused"}
 _DEPARTED_WINDOW_STATES = {"left", "offline"}
-
-
-def _parse_utc(value) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    except ValueError:
-        return None
 
 
 def _window_kept_by_default(item: dict, now: datetime) -> bool:
