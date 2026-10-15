@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 from infocenter import config
-from infocenter.client import ApiError, request
+from infocenter.client import NO_PID_ENV, ApiError, request
 from infocenter.store import MailError, _workspace_scope, new_window_id, normalize_name, utcnow
 from infocenter.paths import ROOT
 
@@ -1270,6 +1270,9 @@ def watch(
             if heartbeat_from_config:
                 new_heartbeat = _heartbeat_seconds(entry or {})
                 heartbeat = max(0, min(int(new_heartbeat or 0), 86400))
+            # 短命子进程可能已把办公室 pid 改成自己的。本轮任何会触发惰性对账的请求之前先写回。
+            # 不带 state：暂停中的办公室保持暂停。失败只记日志，不因此退出守护。
+            _reassert_office_pid(url, agent, window_id, project)
             # 空转治理：模型打不通时进冷却，冷却期内不触发 headless（新信也不跑、游标不前进，
             # 冷却结束会重新投递），避免像以前那样照 heartbeat 间隔硬撞一个已经不可用的模型。
             if cooldown_until and time.monotonic() < cooldown_until:
@@ -1332,6 +1335,8 @@ def watch(
                     prompt = build_prompt(agent, project, fresh, int(payload.get("unread_total") or len(fresh)))
                     print(f"[{utcnow()}] 本项目新信 {len(fresh)} 封，触发 headless", flush=True)
                     outcome = _run_headless(template, prompt, project, agent=agent, timeout=htimeout)
+                    # 子进程一退出，它的 pid 就是死的。补中断节点会走案卷对账，必须先把 pid 写回。
+                    _reassert_office_pid(url, agent, window_id, project)
                     if outcome in _HEADLESS_RETRY:
                         retry_rounds += 1
                         failure_streak += 1
@@ -1377,6 +1382,7 @@ def watch(
                         agent=agent,
                         timeout=htimeout,
                     )
+                    _reassert_office_pid(url, agent, window_id, project)
                     _commit(new_cursor)
                     last_run = time.monotonic()
                     if h_outcome in _HEADLESS_RETRY:
@@ -1514,6 +1520,9 @@ def _run_headless(
     env = os.environ.copy()
     if agent:
         env["INFOCENTER_AGENT"] = agent
+    # 继承宿主窗口号（环境里已有 INFOCENTER_WINDOW），但禁止子进程改写该窗口的 pid。
+    # ic / ic mcp 都走 client.request，看到这个开关就丢掉 X-Pid 和请求体里的 pid。
+    env[NO_PID_ENV] = "1"
     if _PROMPT_MARKER in template:
         command = _substitute_prompt(template, prompt)
         stdin_text = None
@@ -1651,6 +1660,32 @@ def _mark_office(registered: bool) -> None:
         }
     meta["office_registered"] = bool(registered)
     _write_meta(home, key, meta)
+
+
+def _reassert_office_pid(url: str, agent: str, window_id: str, project: str) -> bool:
+    """把办公室 pid 写回本守护进程。不带 state，避免把已暂停的办公室拉回 active。"""
+    try:
+        _office_request(
+            url,
+            "POST",
+            "/v1/windows",
+            agent,
+            {
+                "window_id": window_id,
+                "workspace": project,
+                "pid": os.getpid(),
+            },
+            timeout=10,
+        )
+    except SystemExit as exc:
+        if exc.code in (0, None):
+            raise
+        print(f"[{utcnow()}] 重申办公室 {window_id} pid 失败：{exc}", flush=True)
+        return False
+    except (ApiError, OSError, ValueError, MailError) as exc:
+        print(f"[{utcnow()}] 重申办公室 {window_id} pid 失败：{exc}", flush=True)
+        return False
+    return True
 
 
 def _register_office(url: str, agent: str, window_id: str, project: str) -> bool:

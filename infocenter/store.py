@@ -620,29 +620,52 @@ class Store:
         local_node: str | None = None,
         window_id: str | None = None,
         pid: int | None = None,
+        client_cwd: str | None = None,
     ) -> dict:
         sender = normalize_name(sender)
         window_id = normalize_window(window_id)
         subject = _subject(subject if subject_override is None else subject_override)
         body = _body(body)
         priority = _priority(priority)
-        workspace = _workspace(workspace)
+        explicit_workspace = _workspace(workspace)
+        client_cwd = _workspace(client_cwd)
         reply_to = _reply_to(reply_to)
         recipients_in = parse_recipients(to)
         node_text = str(local_node).strip().lower() if isinstance(local_node, str) and local_node.strip() else None
         with self._session(immediate=True) as conn:
             _upsert(conn, sender, None)
             now = utcnow()
+            # 只把调用方显式给的 workspace 写到窗口上。推断出来的路径不改窗口，
+            # 避免长寿命窗口被父信/案卷/cwd 悄悄改到另一个项目。
             if window_id is not None:
-                _upsert_window(conn, window_id=window_id, agent=sender, workspace=workspace, activity=None, pid=pid, now=now)
-            if workspace:
-                _upsert_project(conn, workspace, None, now)
+                _upsert_window(
+                    conn,
+                    window_id=window_id,
+                    agent=sender,
+                    workspace=explicit_workspace,
+                    activity=None,
+                    pid=pid,
+                    now=now,
+                )
             thread_id = None
             parent_id = None
+            parent = None
             if reply_to:
                 parent = _must_visible(conn, reply_to, sender)
                 parent_id = parent["id"]
                 thread_id = parent["thread_id"]
+            workspace, workspace_source = _resolve_outgoing_workspace(
+                conn,
+                explicit=explicit_workspace,
+                parent=parent,
+                thread_id=thread_id,
+                window_id=window_id,
+                client_cwd=client_cwd,
+            )
+            # 只有显式传入才登记项目。父信/案卷/窗口+cwd 的推断不得 _upsert_project，
+            # 否则 cwd 兜底会继续造出垃圾项目。
+            if workspace_source == "explicit" and workspace:
+                _upsert_project(conn, workspace, None, now)
             if recipients_in == ["*"]:
                 rows = conn.execute(
                     "SELECT name FROM agents WHERE name != ? ORDER BY name",
@@ -736,7 +759,11 @@ class Store:
                             now=created,
                         )
         self._signal()
-        return self.get_message(sender, message_id, full=True)
+        result = self.get_message(sender, message_id, full=True)
+        # 留空时给调用方一个可提示的信号。CLI 文案不在这里拼。
+        result["workspace_source"] = workspace_source
+        result["workspace_unscoped"] = workspace_source == "empty"
+        return result
 
     def reply(
         self,
@@ -748,6 +775,7 @@ class Store:
         local_node: str | None = None,
         window_id: str | None = None,
         pid: int | None = None,
+        client_cwd: str | None = None,
     ) -> dict:
         sender = normalize_name(sender)
         window_id = normalize_window(window_id)
@@ -783,17 +811,19 @@ class Store:
         else:
             targets = to
         final_subject = subject if subject else _re_subject(parent_view["subject"])
+        # workspace 不在这里传。send(reply_to=) 与 reply() 共用同一套继承：
+        # 显式 > 父信 > 案卷 > 窗口与客户端 cwd 命中同一未归档 project。
         return self.send(
             sender,
             targets,
             final_subject,
             body,
             priority="normal",
-            workspace=parent_view.get("workspace"),
             reply_to=parent_view["id"],
             local_node=local_node,
             window_id=window_id,
             pid=pid,
+            client_cwd=client_cwd,
         )
 
     def import_remote(self, envelope: dict, local_bare_names: list[str]) -> dict:
@@ -934,7 +964,6 @@ class Store:
                 JOIN messages m ON m.id = d.message_id
                 WHERE d.to_agent = ?
                   AND (? = 'all' OR d.status = ?)
-                  AND (? IS NULL OR m.workspace = ?)
                   AND (
                     ? IS NULL
                     OR ? != 'unread'
@@ -976,8 +1005,6 @@ class Store:
                     agent,
                     status,
                     status,
-                    workspace,
-                    workspace,
                     window_id,
                     status,
                     window_id,
@@ -985,6 +1012,11 @@ class Store:
                     window_id,
                 ),
             ).fetchall()
+            # 与 events 同一套 _workspace_scope（裸名 / 全路径 / 解析后路径），
+            # 不再用 m.workspace = ? 的等值，避免同一项目在收件箱和长轮询里是两个集合。
+            # 过滤放在 LIMIT 之前，被滤掉的行不占配额，也不计入 unread_total。
+            if workspace is not None:
+                rows = [row for row in rows if _workspace_scope(row["workspace"], workspace)]
             messages = []
             for row in rows:
                 if window_id is not None and status == "unread":
@@ -1130,19 +1162,62 @@ class Store:
                     "SELECT status, read_at, claimed_by, claimed_at FROM deliveries WHERE message_id = ? AND to_agent = ?",
                     (row["id"], agent),
                 ).fetchone()
-                messages.append(
-                    _view(
-                        conn,
-                        row,
-                        agent,
-                        True,
-                        delivery["status"] if delivery else None,
-                        delivery["read_at"] if delivery else None,
-                        delivery["claimed_by"] if delivery else None,
-                        delivery["claimed_at"] if delivery else None,
-                    )
+                view = _view(
+                    conn,
+                    row,
+                    agent,
+                    True,
+                    delivery["status"] if delivery else None,
+                    delivery["read_at"] if delivery else None,
+                    delivery["claimed_by"] if delivery else None,
+                    delivery["claimed_at"] if delivery else None,
                 )
+                # 只给发件人补收件人回执。delivery_status/read_at 仍是查看者自己的那份，语义不变。
+                if row["from_agent"] == agent:
+                    view["recipient_receipts"] = _delivery_receipts(conn, row["id"])
+                messages.append(view)
         return {"thread_id": thread_id, "count": len(messages), "messages": messages}
+
+    def sent(self, agent: str, limit: int = 20) -> dict:
+        """只读。我发出的信，以及每个收件人的未读/已读时间和是否已在本线程回过。
+
+        不改 deliveries，不标已读。供 CLI `ic sent` 使用（路由归调用方）。
+        """
+        name = normalize_name(agent)
+        n = _limit(limit)
+        with self._session(readonly=True) as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM messages
+                WHERE from_agent = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (name, n),
+            ).fetchall()
+            messages = []
+            for row in rows:
+                recipients = []
+                for receipt in _delivery_receipts(conn, row["id"]):
+                    recipients.append(
+                        {
+                            **receipt,
+                            "replied": _recipient_replied(conn, row, receipt["name"]),
+                        }
+                    )
+                messages.append(
+                    {
+                        "id": row["id"],
+                        "thread_id": row["thread_id"],
+                        "from": row["from_agent"],
+                        "subject": row["subject"],
+                        "workspace": row["workspace"],
+                        "created_at": row["created_at"],
+                        "created_at_local": local_time(row["created_at"]),
+                        "recipients": recipients,
+                    }
+                )
+        return {"agent": name, "count": len(messages), "messages": messages}
 
     # ── D1 案卷（cases & case_nodes）─────────────────────────────────────
 
@@ -1760,6 +1835,45 @@ class Store:
         self.touch(agent_name, activity=activity, window_id=wid, workspace=workspace, pid=pid)
         return self.get_window(wid)
 
+    def write_pid_then_reconcile(self, window_id: str, agent: str, pid: int | None = None) -> None:
+        """H2：同一事务内先写回本次 pid，再惰性对账。
+
+        事务边界：一次 BEGIN IMMEDIATE 里完成「更新 pid → _lazy_reconcile_all → commit」。
+        对账若失败，pid 写入一并回滚。原 pid 仍活着时不覆盖，规则在 _upsert_window。
+        窗口还不存在：只对账，不建行（留给随后的 touch）。
+        窗口属于别的 agent：不写 pid；对账照旧提交，提交后再 409。
+        """
+        wid = normalize_window(window_id)
+        if not wid:
+            return
+        agent_name = normalize_name(agent)
+        pid = _pid_value(pid)
+        now = utcnow()
+        conflict_owner = None
+        with self._session(immediate=True) as conn:
+            row = conn.execute("SELECT * FROM windows WHERE window_id = ?", (wid,)).fetchone()
+            if row is not None:
+                owner = row["agent"]
+                if owner and owner != agent_name:
+                    conflict_owner = owner
+                elif pid is not None:
+                    _upsert_window(
+                        conn,
+                        window_id=wid,
+                        agent=agent_name,
+                        workspace=None,
+                        activity=None,
+                        pid=pid,
+                        now=now,
+                    )
+            _lazy_reconcile_all(conn, now)
+        if conflict_owner:
+            raise MailError(
+                "window_conflict",
+                f"窗口 {wid} 已属于 {conflict_owner}，不能被 {agent_name} 使用",
+                409,
+            )
+
     def get_window(self, window_id: str) -> dict:
         wid = normalize_window(window_id)
         if not wid:
@@ -2093,6 +2207,11 @@ def _pid_value(pid) -> int | None:
 
 
 def _is_window_gone(win_row: sqlite3.Row | None) -> bool:
+    """窗口是否已离场：没有这行、显式离场（state / left_at），或记录中的 pid 已死。
+
+    不用 last_seen_at 空闲当离场。活着的守护可以很久不写库，空闲阈值会把安静的活窗口误封。
+    pid 被短命进程改写的误判，堵在 _upsert_window（不覆盖仍活着的 pid），不在这里再加一套启发式。
+    """
     if win_row is None:
         return True
     if win_row["state"] in {"left", "offline", "crashed", "dead", "exited", "aborted", "stopped"}:
@@ -2121,6 +2240,124 @@ def _window_workspace(conn: sqlite3.Connection, window_id: str | None) -> str | 
         "SELECT workspace FROM windows WHERE window_id = ?", (window_id,)
     ).fetchone()
     return row["workspace"] if row else None
+
+
+def _resolve_outgoing_workspace(
+    conn: sqlite3.Connection,
+    explicit: str | None,
+    parent: sqlite3.Row | None,
+    thread_id: str | None,
+    window_id: str | None,
+    client_cwd: str | None,
+) -> tuple[str | None, str]:
+    """发出去的 workspace。不读进程 cwd，不登记新项目。
+
+    顺序：显式传入 > 父信 > 该线程案卷 > 窗口已登记 workspace 与客户端 cwd
+    命中同一个未归档 project 时写该 project 的规范路径 > 留空。
+    返回 (workspace, source)，source 为 explicit/parent/case/project/empty。
+    """
+    if explicit:
+        return explicit, "explicit"
+    if parent is not None:
+        parent_ws = _workspace(parent["workspace"])
+        if parent_ws:
+            return parent_ws, "parent"
+    if thread_id:
+        case_row = _find_case(conn, thread_id)
+        if case_row is not None:
+            case_ws = _workspace(case_row["workspace"])
+            if case_ws:
+                return case_ws, "case"
+    agreed = _agreed_project_workspace(conn, window_id, client_cwd)
+    if agreed:
+        return agreed, "project"
+    return None, "empty"
+
+
+def _agreed_project_workspace(
+    conn: sqlite3.Connection,
+    window_id: str | None,
+    client_cwd: str | None,
+) -> str | None:
+    """两侧都命中同一个未归档 project 才返回 projects.workspace。
+
+    窗口没登记、没传客户端 cwd、两侧不在同一范围、只命中已归档项目、
+    或有多条绝对路径都算命中：一律不猜，返回 None。
+    """
+    cwd = _workspace(client_cwd)
+    if not window_id or not cwd:
+        return None
+    window_ws = _workspace(_window_workspace(conn, window_id))
+    if not window_ws:
+        return None
+    if not (_workspace_scope(window_ws, cwd) or _workspace_scope(cwd, window_ws)):
+        return None
+    hits = [
+        row["workspace"]
+        for row in conn.execute("SELECT workspace FROM projects WHERE archived = 0").fetchall()
+        if row["workspace"]
+        and _workspace_scope(window_ws, row["workspace"])
+        and _workspace_scope(cwd, row["workspace"])
+    ]
+    if not hits:
+        return None
+    # 同一项目常有「绝对路径 + 裸目录名」两行。有且仅有一条绝对路径时写它，
+    # 不把裸名再写进新信。多条绝对路径都命中则不猜。
+    absolutes = [ws for ws in hits if Path(ws).is_absolute()]
+    if len(absolutes) == 1:
+        return absolutes[0]
+    if len(absolutes) > 1:
+        return None
+    for candidate in (cwd, window_ws):
+        if candidate in hits:
+            return candidate
+    if len(hits) == 1:
+        return hits[0]
+    return None
+
+
+def _delivery_receipts(conn: sqlite3.Connection, message_id: str) -> list[dict]:
+    rows = conn.execute(
+        """
+        SELECT to_agent, status, read_at
+        FROM deliveries
+        WHERE message_id = ?
+        ORDER BY to_agent
+        """,
+        (message_id,),
+    ).fetchall()
+    return [
+        {"name": row["to_agent"], "status": row["status"], "read_at": row["read_at"]}
+        for row in rows
+    ]
+
+
+def _recipient_replied(conn: sqlite3.Connection, message_row: sqlite3.Row, recipient: str) -> bool:
+    """收件人是否已在本线程回过这封信：直接 reply_to，或本线程里更晚的一封出自该收件人。"""
+    found = conn.execute(
+        """
+        SELECT 1 FROM messages
+        WHERE thread_id = ?
+          AND from_agent = ?
+          AND id != ?
+          AND (
+            reply_to = ?
+            OR created_at > ?
+            OR (created_at = ? AND id > ?)
+          )
+        LIMIT 1
+        """,
+        (
+            message_row["thread_id"],
+            recipient,
+            message_row["id"],
+            message_row["id"],
+            message_row["created_at"],
+            message_row["created_at"],
+            message_row["id"],
+        ),
+    ).fetchone()
+    return found is not None
 
 
 def _auto_claim_allowed(conn: sqlite3.Connection, window_id: str, message_workspace: str | None) -> bool:
@@ -2620,13 +2857,20 @@ def _upsert_window(
     next_activity_at = now if activity is not None else row["activity_at"]
     # D-4：离场（left/offline）窗口复活为 active 时，旧 pid 多半已死，置 NULL，
     # 除非本次显式带了新 pid，否则会让后续对账把复活窗口又判死、误自动封卷。
+    # M6-0b：已有且仍活着的 pid 不被这次 touch 改写。headless 里的短命进程会继承
+    # 宿主窗口号并带上自己的 pid；若照单覆盖，进程一退出，活窗口就被判离场，
+    # 名下未封卷案卷自动中止、未读认领被释放。只在新建行，或原 pid 为空/已死时写入。
     reviving = row["state"] in {"left", "offline"} and next_state == "active"
-    if pid is not None:
-        next_pid = _pid_value(pid)
+    incoming = _pid_value(pid)
+    stored = row["pid"]
+    if stored is not None and not _pid_dead(stored):
+        next_pid = stored
+    elif incoming is not None:
+        next_pid = incoming
     elif reviving:
         next_pid = None
     else:
-        next_pid = row["pid"]
+        next_pid = stored
     conn.execute(
         """
         UPDATE windows

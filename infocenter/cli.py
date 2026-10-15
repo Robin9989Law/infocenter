@@ -1,6 +1,7 @@
 import argparse
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from infocenter import DEFAULT_HOST, DEFAULT_PORT, __version__, config
@@ -20,6 +21,48 @@ _GLOBAL.add_argument("--as", dest="agent", default=None, help="以某个身份�
 _GLOBAL.add_argument("--url", default=None, help="信息中心地址")
 _GLOBAL.add_argument("--home", default=None, help="信息中心主目录")
 _GLOBAL.add_argument("--json", action="store_true", help="JSON 输出")
+
+
+# M6-4 列表收口：默认只留在办、暂停，以及这段时间内离场的。
+# 时间界与计划里「离场超过 1 小时」相同，但只藏列表，不删行。
+_RECENT_LEFT_SECONDS = 3600
+_RECENT_LEFT_TEXT = "1 小时"
+_PRESENT_WINDOW_STATES = {"active", "paused"}
+_DEPARTED_WINDOW_STATES = {"left", "offline"}
+
+
+def _parse_utc(value) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _window_kept_by_default(item: dict, now: datetime) -> bool:
+    state = item.get("state") or ""
+    if state in _PRESENT_WINDOW_STATES:
+        return True
+    if state not in _DEPARTED_WINDOW_STATES:
+        return False
+    moment = _parse_utc(item.get("left_at")) or _parse_utc(item.get("last_seen_at"))
+    if moment is None:
+        return False
+    return (now - moment).total_seconds() <= _RECENT_LEFT_SECONDS
+
+
+def _collapse_windows(payload: dict, now: datetime | None = None) -> dict:
+    """默认列表。服务端 `state` 是精确匹配，没有离场时间参数，所以整表拉回再滤。"""
+    rows = list(payload.get("windows") or [])
+    moment = now or datetime.now(timezone.utc)
+    kept = [row for row in rows if _window_kept_by_default(row, moment)]
+    out = dict(payload)
+    out["windows"] = kept
+    out["count"] = len(kept)
+    out["collapsed"] = True
+    out["hidden"] = len(rows) - len(kept)
+    return out
 
 
 class _SubParser(argparse.ArgumentParser):
@@ -137,10 +180,22 @@ def main(argv=None) -> int:
     cases.add_argument("--owner", default=None, help="主办身份")
     cases.add_argument("--limit", type=int, default=20)
 
-    windows = sub.add_parser("windows", help="列出办公室")
-    windows.add_argument("--agent", dest="window_agent", default=None)
-    windows.add_argument("--workspace", default=None)
-    windows.add_argument("--state", default=None)
+    windows = sub.add_parser(
+        "windows",
+        help=f"列出办公室（默认：在办、暂停、{_RECENT_LEFT_TEXT}内离场；--all 看全）",
+    )
+    windows.add_argument("--agent", dest="window_agent", default=None, help="只看这个身份")
+    windows.add_argument("--workspace", default=None, help="只看这个项目目录")
+    windows.add_argument(
+        "--state",
+        default=None,
+        help="按状态精确筛选（active、paused、left）。指定后列出该状态的全部，不再按离场时间收口",
+    )
+    windows.add_argument(
+        "--all",
+        action="store_true",
+        help=f"列出全部办公室，包含离场超过 {_RECENT_LEFT_TEXT}的。不指定时默认隐藏这些",
+    )
 
     mcp = sub.add_parser("mcp", help="以 stdio MCP 运行")
     mcp.add_argument("--agent", dest="mcp_agent", default=None, help="固定身份。不写则每个工具调用自己带 agent")
@@ -324,6 +379,10 @@ def main(argv=None) -> int:
                 },
                 home=home,
             )
+            # 显式 --state / --all 保持原语义。默认不改传 state=active：
+            # 那样近期离场不在返回里，客户端滤不出来。
+            if not args.all and not args.state:
+                payload = _collapse_windows(payload)
         else:
             parser.error("未知命令")
             return 2
@@ -537,7 +596,15 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
         return
     if cmd == "windows" and not as_json:
         rows = payload.get("windows") or []
-        print(f"办公室 {payload.get('count', len(rows))} 间")
+        count = payload.get("count", len(rows))
+        hidden = payload.get("hidden") or 0
+        if payload.get("collapsed") and hidden:
+            print(
+                f"办公室 {count} 间（默认只列在办、暂停和 {_RECENT_LEFT_TEXT}内离场，"
+                f"另有 {hidden} 间未列出；--all 看全）"
+            )
+        else:
+            print(f"办公室 {count} 间")
         for item in rows:
             label = item.get("state_label") or item.get("state") or ""
             print(

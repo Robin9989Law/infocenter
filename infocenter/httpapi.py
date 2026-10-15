@@ -324,7 +324,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
     else:
         agent = _agent_header(headers)
         if window_id is not None:
-            _guard_window_agent(store, agent, window_id)
+            _guard_window_agent(store, agent, window_id, req_pid)
         store.touch(agent, window_id=window_id, pid=req_pid)
 
     if method == "GET" and path == "/v1/agents":
@@ -735,19 +735,13 @@ def _need_str(body: dict, key: str) -> str:
     return value
 
 
-def _guard_window_agent(store: Store, agent: str, window_id: str) -> None:
-    """D-8：请求头 X-Window 若指向他人的窗口，直接 409，防止冒用他人窗口号。"""
-    try:
-        view = store.get_window(window_id)
-    except MailError:
-        return
-    owner = view.get("agent")
-    if owner and owner != agent:
-        raise MailError(
-            "window_conflict",
-            f"窗口 {window_id} 已属于 {owner}，不能被 {agent} 使用",
-            409,
-        )
+def _guard_window_agent(store: Store, agent: str, window_id: str, pid: int | None = None) -> None:
+    """D-8：请求头 X-Window 若指向他人的窗口，直接 409，防止冒用他人窗口号。
+
+    H2：先把本次 pid 写回，再惰性对账，两者在同一事务里。旧顺序是 get_window
+    （对账）在 touch（写 pid）之前；pid 已死时，这次重申自己会先封卷，随后才把窗口复活。
+    """
+    store.write_pid_then_reconcile(window_id, agent, pid)
 
 
 def _opt_str(body: dict, key: str) -> str | None:

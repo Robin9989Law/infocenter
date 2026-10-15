@@ -13,6 +13,15 @@ from infocenter.paths import ROOT, home_dir
 from infocenter.server import discover_url, healthy, owned_url, read_meta
 from infocenter.store import MailError
 
+# 守护注入给 headless 子进程。子进程仍继承窗口号（认领算宿主办公室），
+# 但请求里的 pid（X-Pid 和 JSON 体的 pid）一律丢掉，避免短命进程改写宿主窗口 pid。
+NO_PID_ENV = "INFOCENTER_NO_PID"
+
+
+def window_pid_suppressed() -> bool:
+    raw = os.environ.get(NO_PID_ENV, "").strip().lower()
+    return raw in {"1", "true", "yes"}
+
 
 class ApiError(Exception):
     def __init__(self, status: int, payload):
@@ -89,15 +98,22 @@ def request(
         pairs = {key: value for key, value in query.items() if value is not None}
         if pairs:
             target += "?" + urlencode(pairs)
-    data = None if body is None else json.dumps(body, ensure_ascii=False).encode("utf-8")
+    send_body = body
+    send_pid = pid
+    if window_pid_suppressed():
+        send_pid = None
+        if isinstance(send_body, dict) and "pid" in send_body:
+            send_body = {key: value for key, value in send_body.items() if key != "pid"}
+    data = None if send_body is None else json.dumps(send_body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(target, data=data, method=method)
     req.add_header("X-Agent", agent)
     office = _window_header(window)
     if office:
         req.add_header("X-Window", office)
     # M2：显式给出进程号时带上 X-Pid，补齐「窗口触达路径上报 pid」的客户端一环。
-    if pid is not None:
-        req.add_header("X-Pid", str(pid))
+    # INFOCENTER_NO_PID 时连调用方显式传入的 pid 也不送，见 window_pid_suppressed。
+    if send_pid is not None:
+        req.add_header("X-Pid", str(send_pid))
     req.add_header("Accept", "application/json")
     if data is not None:
         req.add_header("Content-Type", "application/json; charset=utf-8")

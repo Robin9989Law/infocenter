@@ -1,6 +1,7 @@
 import json
 import os
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -16,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 from http.server import ThreadingHTTPServer
 
 from infocenter import crew
-from infocenter.client import request
+from infocenter.client import NO_PID_ENV, request
 from infocenter.server import make_handler
 from infocenter.store import Store
 
@@ -265,7 +266,188 @@ class D2CommandTest(unittest.TestCase):
         for env in seen:
             self.assertEqual(env.get("INFOCENTER_WINDOW"), "w-abc123")
             self.assertEqual(env.get("INFOCENTER_AGENT"), "grok")
+            self.assertEqual(env.get(NO_PID_ENV), "1")
             self.assertIsNot(env, os.environ)
+            self.assertNotIn(NO_PID_ENV, os.environ)
+
+    def test_no_pid_env_strips_header_and_body(self):
+        seen = {}
+
+        class Resp:
+            status = 200
+
+            def read(self):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+        def fake_open(req, timeout=None):
+            names = {key.lower() for key, _value in req.header_items()}
+            seen["header"] = "x-pid" in names
+            seen["body"] = json.loads(req.data.decode("utf-8"))
+            return Resp()
+
+        body = {"workspace": "/tmp/proj", "pid": 4242, "activity": "keep"}
+        os.environ[NO_PID_ENV] = "1"
+        try:
+            with patch("infocenter.client.urllib.request.urlopen", side_effect=fake_open):
+                request(
+                    "http://127.0.0.1:9", "PUT", "/v1/agents/grok", "grok",
+                    body, pid=4242,
+                )
+        finally:
+            os.environ.pop(NO_PID_ENV, None)
+        self.assertFalse(seen["header"])
+        self.assertNotIn("pid", seen["body"])
+        self.assertEqual(seen["body"]["activity"], "keep")
+        self.assertEqual(body["pid"], 4242)
+
+        with patch("infocenter.client.urllib.request.urlopen", side_effect=fake_open):
+            request(
+                "http://127.0.0.1:9", "PUT", "/v1/agents/grok", "grok",
+                {"workspace": "/tmp/proj", "pid": 7}, pid=7,
+            )
+        self.assertTrue(seen["header"])
+        self.assertEqual(seen["body"]["pid"], 7)
+
+    def test_headless_child_cannot_kill_office_pid(self):
+        # 若干轮 headless：子进程即使显式上报自己的 pid，宿主窗口仍是守护 pid，案卷不被对账封掉。
+        wid = "w-heal01"
+        project = str(self.project)
+        os.environ["INFOCENTER_URL"] = self.url
+        os.environ["INFOCENTER_WINDOW"] = wid
+        os.environ["PYTHONPATH"] = str(ROOT)
+        os.environ.pop(NO_PID_ENV, None)
+        self.assertTrue(crew._register_office(self.url, "grok", wid, project))
+        created = self.store.create_case(
+            agent="grok",
+            title="活窗口不封",
+            workspace=project,
+            owner_window=wid,
+            pid=os.getpid(),
+        )
+        # 把 pid 清掉：活 pid 不会被覆盖（store 已拒绝）。空 pid 才会暴露「子进程把 pid 写成自己的」。
+        self._set_window_pid(wid, None)
+        script = self.project / "stamp_pid.py"
+        script.write_text(
+            "import os\n"
+            "from infocenter.client import request\n"
+            "request(os.environ['INFOCENTER_URL'], 'POST', '/v1/windows', 'grok', {\n"
+            "    'window_id': os.environ['INFOCENTER_WINDOW'],\n"
+            "    'pid': os.getpid(),\n"
+            "}, window=os.environ['INFOCENTER_WINDOW'])\n"
+            "request(os.environ['INFOCENTER_URL'], 'GET', '/v1/events', 'grok',\n"
+            "        query={'since': '0', 'wait': '0', 'window': os.environ['INFOCENTER_WINDOW']},\n"
+            "        pid=os.getpid(), window=os.environ['INFOCENTER_WINDOW'])\n",
+            encoding="utf-8",
+        )
+        try:
+            for _ in range(2):
+                outcome = crew._run_headless(
+                    f"{sys.executable} {script}", "x", project, agent="grok", timeout=30,
+                )
+                self.assertEqual(outcome, "ok")
+            row = self._window_row(wid)
+            self.assertIsNone(row["pid"])
+            self.assertEqual(row["state"], "active")
+            self.assertTrue(crew._reassert_office_pid(self.url, "grok", wid, project))
+            row = self._window_row(wid)
+            self.assertEqual(row["pid"], os.getpid())
+            self.assertEqual(row["state"], "active")
+            case = self.store.get_case(created["id"])
+            self.assertEqual(case["status"], "open")
+            self.assertFalse(case["sealed"])
+        finally:
+            os.environ.pop("INFOCENTER_WINDOW", None)
+            os.environ.pop("INFOCENTER_URL", None)
+
+    def test_reassert_restores_daemon_pid_without_unpausing(self):
+        wid = "w-heal02"
+        project = str(self.project)
+        self.assertTrue(crew._register_office(self.url, "grok", wid, project))
+        created = self.store.create_case(
+            agent="grok",
+            title="写回 pid",
+            workspace=project,
+            owner_window=wid,
+            pid=os.getpid(),
+        )
+        request(self.url, "POST", f"/v1/windows/{wid}/pause", "grok", {})
+        # 空 pid 不会被判死。重申应补上守护 pid，且不能把暂停拉回 active。
+        # （pid 已经是死进程时，HTTP 护栏会先对账再写 pid，案卷来不及救；那条要靠子进程根本不写 pid。）
+        self._set_window_pid(wid, None)
+        self.assertTrue(crew._reassert_office_pid(self.url, "grok", wid, project))
+        row = self._window_row(wid)
+        self.assertEqual(row["pid"], os.getpid())
+        self.assertEqual(row["state"], "paused")
+        case = self.store.get_case(created["id"])
+        self.assertEqual(case["status"], "paused")
+        self.assertFalse(case["sealed"])
+
+    def test_watch_reasserts_pid_before_events_and_after_headless(self):
+        order = []
+        payloads = [
+            {
+                "cursor": 1,
+                "unread_total": 1,
+                "new": [{
+                    "id": "m-re",
+                    "from": "kimi",
+                    "subject": "先跑一轮",
+                    "workspace": str(self.project),
+                }],
+            },
+            {"cursor": 1, "unread_total": 0, "new": []},
+        ]
+
+        def fake_reassert(*_args, **_kwargs):
+            order.append("reassert")
+            return True
+
+        def fake_request(*_args, **_kwargs):
+            order.append("events")
+            if not payloads:
+                raise StopIteration("done")
+            return payloads.pop(0)
+
+        def fake_headless(*_args, **_kwargs):
+            order.append("headless")
+            return "ok"
+
+        with (
+            patch.object(crew, "_reassert_office_pid", side_effect=fake_reassert),
+            patch.object(crew, "request", side_effect=fake_request),
+            patch.object(crew, "_run_headless", side_effect=fake_headless),
+        ):
+            with self.assertRaises(StopIteration):
+                crew.watch(self.home, "grok", str(self.project), self.url, poll=5, heartbeat=0)
+        self.assertEqual(
+            order,
+            ["reassert", "events", "headless", "reassert", "reassert", "events", "reassert", "events"],
+        )
+
+    def _window_row(self, window_id: str):
+        con = sqlite3.connect(self.home / "mailbox.db", timeout=5)
+        con.row_factory = sqlite3.Row
+        try:
+            return con.execute(
+                "SELECT window_id, state, pid FROM windows WHERE window_id = ?",
+                (window_id,),
+            ).fetchone()
+        finally:
+            con.close()
+
+    def _set_window_pid(self, window_id: str, pid: int | None) -> None:
+        con = sqlite3.connect(self.home / "mailbox.db", timeout=5)
+        try:
+            con.execute("UPDATE windows SET pid = ? WHERE window_id = ?", (pid, window_id))
+            con.commit()
+        finally:
+            con.close()
 
     def test_pause_interrupts_running_headless(self):
         project = str(self.project.resolve())

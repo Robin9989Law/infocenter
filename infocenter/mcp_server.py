@@ -26,6 +26,17 @@ def resolve_mcp_window(explicit: str | None = None) -> str:
     return f"w-{secrets.token_hex(3)}"
 
 
+def mcp_reports_own_pid(explicit: str | None = None) -> bool:
+    """本进程是否该把 os.getpid() 写进窗口。
+
+    只有自建窗口才上报。显式窗口号或 INFOCENTER_WINDOW 都是宿主窗口：
+    headless 里的短命 `ic mcp` 会继承守护窗口号，若仍传自己的 pid，
+    会把活着的宿主 pid 改成这个马上退出的进程。
+    """
+    raw = explicit if explicit is not None else os.environ.get("INFOCENTER_WINDOW")
+    return normalize_window(raw) is None
+
+
 def run_mcp(
     agent: str | None,
     explicit_url,
@@ -39,18 +50,22 @@ def run_mcp(
         agent = normalize_name(agent)
     else:
         agent = None
+    report_pid = mcp_reports_own_pid(window_id)
     win = resolve_mcp_window(window_id)
     url = ensure_server(explicit_url, home)
     watch = None
     registered = False
     try:
         if agent:
+            body = {"workspace": os.getcwd()}
+            if report_pid:
+                body["pid"] = os.getpid()
             request(
                 url,
                 "PUT",
                 f"/v1/agents/{agent}",
                 agent,
-                {"workspace": os.getcwd(), "pid": os.getpid()},
+                body,
                 query={"window": win},
             )
             registered = True
@@ -63,12 +78,15 @@ def run_mcp(
                 _write(response)
             if watch is None and notify and agent and _mode is not None:
                 # 首帧回包后才启动：通知的帧格式要跟客户端一致
-                watch = _Watch(url, agent, window_id=win)
+                watch = _Watch(url, agent, window_id=win, report_pid=report_pid)
                 watch.start()
     except ApiError as exc:
         raise MailError(exc.code, str(exc), exc.status) from None
     finally:
-        if agent and win and registered:
+        # H1：继承来的宿主窗口不 leave。report_pid 为假表示窗口号来自显式参数或
+        # INFOCENTER_WINDOW；短命 ic mcp 正常退出若仍 POST /leave，会把守护办公室标离场并封掉名下案卷。
+        # 自建窗口（report_pid 为真）仍在退出时 leave。
+        if agent and win and registered and report_pid:
             try:
                 request(url, "POST", f"/v1/windows/{win}/leave", agent, {}, timeout=2)
             except Exception:
@@ -116,10 +134,11 @@ class _Watch:
     带 window_id 时，服务端按窗口过滤已被同身份其它窗口认领或已封卷的线程。
     """
 
-    def __init__(self, url: str, agent: str, window_id: str | None = None):
+    def __init__(self, url: str, agent: str, window_id: str | None = None, report_pid: bool = False):
         self.url = url
         self.agent = agent
         self.window_id = window_id
+        self.report_pid = report_pid
         self.unread = 0
         self.cursor = 0
 
@@ -139,8 +158,9 @@ class _Watch:
                     self.agent,
                     query=query,
                     timeout=40,
-                    # M2：长轮询上报 MCP 进程自身 pid，窗口崩溃后可被惰性判死。
-                    pid=os.getpid(),
+                    # 自建窗口才上报本进程 pid，供崩溃后惰性判死。
+                    # 继承来的宿主窗口不传：否则会把活 pid 改成这个短命进程。
+                    pid=os.getpid() if self.report_pid else None,
                 )
                 self.unread = int(payload.get("unread_total") or 0)
                 self.cursor = max(self.cursor, int(payload.get("cursor") or 0))
