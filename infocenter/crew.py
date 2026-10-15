@@ -726,7 +726,11 @@ def status(home, project: str | None = None) -> dict:
         if daemons or not str(item.get("headless") or "").strip():
             ways = [key for key in ("launch", "app", "headless") if str(item.get(key) or "").strip()]
             if not ways and not daemons:
-                parts.append("未配置启动方式")
+                # coordinator 的前台由人驱动（不配 launch/headless，也不该由 crew 拉起），别当成配错。
+                if str(item.get("role") or "") == "coordinator":
+                    parts.append("前台（人工驱动）")
+                else:
+                    parts.append("未配置启动方式")
         lines.append(f"  {agent}: " + ("；".join(parts) if parts else "空闲"))
     for agent, daemons in by_agent.items():
         if agent not in {item["name"] for item in entries}:

@@ -192,6 +192,23 @@ class CrewQualityTest(unittest.TestCase):
         self.assertNotIn("给 coordinator", prompt_with_coord)
         self.assertIn("主协调 agent `opencode`（`ic agents` 里 role=coordinator 的那位）", prompt_with_coord)
 
+    def test_status_marks_manual_coordinator(self):
+        # coordinator 的前台由人驱动：不配 launch/headless 时不应显示成「未配置启动方式」。
+        home = self.home / "stat_coord"
+        home.mkdir()
+        (home / "config.json").write_text(
+            json.dumps({
+                "agents": [
+                    {"name": "opencode", "role": "coordinator"},
+                    {"name": "grok"},
+                ]
+            }),
+            encoding="utf-8",
+        )
+        text = "\n".join(crew.status(home)["lines"])
+        self.assertIn("opencode: coordinator；前台（人工驱动）", text)
+        self.assertIn("grok: 未配置启动方式", text)
+
     def test_watch_elif_at_most_one_headless_per_round(self):
         # A6-1：heartbeat_mode=always 且同一轮既有新信又到心跳点时，单轮至多跑一次 headless（elif），
         # 但不重置 last_run，因此下一轮无新信时补跑心跳；而 idle 模式新信会重置 last_run。
