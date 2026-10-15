@@ -140,7 +140,7 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.
 .folder { top: 8px; right: 64px; }
 .gear:hover, .arch:hover, .stat:hover, .folder:hover { opacity: 1; background: rgba(28, 25, 21, 0.06); }
 .item.active .gear, .item.active .arch, .item.active .stat, .item.active .folder { color: var(--muted); opacity: 0.95; }
-.item.has-arch, .item.has-stat { padding-right: 100px; }
+.item.has-arch { padding-right: 100px; }
 .status { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; line-height: 1.45; white-space: nowrap; vertical-align: middle; }
 .status.在办, .status.open, .status.doing { background: var(--green-soft); color: var(--green); }
 .status.待谁, .status.待办, .status.waiting, .status.pending { background: var(--blue-soft); color: var(--blue); }
@@ -441,7 +441,7 @@ function render() {
         <button class="arch" data-arch-id="${escapeHtml(p.workspace)}" title="${p.archived ? '取消归档' : '归档'}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg></button>
         <button class="gear" data-gear="project" data-gear-id="${escapeHtml(p.workspace)}" title="项目设置"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
         <div class="title">${escapeHtml(p.name || p.workspace)}${p.archived ? ' <span class="tag">已归档</span>' : ''}</div>
-        <div class="meta"><button class="dmon-btn ${dcount ? 'on' : 'off'}" data-dmon-ws="${escapeHtml(p.workspace)}" title="${dcount ? '点击：停止该项目全部守护（会话离场；不再自动封卷案卷）' : '点击：启动该项目全部收信守护'}">守护 ${dcount}</button> · ${p.case_count || 0}案 ${(p.active_cases != null ? p.active_cases : (p.counts && p.counts.active) || 0)}在办</div>
+        <div class="meta"><button class="dmon-btn ${dcount ? 'on' : 'off'}" data-dmon-ws="${escapeHtml(p.workspace)}" title="${dcount ? '点击：停止该项目全部守护（会话离场；不再自动封卷案卷）' : '点击：启动该项目全部收信守护'}">守护 ${dcount}</button> · ${p.case_count || 0}案 ${p.active_cases || 0}在办</div>
       </div>`;
     }).join("");
     wire(projEl, ".item[data-project-ws]", it => selectProject(it.dataset.projectWs));

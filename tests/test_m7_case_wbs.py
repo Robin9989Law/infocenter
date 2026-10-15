@@ -56,7 +56,8 @@ class CaseWbsStoreTest(unittest.TestCase):
     def test_wbs_path_basics(self):
         case = self._case(wbs_path="防混写/锁与闸")
         self.assertEqual(case["wbs_path"], "防混写/锁与闸")
-        self.assertEqual(case["wbs"], "防混写/锁与闸")
+        for gone in ("wbs", "subject", "owner", "claimed_by", "lines"):
+            self.assertNotIn(gone, case)
         self.assertEqual(self._case(title="没归类")["wbs_path"], "")
 
     def test_wbs_path_is_normalized_and_validated(self):

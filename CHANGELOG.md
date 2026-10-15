@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **视图里同值别名**（减法轮，没人读的那几个）：案卷不再另给 `subject`/`owner`/`claimed_by`/`wbs`/`lines`（留下 `title`/`owner_agent`/`owner_window`/`wbs_path`/`text`）；窗口不再另给 `id`/`first_seen`/`last_seen`（留下 `window_id`/`first_seen_at`/`last_seen_at` 和 `*_beijing`）；项目汇总不再另给 `cases_total`/`doing_cases`/`cases_active`/`window_count`，`counts.doing` 也不再复制 `counts.open`。看板、`ic case`/`ic cases` 读的是留下的那些字段，输入侧仍接受 `wbs` 作为 `wbs_path` 的写法。控制台顺手去掉没人挂上的样式 `has-stat`，以及项目行对不存在的 `counts.active` 的回退。
+
 ### Fixed
 - **黄灯对「带目录的相对路径」静默失效**（kimi 2026-10-15 追审阻断①，已复现）：`_preexisting_dirt` 用 `git -C <文件所在目录> status -- <原始路径>` 嗅「拿钥匙前盘上有没有别人的改动」——从仓根 `ic lock infocenter/cli.py` 时，原始相对路径会被 git 当成 `infocenter/infocenter/cli.py`（**路径错位**）⇒ `rc=0`、输出为空 ⇒ 被当成「干净」，**黄灯不亮也不登记**（提交时那句提醒一起消失）。现路径先转绝对再问 git（旧测试全用绝对路径，所以没暴露）。+ 3 项回归（相对路径 / 带目录的相对路径 / 从仓库外跑）
 - **一次拿多个文件、中途失败 ⇒ 前面已成可写的留在「没钥匙却能写」**（kimi 2026-10-15 追审阻断③）：`lock_not_writable` 的回滚只回滚了 DB，**盘上的权限位没收回**——第一个文件已经 chmod 成可写、第二个失败整笔回滚，于是第一个文件「没有锁却可写」，**锁＝只读被静默破坏**且没人知道。现失败时先把事务回滚、再按「这个文件回滚后还有没有活锁」决定是否收回只读（我续期时已持有的那把不动，否则会把别人的写权限打掉）。+ 2 项回归（多文件失败收回 / 续期失败保住自己的）
