@@ -2397,7 +2397,8 @@ class Store:
                     "locked",
                     "这些路径正被别人锁着："
                     + "、".join(f"{h['path']}（{h['agent']}，自 {h['since']}）" for h in held)
-                    + "；别硬写，先回信给 coordinator",
+                    + "；别硬写：把你的改动排队给持有者（`ic queue <路径> --note \"我要改什么\"`），"
+                    "由它一次合并；或回信给 coordinator",
                     409,
                 )
             for path in wanted:
@@ -2492,13 +2493,157 @@ class Store:
         self._signal()
         return {"agent": agent, "released": targets, "released_count": released, "force": bool(force)}
 
+    # ── 排队改同一个文件：拿不到钥匙就把改动**提**给持有者，由它一次合并 ──
+    # human 定稿：出现排队改同一个文件时，**由第一个 agent 合并后边所有要改的内容**。
+    # 好处：不用"你改完我改、我改完他改"来回抢钥匙（每一轮都要提交、都要重新拿钥匙）。
+
+    def queue_change(
+        self,
+        agent: str,
+        path: str,
+        note: str | None = None,
+        patch: str | None = None,
+        task_id: str | None = None,
+    ) -> dict:
+        """**提议**一处改动（拿不到钥匙时用这个，而不是硬等/硬写）。
+
+        提议本身**不需要钥匙**（它只是把话留给持有者），但会进只增链 ⇒ 谁提了什么、谁合并了都有痕迹。
+        """
+        agent = normalize_name(agent)
+        paths = _lock_paths([path])
+        target = paths[0]
+        text = _task_text(note, 2000)
+        patch_text = _task_text(patch, 20000)
+        if not text and not patch_text:
+            raise MailError("empty_change", "提议要写清「要改什么」（--note 或 --patch-file）", 400)
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            _emit_task_event(
+                conn, normalize_case_id(task_id) if task_id else "", agent, "propose", "", "",
+                {"path": target, "note": text, "patch": patch_text}, now,
+            )
+            seq = conn.execute("SELECT MAX(seq) FROM task_events").fetchone()[0]
+            holder = conn.execute("SELECT agent FROM locks WHERE path = ?", (target,)).fetchone()
+        self._signal()
+        return {
+            "id": f"q{seq}",
+            "seq": seq,
+            "path": target,
+            "agent": agent,
+            "note": text,
+            "patch": patch_text,
+            "held_by": (holder["agent"] if holder else ""),
+        }
+
+    def list_queue(self, path: str | None = None, include_done: bool = False) -> dict:
+        """看排队：默认只列**还没合并**的提议。
+
+        台账是纯派生：`propose` 事件若被后面的 `propose_merged` 覆盖（按 seq）就算合并过。
+        """
+        target = _lock_paths([path])[0] if path else None
+        with self._session(readonly=True) as conn:
+            rows = conn.execute("SELECT * FROM task_events ORDER BY seq").fetchall()
+            holders = {row["path"]: row["agent"] for row in conn.execute("SELECT * FROM locks")}
+        merged: set[int] = set()
+        for row in rows:
+            if row["action"] != "propose_merged":
+                continue
+            try:
+                payload = json.loads(row["detail"] or "{}")
+            except ValueError:
+                continue
+            merged.update(int(item) for item in payload.get("ids") or [])
+        pending, done = [], []
+        for row in rows:
+            if row["action"] != "propose":
+                continue
+            try:
+                payload = json.loads(row["detail"] or "{}")
+            except ValueError:
+                continue
+            if target and payload.get("path") != target:
+                continue
+            item = {
+                "id": f"q{row['seq']}",
+                "seq": int(row["seq"]),
+                "path": payload.get("path", ""),
+                "agent": row["agent"],
+                "note": payload.get("note", ""),
+                "patch": payload.get("patch", ""),
+                "at": row["at"],
+                "at_beijing": beijing_time(row["at"]),
+                "held_by": holders.get(payload.get("path", ""), ""),
+                "merged": int(row["seq"]) in merged,
+            }
+            (done if item["merged"] else pending).append(item)
+        return {
+            "pending": pending,
+            "merged": done if include_done else [],
+            "count": len(pending),
+        }
+
+    def merge_queue(
+        self,
+        agent: str,
+        path: str,
+        ids=None,
+        note: str | None = None,
+    ) -> dict:
+        """**合并排队内容**——由**拿钥匙的那个人**（或 coordinator）做，这正是 human 定的规矩：
+        "出现排队改同一个文件时，由第一个 agent 合并后边所有要改的内容"。
+        """
+        agent = normalize_name(agent)
+        target = _lock_paths([path])[0]
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            holder = conn.execute("SELECT agent FROM locks WHERE path = ?", (target,)).fetchone()
+            is_coord = _is_coordinator(conn, agent)
+            if holder is not None and holder["agent"] != agent and not is_coord:
+                raise MailError(
+                    "not_yours",
+                    f"{target} 的钥匙在 {holder['agent']} 手里：合并由**拿钥匙的人**做（你说的「第一个 agent」）",
+                    403,
+                )
+            if holder is None and not is_coord:
+                raise MailError(
+                    "lock_required",
+                    "你没拿这个文件的钥匙：要么先 lock 再改并合并，要么让 coordinator 收口",
+                    409,
+                )
+            current = self.list_queue(target)["pending"]
+            wanted = [int(item["seq"]) for item in current]
+            if ids:
+                wanted = [int(str(item).lstrip("q")) for item in ids]
+            if not wanted:
+                raise MailError("empty_queue", "这个文件没有排队中的改动", 400)
+            text = _task_text(note, 2000)
+            _emit_task_event(
+                conn, "", agent, "propose_merged", "", "",
+                {"path": target, "ids": wanted, "note": text}, now,
+            )
+        self._signal()
+        return {"path": target, "merged": wanted, "by": agent, "note": text, "remaining": self.list_queue(target)["count"]}
+
     def lock_list(self, agent: str | None = None) -> dict:
         normalize_name(agent) if agent else None
         now = utcnow()
         with self._session(immediate=True) as conn:
             _locks_sweep(conn, now)
             rows = conn.execute("SELECT * FROM locks ORDER BY acquired_at").fetchall()
-        return {"count": len(rows), "locks": [_lock_view(r) for r in rows], "now": now}
+        views = [_lock_view(r) for r in rows]
+        # 持有者要一眼看到"有几个在排队等我合并"（human 定稿：由第一个 agent 合并后面所有改动）
+        pending = self.list_queue()["pending"]
+        waiting: dict[str, int] = {}
+        for item in pending:
+            waiting[item["path"]] = waiting.get(item["path"], 0) + 1
+        for view in views:
+            view["queued"] = waiting.get(view["path"], 0)
+        return {
+            "count": len(views),
+            "locks": views,
+            "now": now,
+            "queued_total": len(pending),
+        }
 
     def guard_changes(self, agent: str, paths, require_mine: bool = True) -> dict:
         """**提交闸**：工作区里每个被改的文件都必须被一个**未过期锁**覆盖。

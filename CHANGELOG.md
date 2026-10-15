@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **排队改同一个文件：由第一个 agent（拿钥匙的）合并后面所有改动**（human 定稿）。新增 `ic queue`：拿不到钥匙的人用 `ic queue <路径> --note "…" [--patch-file f]` 把改动**提**给持有者（**不需要钥匙**）；持有者在 `ic locks` 里看到 **📥 有 N 条排队等你合并**，把内容并进自己这一次改动后 `ic queue <路径> --merge` 收口。权限：**只有拿钥匙的人能合并**（coordinator 例外——钥匙的主人不在时才有人收口；非持有者合并 403，没拿钥匙且非 coordinator 409）。提议与合并**都进只增链**（`propose` / `propose_merged`）⇒ 谁提了什么、谁合并了可查（`ic queue` 默认只列未合并，`--json` 里 `merged` 保留历史）。409 文案同步教人排队。+ `tests/test_lock_queue.py`（13 项：免钥匙提议 / 持有者可见条数 / 权限矩阵 / 按 id 部分合并 / 留痕与 audit / HTTP 往返）
+- **`ic reply --body-file`**（pi 报、grok 落）：`--body` 的正文进 shell 会被反引号当命令执行 ⇒ 与 `ic send` 对称，正文可从文件读（两个都不给/都给都有明确报错）。+ `tests/test_reply_body_file.py`
 - **一把钥匙 + 用完放回去 + 锁＝只读**（human 定稿的口径，落到机制）：
   - **单钥匙**：锁按路径唯一，但"文件"不只等于"路径字符串"——新增 inode 比对（`_same_file`/`_fingerprint`），`./a`、绝对路径、符号链接、**硬链接**、macOS 大小写不敏感下的 `A.py`/`a.py` 都只算同一个文件（换个写法绕不过去）；同一文件的旧写法残留会把那一把换掉，**且只换那一把**
   - **锁＝只读**：拿钥匙时给文件打开 owner 写位，放钥匙时**清掉所有写位**（444/555）⇒ 带插件的、不带插件的、`shell > file`、别的 agent 的编辑器**一律先拿钥匙**（实测：直接写抛 `PermissionError`）；读权限不动（**可以只读**）

@@ -258,6 +258,32 @@ $ git commit -m "锚：留痕链头"          # 锚进了 git，才算落在库�
 | **用完了放回去** | ① `git commit` 之后 `.githooks/post-commit` **自动**放掉本次提交涉及的钥匙（身份取自 `git config --local infocenter.agent`，由 `ic guard --install-hook` 写入）；② 也可手动 `ic unlock`；③ 锁 TTL 兜底 |
 | **放回自己的，不许动别人的** | `ic unlock` 只放自己的；`ic lock --changed` 遇到别人的锁跳过并报告 |
 
+### 排队改同一个文件：由**第一个** agent 合并后面所有改动
+
+A 拿着钥匙在改 `store.py`，B、C 也想改。**不要**让 B、C 干等（A 改完提交放锁 → B 拿钥匙 → 提交放锁 → C 再来：
+每一轮都要重新拿钥匙、重新提交）：
+
+```bash
+# B（拿不到钥匙，也不硬写）：把改动**提**给持有者
+$ ic --as B queue infocenter/store.py --note "把 foo() 改成 bar()"
+已排队 q271（infocenter/store.py）
+  内容：把 foo() 改成 bar()
+  等 A 合并（它拿着钥匙）
+
+# A（持有者）一眼看到：📥 有 2 条排队等你合并
+$ ic --as A locks
+  infocenter/store.py  ← A（任务 …）  …  📥 有 2 条排队等你合并（`ic queue infocenter/store.py --merge`）
+
+# A 把 B、C 的内容并进自己这一次改动，然后收口
+$ ic --as A queue infocenter/store.py --merge
+已合并 2 条（infocenter/store.py）；这个文件还剩 0 条排队
+```
+
+- `--patch-file 补丁.txt` 可以带补丁；`--id q271` 只合并指定几条。
+- **只有拿钥匙的人能合并**（coordinator 例外：钥匙的主人跑了才有人收口）；别人合并会拿 403。
+- 提议与合并**都进那条只增链**（`propose` / `propose_merged`）⇒ 谁提了什么、谁合并了，事后可查、可验。
+- 拿不到钥匙时的 409 文案会直接把 `ic queue` 教给他。
+
 需要"今天先不锁了、全放开"时：`ic unlock --force`（coordinator 清场）或直接 `chmod -R u+w <路径>` —— 这是**故意绕过**，会写进痕迹的例外。
 
 ### 写侧：改文件前先拿钥匙（`.opencode/plugins/infocenter-lock`）

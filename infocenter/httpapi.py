@@ -476,6 +476,34 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         )
         return 200, store.audit_events(task_id, anchor=anchor)
 
+    if path == "/v1/locks/queue":
+        if method == "GET":
+            return 200, store.list_queue(query.get("path", [None])[0])
+        if method == "POST":
+            patch = _opt_str(body, "patch")
+            if patch is None and _opt_str(body, "patch_file"):
+                try:
+                    patch = open(_opt_str(body, "patch_file"), encoding="utf-8").read()
+                except OSError as exc:
+                    raise MailError("invalid_patch", f"读不到补丁文件：{exc}", 400)
+            return 201, store.queue_change(
+                agent,
+                path=_opt_str(body, "path") or "",
+                note=_opt_str(body, "note"),
+                patch=patch,
+                task_id=_opt_str(body, "task_id") or _opt_str(body, "task"),
+            )
+
+    if path == "/v1/locks/queue/merge":
+        if method != "POST":
+            raise MailError("method_not_allowed", "只支持 POST", 405)
+        return 200, store.merge_queue(
+            agent,
+            path=_opt_str(body, "path") or "",
+            ids=body.get("ids"),
+            note=_opt_str(body, "note"),
+        )
+
     if path == "/v1/locks":
         if method == "GET":
             return 200, store.lock_list()

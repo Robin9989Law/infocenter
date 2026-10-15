@@ -162,7 +162,9 @@ def main(argv=None) -> int:
 
     reply = sub.add_parser("reply", help="回复一封信")
     reply.add_argument("id")
-    reply.add_argument("--body", "-b", required=True)
+    # pi 2026-10-15：`--body` 进 shell 会被反引号当命令执行。与 send 对称，正文可从文件读。
+    reply.add_argument("--body", "-b")
+    reply.add_argument("--body-file")
     reply.add_argument("--subject", "-s")
     reply.add_argument("--to")
 
@@ -221,6 +223,15 @@ def main(argv=None) -> int:
                        help="只查**暂存区**（git 钩子用：闸门要盯「这次提交了什么」）；默认查整棵工作区（更严）")
     guard.add_argument("--install-hook", action="store_true",
                        help="把本仓库的提交闸钩子装上（git config core.hooksPath .githooks），幂等")
+
+    queue = sub.add_parser("queue", help="排队改同一个文件：拿不到钥匙就把改动提给持有者，由它一次合并")
+    queue.add_argument("path", nargs="?", default=None, help="要改的文件（不填＝列全部排队）")
+    queue.add_argument("--note", default=None, help="我要改什么（提议内容）")
+    queue.add_argument("--patch-file", dest="patch_file", default=None, help="改动补丁（可选，从文件读）")
+    queue.add_argument("--merge", action="store_true",
+                       help="合并排队的改动（**只有拿钥匙的人**或 coordinator 能做）")
+    queue.add_argument("--id", dest="ids", action="append", default=None, help="只合并这几条（q<seq>）")
+    queue.add_argument("--task", default=None, help="提议关联的任务")
 
     locks = sub.add_parser("locks", help="看现在谁锁了什么（写锁）")
     lock = sub.add_parser("lock", help="拿写锁：同一时间只有一个 agent 能改同一路径")
@@ -400,7 +411,7 @@ def main(argv=None) -> int:
         elif args.cmd == "archive":
             payload = call(args.url, agent, "POST", f"/v1/messages/{args.id}/archive", {}, home=home)
         elif args.cmd == "reply":
-            body = {"body": args.body}
+            body = {"body": _read_body(args.body, args.body_file)}
             if args.subject:
                 body["subject"] = args.subject
             if args.to:
@@ -511,6 +522,24 @@ def main(argv=None) -> int:
                 {"paths": args.paths or None, "force": bool(args.force)},
                 home=home,
             )
+        elif args.cmd == "queue":
+            if args.merge:
+                payload = call(
+                    args.url, agent, "POST", "/v1/locks/queue/merge",
+                    {"path": args.path, "ids": args.ids}, home=home,
+                )
+            elif args.note or args.patch_file:
+                payload = call(
+                    args.url, agent, "POST", "/v1/locks/queue",
+                    {"path": args.path, "note": args.note, "patch_file": args.patch_file,
+                     "task": args.task},
+                    home=home,
+                )
+            else:
+                payload = call(
+                    args.url, agent, "GET", "/v1/locks/queue",
+                    query={"path": args.path}, home=home,
+                )
         elif args.cmd == "locks":
             payload = call(args.url, agent, "GET", "/v1/locks", home=home)
         elif args.cmd == "task":
@@ -1088,16 +1117,43 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
         suffix = "（强制清场）" if payload.get("force") else ""
         print(f"已放锁 {count} 个{suffix}")
         return
+    if cmd == "queue" and not as_json:
+        if payload.get("path") and "merged" in payload:
+            print(
+                f"已合并 {len(payload.get('merged') or [])} 条（{payload.get('path')}）；"
+                f"这个文件还剩 {payload.get('remaining', 0)} 条排队"
+            )
+            return
+        if payload.get("id") and payload.get("note") is not None and "seq" in payload:
+            holder = payload.get("held_by")
+            print(f"已排队 {payload['id']}（{payload['path']}）")
+            print(f"  内容：{payload.get('note') or '（见补丁）'}")
+            print(f"  {('等 ' + holder + ' 合并（它拿着钥匙）') if holder else '现在没人拿钥匙：你也可以直接 lock 后自己改'}")
+            return
+        pending = payload.get("pending") or []
+        total = payload.get("count", len(pending))
+        print(f"排队中的改动 {total} 条")
+        for item in pending:
+            who = item.get("held_by")
+            print(f"  {item.get('id')}  {item.get('path')}  ← {item.get('agent')}（{item.get('at_beijing','')}）")
+            print(f"      要改：{item.get('note') or '（见补丁）'}")
+            if who:
+                print(f"      → 等 {who} 合并（它拿着钥匙）")
+        if not pending:
+            print("  （没有排队；`ic queue <路径> --note \"我要改什么\"` 可以提一条）")
+        return
     if cmd == "locks" and not as_json:
         rows = payload.get("locks") or []
         print(f"写锁 {payload.get('count', len(rows))} 个")
         for item in rows:
             task = f"（任务 {item['task_id']}）" if item.get("task_id") else ""
             left = int(item.get("expires_in_seconds") or 0)
+            queued = int(item.get("queued") or 0)
             soon = "  ⚠ 快到期：重复 `ic lock <路径>` 即续期" if left <= 300 else ""
             print(
                 f"  {item['path']}  ← {item['agent']}{task}  到 "
                 f"{item.get('expires_at_beijing') or item['expires_at']}（剩 {left // 60} 分）{soon}"
+                + (f"  📥 有 {queued} 条排队等你合并（`ic queue {item['path']} --merge`）" if queued else "")
             )
         return
     if cmd == "tasks" and not as_json:
