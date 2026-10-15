@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - R10 跨机联邦（B 线）：网盘 JSON 中继传输层，`节点.名字` 身份命名
 
 ### Changed
+- **coordinator 前台由人驱动**：`ic crew status` 对不配 `launch` / `headless` 的 coordinator 显示「前台（人工驱动）」，不再当成「未配置启动方式」；文档明确 coordinator 一般不给配 `headless`（守护会跟着改计划/派单）、更不要配 `launch`（`crew up` 会在 tmux 会话里另起一个会抢活的前台 actor）
 - **守护对 config 热加载**：每轮重读 `headless` / `heartbeat_mode` / `heartbeat_prompt` / `headless_timeout`（及未显式传入的 `heartbeat`），改配置无需重启守护；清空 `headless` 守护优雅退出
 - **成员名册**：`/v1/agents` 带 `roster` 标记，管理台只显示名册成员；项目按绝对路径为锚合并（裸目录名归并到同一项目）
 - **身份迁移**：`omp` 退役、由 `pi` 接管；清除幽灵身份 `coordinator`

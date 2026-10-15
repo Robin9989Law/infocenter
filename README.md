@@ -532,7 +532,7 @@ ic case m1a2b3c4 --note "客户端已改，待复测" --status doing
 - **coordinator 优先**：它的分工裁定优先执行；有异议时只回**一条**针对冲突点的信，不许一边争论一边改文件。
 - **单一写者**：每个文件或文档只有一个 owner agent 可以写；其他人只发 diff 建议，由 owner 合入。
 - **单一活跃 coordinator**：同一身份若既跑交互会话、又跑收信守护，改 `PLAN.md` 与发派单**只由一个 actor**执行（默认交互会话），避免两个 actor 抢活。
-- **coordinator 的前台由人驱动**：coordinator 通常只在人正在操作的交互 session 里干活，因此**一般不给它配 `headless`（更不要配 `launch`）**——配 `headless` 会让守护也去改计划/派单，配 `launch` 会让 `crew up` 另起一个前台 actor，二者都会造成「两个 coordinator 抢活」。`ic crew status` 会把这样的 coordinator 显示为「前台（人工驱动）」。真要有人值守的无人 coordinator，再把 `headless` 的只读纪律写进 `heartbeat_prompt`。
+- **coordinator 的前台由人驱动**：coordinator 通常只在人正在操作的交互 session 里干活，因此**一般不给它配 `headless`（更不要配 `launch`）**——配 `headless` 会让守护也去改计划/派单；配 `launch` 会在 tmux 会话 `ic-crew-<hash>` 里多开一个 `<项目>-<名字>` 窗口，那个窗口一开就会以 coordinator 身份干活。二者都会造成「两个 coordinator 抢活」。`ic crew status` 会把这样的 coordinator 显示为「前台（人工驱动）」。真要有人值守的无人 coordinator，再把只读纪律写进 `heartbeat_prompt`。
 - **规划纪律**：`PLAN.md` 由 coordinator 独家维护；成员的进展只写进自己的 `TODO-<名字>.md`；要调整计划就发信。
 - **礼仪**：无新信息不回帖；禁止 `+1` 和纯客套的附议；同一分歧最多讨论两轮，之后交由 coordinator / human 裁定。
 - **kickoff 信**：先回一条信，确认自己认领的分工并更新 activity，再动手。
