@@ -5,8 +5,10 @@
 #   ① 不能把 `git show -z` 的输出接进 `$(...)`：命令替换会把 NUL 丢掉，路径会粘成一条；
 #      必须直接管道给 `xargs -0`。
 #   ② 空输入时 `xargs` 仍会跑一次命令 ⇒ 会变成 `ic unlock`（＝放掉我**全部**钥匙）。故先判空。
-agent="$(git config --local infocenter.agent 2>/dev/null)"
-[ -n "$agent" ] || agent="${INFOCENTER_AGENT:-}"
+# 身份**优先取环境变量**：多 agent 共用一个仓时，repo-local 的 infocenter.agent 会互相覆盖，
+# 只有 INFOCENTER_AGENT（守护给每次 headless 运行设的）才认得出"这次是谁在提交"。
+agent="${INFOCENTER_AGENT:-}"
+[ -n "$agent" ] || agent="$(git config --local infocenter.agent 2>/dev/null)"
 [ -n "$agent" ] || exit 0
 command -v ic >/dev/null 2>&1 || exit 0
 ic status >/dev/null 2>&1 || exit 0

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **提交后自动放钥匙的身份取错（多 agent 共仓时形同不存在）**：`post-commit` 先读 repo-local 的 `infocenter.agent`（一个仓只有一份，多 agent 会互相覆盖）⇒ 别人提交后放不掉自己的钥匙。现**优先取 `INFOCENTER_AGENT`**（守护给每次 headless 运行设的环境变量，才认得出"这次是谁在提交"），repo-local 只作兜底
+
 ### Added
 - **拿不到钥匙怎么办：记进自己的 TODO，照自己的轮**（human 定稿，**能不沟通就不沟通**）：「沟通效率太低，而且随 agent 数量递减；agent 多了，反正就是无需乱做」。
   - `ic queue <路径> --note "要改什么"` ⇒ 库里**只增**记一笔（谁提的、要改什么，可查）**＋自动写进提出者自己的 `TODO-<名字>.md`**（这才是"别忘了"；心跳提示词本来就是"读自己的 TODO → 推进下一件"）。`--patch-file` 可带补丁；`--no-todo` 只记库里。
