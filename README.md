@@ -240,7 +240,13 @@ $ git commit -m "锚：留痕链头"          # 锚进了 git，才算落在库�
 - 锚只保护**锚点之前**的历史；`ic audit` 会另报「锚点之后还有 N 行没被见证」，提示再打一次。
 - **习惯**：每次提交前 `ic audit --anchor`，把它和代码一起提交。**顺序**：`ic lock --changed` → `ic lock .infocenter-audit-anchor`（锚文件本身也要先锁，否则提交闸会拦）→ `ic audit --anchor` → `ic guard` → `git commit`。
 
-`.githooks/pre-commit` 会自动跑这两道（`ic guard --quiet --any-holder` + `ic audit --quiet`）；离线或服务不可达时不阻断，避免被锁死。确需绕过：`git commit --no-verify`。
+``.githooks/pre-commit` 会自动跑这两道（`ic guard --quiet --any-holder --staged` + `ic audit --quiet`），
+`.githooks/pre-merge-commit` 是同内容的一份（**非快进 merge 不会回落到 pre-commit**，不装就漏）；
+离线或服务不可达时不阻断，避免被锁死。确需绕过：`git commit --no-verify`。
+
+取路径这件事本身有讲究（**中文目录 / 子目录 / rename 都算对**）：`ic lock --changed` 与 `ic guard` 走的是
+`git -c core.quotepath=false … -z` + `git rev-parse --show-toplevel`，所以非 ASCII 路径不会被转义、也不会按
+当前目录拼错；外锚文件同理以**仓库根**为准（在子目录跑也读同一个锚）。
 
 ## 给 agent 接入
 

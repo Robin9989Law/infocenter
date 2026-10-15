@@ -1994,12 +1994,12 @@ class Store:
     # ── M8 任务队列（工作包）────────────────────────────────────────────
     # 口径见 PLAN §12.5（覆盖 ⑬ 里已撤销的两处）：单表；deps=字符串列（可空串，不 NULL）；
     # handoff=停任务必填（命令层硬拒，自由文本）；权限=写法二；
-    # 开工三件套硬拒已撤、supersedes 成链校验已撤（列仍是软引用）；
+    # 开工三件套硬拒已撤（规格不全只提示不拦）；supersedes **仍执法**成链不成树；
     # 任务无窗口归属；不复用案卷的 waiting_for/sealed/回复翻转。无 priority 列。
 
     # ── M8 任务队列（工作包）────────────────────────────────────────────
     # 口径见 PLAN §12.5：单表 tasks；deps=字符串列（不建 artifacts/task_deps）；
-    # handoff=停任务必填且三段可判空；权限=写法二；任务无窗口归属。
+    # handoff=停任务必填（非空自由文本，三段不在这里硬切）；权限=写法二；任务无窗口归属。
 
     def task_add(
         self,
@@ -2038,6 +2038,13 @@ class Store:
                     raise MailError(
                         "supersedes_branch",
                         f"{sup} 已被 {branch['id']} 取代（supersedes 成链不成树）",
+                        409,
+                    )
+                old_ws = _workspace(old["workspace"])
+                if old_ws != workspace:
+                    raise MailError(
+                        "supersedes_workspace",
+                        f"只能在同一 workspace 里接续：{sup} 属于 {old_ws}，这次是 {workspace}",
                         409,
                     )
             cid = normalize_case_id(case_id) if case_id else None
@@ -2138,7 +2145,7 @@ class Store:
         return view
 
     def task_start(self, agent: str, task_id: str) -> dict:
-        """开工：todo → doing（owner 或 coordinator）。**开工即冻结规格**；三件套必须齐。"""
+        """开工：todo → doing（owner 或 coordinator）。**开工即冻结规格**（规格不全不拦人，看板标黄）。"""
         agent = normalize_name(agent)
         now = utcnow()
         with self._session(immediate=True) as conn:
@@ -2172,7 +2179,7 @@ class Store:
         handoff: str | None = None,
     ) -> dict:
         """改状态（写法二）：owner 可 doing↔blocked（blocked 必带原因）；done/stopped 仅 coordinator；
-        stopped **必须**带三段交接段；done/stopped 是终态、不可逆。"""
+        stopped **必须**带**非空交接段**（三段模板在 SKILL 里，不在这里硬切）；done/stopped 是终态、不可逆。"""
         agent = normalize_name(agent)
         st = _task_status(status)
         now = utcnow()
@@ -2189,12 +2196,21 @@ class Store:
                 raise MailError("invalid_transition", f"已经是 {st}", 409)
             is_coord = _is_coordinator(conn, agent)
             mine = agent == row["owner"]
+            # 状态机 = 两张表的**并集**，对谁都一样（表就是唯一事实，别再散判）。
+            # 注意：`doing → todo` 对 coordinator **也不许**——倒回 todo 等于"解冻规格"，
+            # 而"开工即冻结规格"是硬口径；要改规格就 stop 后新建任务线。
+            if (cur, st) not in (_TASK_OWNER_MOVES | _TASK_COORD_MOVES):
+                raise MailError(
+                    "invalid_transition",
+                    f"不允许 {cur} → {st}（合法转移只有：todo→doing、doing↔blocked、"
+                    f"doing/blocked→done、todo/doing/blocked→stopped）",
+                    409,
+                )
             if st in ("done", "stopped"):
                 if not is_coord:
                     raise MailError("not_coordinator", f"只有 coordinator 能把任务置为 {st}", 403)
-            else:
-                if not (mine or is_coord):
-                    raise MailError("not_yours", "只有该任务的 owner 或 coordinator 能改 doing/blocked", 403)
+            elif not (mine or is_coord):
+                raise MailError("not_yours", "只有该任务的 owner 或 coordinator 能改 doing/blocked", 403)
             if st == "blocked" and not (reason or "").strip():
                 raise MailError("reason_required", "blocked 必带一行原因（--reason）", 400)
             hand = _check_handoff(handoff) if st == "stopped" else (row["handoff"] or "")
@@ -2213,16 +2229,18 @@ class Store:
                     row["id"],
                 ),
             )
+            after = conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone()
+            # 痕迹必须与**行里的值**逐字一致（规范化在写行那一步完成，这里只许照抄行）
             _emit_task_event(
-                conn, row["id"], agent, "status", cur, st,
+                conn, row["id"], agent, "status", cur, after["status"],
                 {
-                    "status": st,
-                    "blocked_reason": (reason or "").strip() if st == "blocked" else "",
-                    "handoff": hand,
+                    "status": after["status"],
+                    "blocked_reason": after["blocked_reason"] or "",
+                    "handoff": after["handoff"] or "",
                 },
                 now,
             )
-            res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone())
+            res = _task_view(after)
         self._signal()
         return res
 
@@ -2265,12 +2283,14 @@ class Store:
             sets += ["updated_at = ?", "updated_by = ?"]
             params += [now, agent, row["id"]]
             conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", tuple(params))
+            after = conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone()
+            # 照抄行里的值（不是调用方给的原文）——否则"痕迹重放 == 行"会被空格/大小写搞红
             _emit_task_event(
-                conn, row["id"], agent, "update", row["status"], row["status"],
-                {key: value for key, value in patch.items()},
+                conn, row["id"], agent, "update", after["status"], after["status"],
+                {key: ("" if after[key] is None else after[key]) for key in patch},
                 now,
             )
-            res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone())
+            res = _task_view(after)
         self._signal()
         return res
 
@@ -2285,16 +2305,24 @@ class Store:
         with self._session(immediate=True) as conn:
             _must_coordinator(conn, agent)
             row = _find_task(conn, task_id)
+            if row["status"] in TASK_TERMINAL:
+                raise MailError(
+                    "task_closed",
+                    f"任务已终结（{row['status']}），别再调优先级了；要继续请**新建任务线**",
+                    409,
+                )
+            new_priority = _task_priority(int(row["priority"]) + delta)
             conn.execute(
                 "UPDATE tasks SET priority = ?, updated_at = ?, updated_by = ? WHERE id = ?",
-                (int(row["priority"]) + delta, now, agent, row["id"]),
+                (new_priority, now, agent, row["id"]),
             )
+            after = conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone()
             _emit_task_event(
-                conn, row["id"], agent, "bump", row["status"], row["status"],
-                {"priority": int(row["priority"]) + delta, "by": delta},
+                conn, row["id"], agent, "bump", after["status"], after["status"],
+                {"priority": after["priority"], "by": delta},
                 now,
             )
-            res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone())
+            res = _task_view(after)
         self._signal()
         return res
 
@@ -2777,8 +2805,8 @@ class Store:
                 "UPDATE deliveries SET claimed_by = NULL, claimed_at = NULL WHERE claimed_by = ?",
                 (wid,),
             )
-            # M9：窗口离场同样释放它拿着的写锁（僵死锁会把别人永远挡在门外）。
-            conn.execute("DELETE FROM locks WHERE window_id = ?", (wid,))
+            # M9：窗口离场同样释放它拿着的写锁（僵死锁会把别人永远挡在门外）；**放锁留痕**。
+            _release_window_locks(conn, wid, now, "窗口离场")
             orphaned_ids = _orphan_window_cases(conn, window_id=wid, agent=agent_name, now=now)
             if note:
                 # 离场的人若写了话，照样记一行（**状态不动**）
@@ -3273,6 +3301,8 @@ def _lazy_reconcile_all(conn: sqlite3.Connection, now: str | None = None) -> Non
                 "UPDATE windows SET state = 'left', left_at = COALESCE(left_at, ?) WHERE window_id = ?",
                 (now, w_row["window_id"]),
             )
+            # 死 pid 的窗口不会再回来放锁 ⇒ 这里替它放掉，并留痕（否则锁会僵死到 TTL）
+            _release_window_locks(conn, w_row["window_id"], now, "窗口进程已死（惰性对账）")
     # M6-0：对账顺带回收陈旧/错位认领（离场/已死窗口、或跨项目窗口扣住的信），避免来信被静默隐藏。
     _release_stale_claims(conn)
 
@@ -3875,6 +3905,7 @@ TASK_HANDOFF_MAX = 4000
 # owner 含本人与 coordinator；coord 仅 coordinator。不允许暂停/回退/换规格。
 _TASK_OWNER_MOVES = {("todo", "doing"), ("doing", "blocked"), ("blocked", "doing")}
 _TASK_COORD_MOVES = {
+    ("todo", "stopped"),   # 没开工就放弃（现实里常见）
     ("doing", "done"),
     ("blocked", "done"),
     ("doing", "stopped"),
@@ -3936,6 +3967,28 @@ def _lock_ttl(value) -> int:
 def _lock_expiry(now_iso: str, ttl: int) -> str:
     base = datetime.strptime(now_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     return (base + timedelta(seconds=ttl)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _release_window_locks(conn: sqlite3.Connection, window_id: str, now: str, why: str) -> int:
+    """窗口离场 / 被判死：放掉它名下的写锁，**并逐条留痕**。
+
+    cursor 报的洞：原来这里是裸 `DELETE`，事后痕迹里只有 `lock`、没有 `unlock`，
+    "谁知道那把锁是被谁弄没的"就查不出来了。
+    """
+    rows = conn.execute("SELECT * FROM locks WHERE window_id = ?", (window_id,)).fetchall()
+    if not rows:
+        return 0
+    conn.execute("DELETE FROM locks WHERE window_id = ?", (window_id,))
+    for row in rows:
+        _emit_task_event(
+            conn, row["task_id"] or "", row["agent"], "unlock", "", "",
+            {
+                "path": row["path"], "why": why, "auto": True, "window_id": window_id,
+                "held_since": row["acquired_at"],
+            },
+            now,
+        )
+    return len(rows)
 
 
 def _lock_remaining(expires_iso: str) -> int:

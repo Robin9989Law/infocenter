@@ -217,6 +217,8 @@ def main(argv=None) -> int:
     guard.add_argument("--quiet", action="store_true", help="静默，只用退出码")
     guard.add_argument("--any-holder", action="store_true",
                        help="只要求有锁覆盖（git 钩子用）；默认要求是你自己的锁")
+    guard.add_argument("--staged", action="store_true",
+                       help="只查**暂存区**（git 钩子用：闸门要盯「这次提交了什么」）；默认查整棵工作区（更严）")
     guard.add_argument("--install-hook", action="store_true",
                        help="把本仓库的提交闸钩子装上（git config core.hooksPath .githooks），幂等")
 
@@ -450,7 +452,7 @@ def main(argv=None) -> int:
             if args.anchor:
                 return _write_audit_anchor(args, agent, home)
             query = {"task": args.task}
-            anchor = _read_audit_anchor(Path(args.anchor_file))
+            anchor = _read_audit_anchor(_anchor_path(args.anchor_file))
             if anchor:
                 query.update(
                     {
@@ -467,7 +469,7 @@ def main(argv=None) -> int:
                 return _install_commit_hook(subprocess)
             paths = args.paths
             if not paths:
-                paths = _changed_paths(subprocess)
+                paths = (_staged_paths if getattr(args, "staged", False) else _changed_paths)(subprocess)
                 if not paths:
                     payload = {"ok": True, "checked": 0, "covered": [], "unlocked": [], "locked_by_others": []}
                     if not args.quiet:
@@ -609,6 +611,21 @@ ANCHOR_HEADER = (
 )
 
 
+def _anchor_path(value) -> "Path":
+    """外锚文件路径：相对路径一律以**仓库根**为准。
+
+    pi 实测：按 cwd 解析时，在子目录跑 `ic audit` 会报「外锚：无」＝**锚校验被静默跳过**
+    （整表重做查不出来），`ic audit --anchor` 还会在子目录另写一个锚文件、把根锚抛下。
+    """
+    path = Path(value)
+    if path.is_absolute():
+        return path
+    import subprocess
+
+    top = _git_toplevel(subprocess)
+    return (Path(top) / path) if top else path
+
+
 def _read_audit_anchor(path) -> dict | None:
     """读外锚文件（没有/读不懂都当没有，不拦人）。"""
     try:
@@ -635,8 +652,26 @@ def _write_audit_anchor(args, agent: str, home=None) -> int:
     if not seq or not tip:
         print("还没有任何痕迹，没什么可锚的")
         return 0
+    # 洗锚防护（cursor）：**先拿现有锚验一次**，对不上就拒绝覆盖——
+    # 否则伪造过的链会被 `--anchor` 就地"盖章"，把旧锚作废。
+    existing = _read_audit_anchor(_anchor_path(args.anchor_file))
+    if existing:
+        checked = call(
+            args.url, agent, "GET", "/v1/audit",
+            query={
+                "task": args.task,
+                "anchor_seq": existing["seq"],
+                "anchor_hash": existing["hash"],
+                "anchor_at": existing.get("at", ""),
+            },
+            home=home,
+        )
+        if not (checked.get("anchor") or {}).get("ok"):
+            print("**拒绝打锚**：现有外锚对不上（" + str((checked.get("anchor") or {}).get("why") or "未知") + "）")
+            print("  说明库里的链在这之后被改过/重做过。先查清再打锚，别把旧锚作废。")
+            return 1
     stamp = beijing_stamp()
-    path = Path(args.anchor_file)
+    path = _anchor_path(args.anchor_file)
     path.write_text(ANCHOR_HEADER + f"{seq} {tip} {stamp}\n", encoding="utf-8")
     print(f"外锚已写入 {path}")
     print(f"  seq {seq}  {tip[:16]}…  （{stamp} 北京时间）")
@@ -665,7 +700,7 @@ def _install_commit_hook(subprocess, cwd=None) -> int:
         print(f"装上了但读回来是 {got!r}，请手工执行：git config core.hooksPath .githooks")
         return 1
     print(f"提交闸已装（幂等）：core.hooksPath = .githooks，钩子 {hook}")
-    print("  以后每次 git commit 都会自动跑 `ic guard --quiet --any-holder`。")
+    print("  以后每次 git commit / merge 都会自动跑两道：`ic guard --quiet --any-holder --staged` + `ic audit --quiet`。")
     return 0
 
 
@@ -684,30 +719,78 @@ def _hook_warning() -> str:
     return "  ⚠ 本仓库没装提交闸钩子：现在只有显式跑 `ic guard` 才拦得住（`ic guard --install-hook` 装上）"
 
 
-def _changed_paths(subprocess) -> list[str]:
-    """取当前 git 工作区里被改/新增的文件（绝对路径）；删除的不算。"""
-    from pathlib import Path as _P
-
+def _git_toplevel(subprocess) -> str:
+    """仓库根（**一切 git 路径都以它为基准**，绝不用 cwd——子目录跑会算出假路径）。"""
     try:
         out = subprocess.run(
-            ["git", "status", "--porcelain", "-uall"], capture_output=True, text=True, timeout=10
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return out.stdout.strip() if out.returncode == 0 else ""
+
+
+def _git_paths(subprocess, args: list[str], *, status_in_record: bool) -> list[str]:
+    """跑一条 git 路径类命令，返回**绝对路径**（`-z` 输出，天然不转义）。
+
+    三条铁律（pi 2026-10-15 实测报的洞，坏起来是**静默**的，不是报错）：
+      ① **不用** `--porcelain` 的默认文本输出：`core.quotepath` 默认 true，非 ASCII（如中文目录）
+         会被写成 `"\351\234\200…"`（带引号 + 反斜杠八进制）⇒ 解析出来是**不存在的路径**，
+         于是 lock 与 guard 用同一个假 key、互相自洽、**照样放行**，互斥却已经失效；
+         故用 `-z` + `-c core.quotepath=false`。
+      ② 路径是**仓库根**相对 ⇒ 以 `_git_toplevel()` 为基准拼，**不用 cwd**。
+      ③ `-z` 下两种输出形态不一样：`--porcelain` 是 `XY␠路径` 一条记录（rename 时紧跟一条
+         `原路径`），而 `--name-only` 是每条记录就是一个路径 ⇒ 用 `status_in_record` 区分，
+         不许再按 `" -> "` 猜（文件名本身含 ` -> ` 会切错）。
+    """
+    from pathlib import Path as _P
+
+    top = _git_toplevel(subprocess)
+    if not top:
+        return []
+    try:
+        out = subprocess.run(
+            ["git", "-c", "core.quotepath=false", *args],
+            capture_output=True, timeout=10,
         )
     except (OSError, subprocess.SubprocessError):
         return []
     if out.returncode != 0:
         return []
+    records = [r for r in out.stdout.decode("utf-8", "surrogateescape").split("\0") if r]
     paths: list[str] = []
-    for line in out.stdout.splitlines():
-        code, _, rest = line[:2], line[2:3], line[3:]
-        if code.strip().startswith("D"):
-            continue
-        name = rest.strip().strip('"')
-        if " -> " in name:  # rename
-            name = name.split(" -> ", 1)[1]
-        if not name:
-            continue
-        paths.append(str(_P(name).expanduser().resolve()))
+    index = 0
+    while index < len(records):
+        if status_in_record:
+            record = records[index]
+            index += 1
+            code, name = record[:2], record[3:]
+            if code[:1] in {"R", "C"} or code[1:2] in {"R", "C"}:
+                index += 1  # 紧跟一条"原路径"记录，跳过
+            if "D" in code or not name:
+                continue  # 删除的不算：没有可锁的文件
+        else:
+            name = records[index]
+            index += 1
+        paths.append(str((_P(top) / name).resolve()))
     return paths
+
+
+def _changed_paths(subprocess) -> list[str]:
+    """工作区里被改/新增的文件（绝对路径，**不转义、按仓库根**）。`ic lock --changed` 用。"""
+    return _git_paths(
+        subprocess, ["status", "--porcelain", "-z", "-uall"], status_in_record=True
+    )
+
+
+def _staged_paths(subprocess) -> list[str]:
+    """**暂存区**里被改/新增的文件（绝对路径）。`ic guard --staged` 用：闸门要盯的是
+    "这次提交了什么"，而不是整棵工作区（cursor 实测：一个未跟踪的 junk.tmp 就能让空提交失败）。"""
+    return _git_paths(
+        subprocess,
+        ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"],
+        status_in_record=False,
+    )
 
 
 def _mcp_identity(args) -> str | None:

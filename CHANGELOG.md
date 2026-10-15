@@ -8,6 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`ic guard --staged`**：只查**暂存区**（`git diff --cached --name-only -z --diff-filter=ACMR`）。提交钩子用它——闸门要盯的是"这次提交了什么"，而不是整棵工作区（cursor 实测：一个未跟踪的 `junk.tmp` 就能让空提交失败）。手工跑 `ic guard` 默认仍查整棵工作区（更严）
+- **`.githooks/pre-merge-commit`**：非快进 merge 不回落 `pre-commit`（cursor 实测 merge 时钩子根本不跑，改动无锁落地）⇒ 现在多一个同内容的钩子把 merge 也罩住
+- **`ic lock --changed` 与显式路径取并集**：原来给了路径就顶掉 `--changed`（打锚时踩到：锚文件锁上了、9 个源文件反而没锁）
 - **控制台改三层：项目 / WBS / 案卷（M7-3）**：中间栏从「办公室」换成 **WBS 树**（从案卷 `wbs_path` **派生**，不建表；含「未归类」节点，父节点计数含子树）；点 WBS → 右边只看该 WBS（含子路径）的案卷。**「办公室」改称「项目团队会话」并从控制台移出**（WBS 栏右上角按钮进二级页：会话状态 / 设置 / 实时状态）——会话只负责并发隔离与认领，不是业务概念。文案同步：停用会话的二次确认不再说「离场并封卷」（M7-1 之后这句已经不成立，UI 不能骗人）
 - **看板人话 + 「人话过期」（M7-4，不新增字段）**：案卷的**人话 = coordinator 写的最后一行节点**（role=coordinator 或 human，且非自动节点）；若这行之后又有别的节点，`ic cases` / 控制台给它标 **⚠ 人话过期**（看板说法可能已不准，等 coordinator 重写）。agent 写的节点是②线备忘，**不当作给人看的记录**。`_case_view` 新增 `human_note` / `human_by` / `human_at_beijing` / `human_stale`
 - **案卷 = 控制包：WBS 路径 + 里程碑（M7-2）**：`cases` 加两列（在线迁移自愈）——`wbs_path`（**WBS 树路径**，`父/子`，空 = 未归类；**一个案卷唯一归属一个 WBS**）与 `milestones`（**一列 JSON** `[{"name","owner","done"}]`，**不建表**）。命令：`ic case <id> --wbs 父/子`、`--milestone-add "名字" [--milestone-owner X]`、`--milestone-done N`（`!N` 撤回）；`ic cases --wbs 父`（含子路径）。**WBS 与里程碑的写权限一律 coordinator**（agent 提议、coordinator 落），每次改动在案卷上留一行 `milestone` / `wbs` 节点。HTTP：`POST /v1/cases/{id}/milestone|milestone-done|wbs`、`GET /v1/cases?wbs=`、立案可带 `wbs_path`/`milestones`
@@ -39,6 +42,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 测试数量从 16 增加到 158（A 质量 / B 联邦 / C 发布 / D 窗口·案卷·应用 + M5 最后评审加固），全量零 `ResourceWarning`
 
 ### Fixed
+- **闸门取路径三处静默失效（pi 实测报的 P1，"假绿灯"）**：`_changed_paths`（`ic lock --changed` 与 `ic guard` 的唯一取路径入口）有三个坑，坏起来**不报错**：① `git status --porcelain` 默认把非 ASCII 路径转义成 `"\351\234\200…"` ⇒ 解析出**不存在的路径**，而 lock 与 guard 用同一个假 key、互相自洽、**照样放行**（互斥却已经没了）——本仓 `需求文档/` 整棵在闸门外；② `--porcelain` 是**仓库根**相对，代码却按 cwd 解析 ⇒ 子目录里跑全是假路径；③ rename 按文本 `" -> "` 猜，文件名含 ` -> ` 会切错。现：`git -c core.quotepath=false … -z`（NUL 记录，天然不转义）+ 以 `git rev-parse --show-toplevel` 为基准 + 显式处理 rename 的第二条记录。**外锚同口径**：新增 `_anchor_path()`，相对路径一律以**仓库根**为准（否则在子目录跑 `ic audit` 会报"外锚：无"＝**锚校验被静默跳过**，`--anchor` 还会另写一个锚）。+ `tests/test_gate_paths.py`（8 项，真 git 仓库：中文/空格目录、含 ` -> ` 的文件名、子目录一致性、锁真实路径后另一身份必须 409）
+- **表里放锁不留痕（cursor 实测）**：窗口离场（`leave_window`）与惰性对账判死进程这两条路原来是裸 `DELETE FROM locks` ⇒ 痕迹里只有 `lock`、没有 `unlock`，"这把锁是谁弄没的"查不出来。现统一走 `_release_window_locks()`：先查行、再删、**逐条**写 `unlock` 事件（带 `why`/`window_id`/`held_since`）
+- **痕迹与任务行可能不一致（会让 `ic audit` 变红、之后每次提交都被钩子挡）**：`task_set_status` / `task_update` / `task_bump` 原来把**调用方原文**写进痕迹，而行里存的是**规范化后**的值（标题 trim、`owner` 小写、验收截断）⇒ 重放对不上。现统一**照抄写进行里的值**
+- **任务状态机是死代码 + 一个真漏洞（cursor 实测）**：`_TASK_OWNER_MOVES` / `_TASK_COORD_MOVES` 没被查过，实际只判"是否终态 + 是否 coordinator" ⇒ `doing→todo` 与 `todo→done` 都能走通。其中 `doing→todo` 是**真漏洞**：倒回 todo 等于**解冻规格**，绕开"开工即冻结"。现状态机 = **两张表的并集，对谁都一样**（含 coordinator）；补 `(todo, stopped)`（没开工就放弃是合法收口）
+- **终态任务还能调优先级（cursor 实测）**：`task_bump` 不看终态、也不走 `_task_priority`（曾能到 140）。现终态返回 `task_closed`，优先级统一走 `_task_priority`（封顶 99）
+- **`ic audit --anchor` 可能给"伪造过的链"盖章（洗锚，cursor 实测）**：打锚前不验旧锚 ⇒ 改完再重算哈希后打一次锚，就把旧锚作废了。现**先用现有锚验一次**，不通过直接拒打锚（锚文件一字不动）
 - **窗口离场／进程死不再自动中止案卷（M7，与宪法一致）**：原实现里 `leave_window` 与惰性对账会把主办窗口名下未封卷案卷**自动转 `aborted` 并封卷**，导致"人还在办事、会话一断案卷就死"——grok 实测 11:55 办公室 `w-beh...` 离场后案卷被 `[自动]` 封卷、随后写节点被 `case_sealed` 拒。现按 human 定稿（**案卷只随"事做完"关闭，与办公室/agent 在不在无关**）：程序只做两件**无争议**的事——摘掉主办窗口指针 + 记一行 `[自动]` 说明（**状态不动、不封卷**）；中止/办结**一律显式**（`abort`/`close`，带交接）。`/v1/windows/<id>/leave` 回执改为 `orphaned_cases`（`aborted_cases` 恒为空，保留字段）
 - **`ic lock --force` 不核身份（第 1 道闸的洞）**：CLI 写着"仅 coordinator"，`store.lock_acquire` 只看一个布尔 ⇒ **任意 agent 用 HTTP body 就能抢别人的锁**（与 `lock_release --force` 不对称）。现与放锁一致：`force` 必须 coordinator
 - `ic lock` 回执仍在打裸 UTC（`...Z`）——上一版只改了列表视图、漏了顶层 `expires_at`；补 `expires_at_beijing`，并在回执里写明"**续期＝重复执行同一命令**"

@@ -1,13 +1,13 @@
 #!/bin/sh
 # 程序防火墙（M9/M10）：提交前两道机械检查。
-#   1) 提交闸：工作区改动是否都被写锁覆盖（coordinator 可替成员落地）
+#   1) 提交闸：**本次暂存**的改动是否都被写锁覆盖（coordinator 可替成员落地）
 #   2) 留痕校验：哈希链是否完整、重放是否与任务现状一致、外锚是否对得上
 # 离线或服务不可达时不阻断，避免被锁死；确需绕过用 `git commit --no-verify`。
 if command -v ic >/dev/null 2>&1 && ic status >/dev/null 2>&1; then
-  if ! ic guard --quiet --any-holder; then
+  if ! ic guard --quiet --any-holder --staged; then
     echo ""
     echo "⛔ 提交被挡住：有改动没有写锁（程序防火墙 M9）。"
-    ic guard || true
+    ic guard --staged || true
     echo "   → 先 \`ic lock <路径>\`（或让锁的主人提交）；确需绕过：git commit --no-verify"
     exit 1
   fi
