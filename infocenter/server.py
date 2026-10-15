@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from infocenter import DEFAULT_HOST, DEFAULT_PORT, config
 from infocenter.httpapi import MAX_BODY, handle
-from infocenter.store import MailError, Store, pid_alive
+from infocenter.store import MailError, Store, atomic_replace, pid_alive
 
 _WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 _MIME = {
@@ -280,10 +280,8 @@ def bind_and_serve(host: str, port: int, home, notify=None) -> int:
 
 
 def _write_meta(home, meta: dict) -> None:
-    path = server_json(home)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(meta), encoding="utf-8")
-    os.replace(tmp, path)
+    # 字节与原来的 json.dumps(meta) 一致；落盘改走 atomic_replace（fsync，失败不留半截）。
+    atomic_replace(server_json(home), json.dumps(meta).encode("utf-8"))
 
 
 def serve(host: str, port: int, home, detach: bool) -> int:

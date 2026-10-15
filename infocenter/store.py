@@ -3482,6 +3482,36 @@ class Store:
 # ── 内部辅助函数 ──────────────────────────────────────────────────────────
 
 
+def atomic_replace(path, data: bytes) -> None:
+    """把 data 换到 path 上，目标文件不会停在写了一半的状态。
+
+    与旧 sync._atomic_write 同一条纪律：同目录临时名、写入后 fsync、os.replace，
+    失败删掉临时文件。不创建父目录，也不 fsync 目录项（原先 sync 也没有）。
+    最终字节由调用方自己序列化，因为 indent / ensure_ascii 各处不同。
+
+    相对 config.save、server._write_meta、crew._write_meta（固定 *.json.tmp、不 fsync）
+    和 crew._write_pid_record（直接 write_text）的变化：
+    - 临时文件改成 `.原名.<pid>.<随机>.tmp`，不再占用固定的 `*.json.tmp`。
+    - 写入会 fsync；失败清掉临时文件。
+    - pid 记录不再直接覆盖目标，中途失败时旧文件还在。
+    成功后的文件内容与各调用方原来的 json.dumps 参数一致。
+    """
+    path = Path(path)
+    tmp = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    try:
+        with open(tmp, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def pid_alive(pid, *, policy: str) -> bool:
     """进程是否按调用方的口径算「还在」。四套旧判断收成这一处，口径必须写明。
 

@@ -23,10 +23,9 @@
 """
 
 import json
-import os
 from pathlib import Path
 
-from infocenter.store import MailError, normalize_name
+from infocenter.store import MailError, atomic_replace, normalize_name
 
 DEFAULT_AGENTS = (
     {"name": "grok", "description": "Grok"},
@@ -88,9 +87,9 @@ def load(home) -> dict:
 def save(home, config: dict) -> None:
     path = config_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    # indent / ensure_ascii / 末尾换行保持原样，只把落盘换成 atomic_replace。
+    text = json.dumps(config, ensure_ascii=False, indent=2) + "\n"
+    atomic_replace(path, text.encode("utf-8"))
 
 
 def _read_document(home) -> dict:

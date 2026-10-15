@@ -32,6 +32,7 @@ from infocenter.client import NO_PID_ENV, ApiError, request
 from infocenter.store import (
     MailError,
     _workspace_scope,
+    atomic_replace,
     beijing_stamp,
     new_window_id,
     normalize_name,
@@ -263,7 +264,8 @@ def _load_pid_record(home, key: str) -> dict | None:
 
 def _write_pid_record(home, key: str, pid: int, started_at: str) -> None:
     payload = {"pid": pid, "started_at": started_at, "marker": "ic-crew"}
-    _pid_file(home, key).write_text(json.dumps(payload), encoding="utf-8")
+    # 以前直接 write_text，写到一半会留下半截 pid 文件。内容仍是 json.dumps 默认参数。
+    atomic_replace(_pid_file(home, key), json.dumps(payload).encode("utf-8"))
 
 
 def _reserve_pid_file(home, key: str) -> int:
@@ -416,10 +418,8 @@ def _read_meta(home, key: str) -> dict:
 
 
 def _write_meta(home, key: str, meta: dict) -> None:
-    path = _meta_file(home, key)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
-    tmp.replace(path)
+    text = json.dumps(meta, ensure_ascii=False)
+    atomic_replace(_meta_file(home, key), text.encode("utf-8"))
 
 
 def _set_cooldown_meta(home, key: str, kind: str, seconds: int) -> None:

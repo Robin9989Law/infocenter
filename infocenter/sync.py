@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import re
-import secrets
 import sqlite3
 import stat
 import sys
@@ -26,6 +25,7 @@ from infocenter.store import (
     _priority,
     _subject,
     _workspace_scope,
+    atomic_replace,
     utcnow,
 )
 
@@ -454,20 +454,9 @@ def _string_list(value) -> list[str]:
 
 
 def _atomic_write(directory: Path, name: str, data: bytes) -> None:
+    directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
-    tmp = directory / f".{name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
-    try:
-        with open(tmp, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, directory / name)
-    except Exception:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
+    atomic_replace(directory / name, data)
 
 
 def _mailbox_rows(path: Path):
