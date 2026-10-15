@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **一把钥匙 + 用完放回去 + 锁＝只读**（human 定稿的口径，落到机制）：
+  - **单钥匙**：锁按路径唯一，但"文件"不只等于"路径字符串"——新增 inode 比对（`_same_file`/`_fingerprint`），`./a`、绝对路径、符号链接、**硬链接**、macOS 大小写不敏感下的 `A.py`/`a.py` 都只算同一个文件（换个写法绕不过去）；同一文件的旧写法残留会把那一把换掉，**且只换那一把**
+  - **锁＝只读**：拿钥匙时给文件打开 owner 写位，放钥匙时**清掉所有写位**（444/555）⇒ 带插件的、不带插件的、`shell > file`、别的 agent 的编辑器**一律先拿钥匙**（实测：直接写抛 `PermissionError`）；读权限不动（**可以只读**）
+  - **用完放回去**：新增 `.githooks/post-commit` —— 提交后**自动**放掉本次提交涉及的钥匙，身份取自 `git config --local infocenter.agent`（`ic guard --install-hook` 写入）；只放自己的、空输入绝不退化成"放掉我全部钥匙"（`$(...)` 会丢 NUL ⇒ 必须管道给 `xargs -0`，这两个坑都有回归测试）
+  - + `tests/test_lock_single_key.py`（16 项：单钥匙/inode/只读/自动放回/钩子空输入/中文路径）
 - **写侧自动拿钥匙：`.opencode/plugins/infocenter-lock`（OpenCode 插件）**。规矩（human 定稿）：**所有文件都锁住；要改就拿钥匙开锁；一旦开锁，别的 agent 就改不了；改完（提交）锁回去**。提交那一刻本来就由 git 钩子兜底，但**写**的那一刻 git 看不见 ⇒ 插件在 `edit` / `write` 落盘**之前**自动 `POST /v1/locks`：拿到就放行（重复拿＝续期），**别人开着锁就直接拒绝这次写**（工具报错，模型看得见），信息中心不可达则放行（离线不阻断）。边界：只罩本会话的 `edit`/`write`（`shell` 绕得过）、只对插件所在项目目录生效；别的 agent 的 CLI 没有这个插件，仍靠自觉 + 提交闸
 - **死流程兜底由机器自己跑（`Store.sweep()` + 服务端后台定时器）**：过期锁、**死进程窗口**、**僵尸认领**三件事原来只在"有人 inbox 时才顺手清"触发 ⇒ 低活跃项目可能很久不回收（pi 报的洞）。现服务端起一个 60s 的守护线程专做这件事，且**只做无争议回收、全部留痕**（`lock_expire` / `claim_release`），**绝不碰语义状态**
 - **认领 TTL（`CLAIM_TTL`，默认 7200s）**：认领原来**没有 TTL** ⇒ 僵尸窗口（pid 活着但不再干活）的未读认领永不回收，那封信对团队长时间不可见。现"`claimed_at` 超时 **且** 那个窗口也超时没跟服务说过话" ⇒ 回收（TTL 故意大于 `headless_timeout`：长任务跑起来时窗口本来就是安静的）

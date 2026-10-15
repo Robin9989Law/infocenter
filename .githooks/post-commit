@@ -1,0 +1,20 @@
+#!/bin/sh
+# 提交即把钥匙放回去（human 2026-10-15 定稿：每个文件只有一把钥匙，用完了放回去别人才能接着用）。
+#
+# 两个坑（都踩过，别再犯）：
+#   ① 不能把 `git show -z` 的输出接进 `$(...)`：命令替换会把 NUL 丢掉，路径会粘成一条；
+#      必须直接管道给 `xargs -0`。
+#   ② 空输入时 `xargs` 仍会跑一次命令 ⇒ 会变成 `ic unlock`（＝放掉我**全部**钥匙）。故先判空。
+agent="$(git config --local infocenter.agent 2>/dev/null)"
+[ -n "$agent" ] || agent="${INFOCENTER_AGENT:-}"
+[ -n "$agent" ] || exit 0
+command -v ic >/dev/null 2>&1 || exit 0
+ic status >/dev/null 2>&1 || exit 0
+top="$(git rev-parse --show-toplevel 2>/dev/null)"
+[ -n "$top" ] || exit 0
+cd "$top" || exit 0
+# 有文件才放（`grep -z .` 读 NUL 流，不经过 shell 变量）
+git show --name-only --pretty=format: -z HEAD 2>/dev/null | grep -zq . || exit 0
+git show --name-only --pretty=format: -z HEAD 2>/dev/null \
+  | xargs -0 ic --as "$agent" unlock >/dev/null 2>&1 || true
+exit 0

@@ -2367,11 +2367,23 @@ class Store:
             _locks_sweep(conn, now)
             held = []
             skipped: list[dict] = []
+            existing = conn.execute("SELECT * FROM locks").fetchall()
             for path in wanted:
                 row = conn.execute("SELECT * FROM locks WHERE path = ?", (path,)).fetchone()
+                if row is None:
+                    # 字符串没命中，还可能被**同一个文件的另一种写法**占着（大小写/硬链接）
+                    row = next(
+                        (r for r in existing if _same_file(r["path"], path)),
+                        None,
+                    )
                 if row is None or row["agent"] == agent or force:
                     continue
-                item = {"path": path, "agent": row["agent"], "since": row["acquired_at"]}
+                item = {
+                    "path": path,
+                    "holds": row["path"],
+                    "agent": row["agent"],
+                    "since": row["acquired_at"],
+                }
                 if skip_locked:
                     skipped.append(item)
                 else:
@@ -2389,6 +2401,12 @@ class Store:
                     409,
                 )
             for path in wanted:
+                # 同一个文件的另一种写法若还留着钥匙 ⇒ 清掉那一把（**只清它**，别误伤别人的锁）
+                for stale in [
+                    r["path"] for r in conn.execute("SELECT path FROM locks").fetchall()
+                    if r["path"] != path and _same_file(r["path"], path)
+                ]:
+                    conn.execute("DELETE FROM locks WHERE path = ?", (stale,))
                 conn.execute(
                     """
                     INSERT INTO locks(path, agent, window_id, task_id, note, acquired_at, expires_at)
@@ -2410,6 +2428,8 @@ class Store:
             rows = conn.execute(
                 "SELECT * FROM locks WHERE path IN (%s)" % ",".join("?" * len(wanted)), wanted
             ).fetchall()
+            for path in wanted:
+                _chmod_writable(path)  # 钥匙在手 ⇒ 这个文件现在可写；放锁时再变回只读
             res = {
                 "agent": agent,
                 "ttl": ttl_seconds,
@@ -2461,6 +2481,7 @@ class Store:
                         conn.execute("DELETE FROM locks WHERE path = ? AND agent = ?", (path, agent))
             targets = [row["path"] for row in rows]
             released = len(rows)
+            _restore_readonly(rows)
             for row in rows:
                 _emit_task_event(
                     conn, row["task_id"] or "", row["agent"], "unlock", "", "",
@@ -4002,7 +4023,12 @@ def _task_text(value, limit: int = TASK_TEXT_MAX) -> str:
 
 
 def _lock_paths(paths) -> list[str]:
-    """把路径规整成绝对路径列表（去重）；空 ⇒ 400。"""
+    """把路径规整成绝对路径列表（去重）；空 ⇒ 400。
+
+    「每个文件只有一把钥匙」的第一步：`resolve()` 会把 `./a.py`、`a.py`、符号链接、
+    `/var` vs `/private/var` 这类**同一个文件的不同写法**归一（实测踩过 tmpdir 符号链接）。
+    第二步（inode 比对）在 `_same_file()`：macOS 文件系统默认大小写不敏感 ⇒
+    `A.py` 与 `a.py` 是同一个文件、却是两个字符串，光靠字符串会**长出两把钥匙**。"""
     if isinstance(paths, str):
         items = [part for part in re.split(r"[\s,]+", paths) if part.strip()]
     elif isinstance(paths, (list, tuple, set)):
@@ -4022,6 +4048,56 @@ def _lock_paths(paths) -> list[str]:
     return out
 
 
+def _chmod_locked(path: str) -> None:
+    """**锁＝只读**：没人拿钥匙时，文件只能读、不能改（`u+w` 去掉、别人的写位也去掉）。
+
+    为什么落到文件系统（而不只是数据库里记一笔）：这样**所有**写者都被挡住——
+    带插件的、不带插件的、`shell > file`、别的 agent 的编辑器，一律先得拿钥匙。
+    读权限**一个都不动**（可以只读）。
+    """
+    try:
+        mode = os.stat(path).st_mode & 0o7777
+    except OSError:
+        return  # 不存在/没权限：不动（写文件前先锁的路径本来就可能还没建）
+    readonly = mode & ~0o222
+    if readonly != mode:
+        try:
+            os.chmod(path, readonly)
+        except OSError:
+            pass
+
+
+def _chmod_writable(path: str) -> None:
+    """**拿钥匙期间可写**：只给 owner 加写位，读位不动。"""
+    try:
+        mode = os.stat(path).st_mode & 0o7777
+    except OSError:
+        return
+    writable = mode | 0o200
+    if writable != mode:
+        try:
+            os.chmod(path, writable)
+        except OSError:
+            pass
+
+
+def _fingerprint(path: str) -> tuple[int, int] | None:
+    """文件的 (设备号, inode)。取不到（不存在/没权限）⇒ None。"""
+    try:
+        info = os.stat(path)
+    except OSError:
+        return None
+    return (info.st_dev, info.st_ino)
+
+
+def _same_file(a: str, b: str) -> bool:
+    """两个路径是不是**同一个文件**（字符串相同，或 inode 相同）。"""
+    if a == b:
+        return True
+    left, right = _fingerprint(a), _fingerprint(b)
+    return left is not None and left == right
+
+
 def _lock_ttl(value) -> int:
     try:
         seconds = int(value if value not in (None, "") else LOCK_TTL)
@@ -4035,6 +4111,12 @@ def _lock_expiry(now_iso: str, ttl: int) -> str:
     return (base + timedelta(seconds=ttl)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _restore_readonly(rows) -> None:
+    """放钥匙 ⇒ 文件**变回只读**（锁＝只读；读不受影响）。"""
+    for row in rows:
+        _chmod_locked(row["path"])
+
+
 def _release_window_locks(conn: sqlite3.Connection, window_id: str, now: str, why: str) -> int:
     """窗口离场 / 被判死：放掉它名下的写锁，**并逐条留痕**。
 
@@ -4045,6 +4127,7 @@ def _release_window_locks(conn: sqlite3.Connection, window_id: str, now: str, wh
     if not rows:
         return 0
     conn.execute("DELETE FROM locks WHERE window_id = ?", (window_id,))
+    _restore_readonly(rows)
     for row in rows:
         _emit_task_event(
             conn, row["task_id"] or "", row["agent"], "unlock", "", "",
@@ -4074,6 +4157,7 @@ def _locks_sweep(conn: sqlite3.Connection, now_iso: str) -> int:
     if not rows:
         return 0
     conn.execute("DELETE FROM locks WHERE expires_at <= ?", (now_iso,))
+    _restore_readonly(rows)
     for row in rows:
         _emit_task_event(
             conn, row["task_id"] or "", row["agent"], "lock_expire", "", "",
