@@ -2658,7 +2658,18 @@ class Store:
             current = self.list_queue(target)["pending"]
             wanted = [int(item["seq"]) for item in current]
             if ids:
-                wanted = [int(str(item).lstrip("q")) for item in ids]
+                wanted = []
+                for item in ids:
+                    token = str(item).strip().lstrip("qQ")
+                    if not token.isdigit():
+                        # 不许把坏输入抛成 500：说清"该写成什么样"（实测踩过：`--id q377,q457`
+                        # 整串被当成一个 id ⇒ ValueError ⇒ 500，人只看到「服务器内部错误」）。
+                        raise MailError(
+                            "invalid_id",
+                            f"`--id` 只认 `q<编号>`（如 q271）；多条可以重复给或用逗号分隔：收到 {item!r}",
+                            400,
+                        )
+                    wanted.append(int(token))
             if not wanted:
                 raise MailError("empty_queue", "这个文件没有排队中的改动", 400)
             text = _task_text(note, 2000)

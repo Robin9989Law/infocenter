@@ -231,7 +231,8 @@ def main(argv=None) -> int:
     queue.add_argument("--patch-file", dest="patch_file", default=None, help="改动补丁（可选，从文件读）")
     queue.add_argument("--merge", action="store_true",
                        help="合并排队的改动（**只有拿钥匙的人**或 coordinator 能做）")
-    queue.add_argument("--id", dest="ids", action="append", default=None, help="只合并这几条（q<seq>）")
+    queue.add_argument("--id", dest="ids", action="append", default=None,
+                       help="只合并这几条（q<编号>；可重复给，也可逗号分隔：--id q271,q272）")
     queue.add_argument("--task", default=None, help="提议关联的任务")
     queue.add_argument("--no-todo", action="store_true",
                        help="只在库里留提议，不往自己的 TODO-<名字>.md 里写一行（默认**要写**：别忘了）")
@@ -529,7 +530,7 @@ def main(argv=None) -> int:
             if args.merge:
                 payload = call(
                     args.url, agent, "POST", "/v1/locks/queue/merge",
-                    {"path": args.path, "ids": args.ids}, home=home,
+                    {"path": args.path, "ids": _split_ids(args.ids)}, home=home,
                 )
             elif args.note or args.patch_file:
                 payload = call(
@@ -659,6 +660,18 @@ def main(argv=None) -> int:
 ANCHOR_HEADER = (
     "# 留痕外锚（链头）：这一行连同 git 一起提交。库被整表重做 / 链被改时，`ic audit` 靠它查出来。\n"
 )
+
+
+def _split_ids(values) -> list[str]:
+    """`--id q271` / `--id q271 --id q272` / `--id q271,q272` 都认。
+
+    argparse 用 `action="append"`：逗号写法会整串进来（`"q271,q272"`），
+    直接下发会让 store 拿它去 `int()` ⇒ 500。在这里拆开，人怎么写都行。
+    """
+    out = []
+    for chunk in values or []:
+        out.extend(part.strip() for part in str(chunk).split(",") if part.strip())
+    return out
 
 
 def _todo_path(agent: str) -> Path:
