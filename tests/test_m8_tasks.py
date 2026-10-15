@@ -6,6 +6,7 @@
 """
 
 import os
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -144,27 +145,73 @@ class TaskQueueStoreTest(unittest.TestCase):
                     self.store.task_set_status("opencode", t["id"], target, handoff=self.HANDOFF)
                 self.assertEqual(ctx.exception.code, "task_closed")
 
-    def test_start_requires_spec_three_pieces(self):
+    def test_spec_incomplete_does_not_block_start(self):
+        # 第三条线只兜底：规格不全**不拦人**（看板自己标黄）
         t = self.store.task_add("opencode", "缺规格", owner="cursor", workspace=WS)
-        with self.assertRaises(MailError) as ctx:
-            self.store.task_start("cursor", t["id"])
-        self.assertEqual(ctx.exception.code, "spec_incomplete")
-        self.assertEqual(ctx.exception.status, 400)
+        self.assertEqual(self.store.task_start("cursor", t["id"])["status"], "doing")
 
-    def test_stop_requires_three_handoff_sections(self):
+    def test_stop_requires_non_empty_handoff(self):
         t = self._add()
         self.store.task_start("cursor", t["id"])
-        with self.assertRaises(MailError) as ctx:
-            self.store.task_set_status("opencode", t["id"], "stopped", handoff="做完了")
-        self.assertEqual(ctx.exception.code, "handoff_incomplete")
-        with self.assertRaises(MailError) as ctx:
-            self.store.task_set_status(
-                "opencode", t["id"], "stopped",
-                handoff="progress: 做到一半\npitfalls: 没坑",
-            )
-        self.assertEqual(ctx.exception.code, "handoff_incomplete")
-        ok = self.store.task_set_status("opencode", t["id"], "stopped", handoff=self.HANDOFF)
+        for bad in ("", "   "):
+            with self.subTest(handoff=bad):
+                with self.assertRaises(MailError) as ctx:
+                    self.store.task_set_status("opencode", t["id"], "stopped", handoff=bad)
+                self.assertEqual(ctx.exception.code, "handoff_required")
+        # 一整段自由文本即可（不切三段）
+        ok = self.store.task_set_status(
+            "opencode", t["id"], "stopped", handoff="做到一半就停了；产物在 _work/x.md；坑：上游 sha 会变"
+        )
         self.assertEqual(ok["status"], "stopped")
+
+    # ── 留痕：程序自己写 + 机器验证 ──────────────────────────────────────
+    def test_every_mutation_leaves_a_trace_and_audit_passes(self):
+        t = self._add()
+        self.store.task_update("opencode", t["id"], acceptance="改过的验收")
+        self.store.task_start("cursor", t["id"])
+        self.store.task_set_status("cursor", t["id"], "blocked", reason="等上游")
+        self.store.task_set_status("cursor", t["id"], "doing")
+        self.store.task_bump("opencode", t["id"], by=2)
+        self.store.task_set_status("opencode", t["id"], "stopped", handoff=self.HANDOFF)
+
+        result = self.store.audit_events(t["id"])
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["events"], 7)  # create+update+start+blocked+doing+bump+stopped
+
+    def test_audit_detects_unlogged_change(self):
+        t = self._add()
+        self.store.task_start("cursor", t["id"])
+        # 绕过接口直接改行 = "少写一行痕迹"
+        con = sqlite3.connect(self.home / "mailbox.db", timeout=10)
+        con.execute("UPDATE tasks SET status = 'done' WHERE id = ?", (t["id"],))
+        con.commit()
+        con.close()
+        result = self.store.audit_events(t["id"])
+        self.assertFalse(result["ok"])
+        self.assertTrue(any(item.get("field") == "status" for item in result["mismatches"]))
+
+    def test_audit_detects_tampered_or_deleted_trace(self):
+        t = self._add()
+        self.store.task_start("cursor", t["id"])
+        self.assertTrue(self.store.audit_events(t["id"])["ok"])
+
+        # 篡改一行内容 ⇒ 哈希对不上
+        con = sqlite3.connect(self.home / "mailbox.db", timeout=10)
+        con.execute("UPDATE task_events SET detail = '{\"status\": \"done\"}' WHERE action = 'start'")
+        con.commit()
+        con.close()
+        tampered = self.store.audit_events(t["id"])
+        self.assertFalse(tampered["ok"])
+        self.assertTrue(any("改" in item["why"] for item in tampered["chain_broken"]))
+
+        # 删掉一行 ⇒ 链断
+        con = sqlite3.connect(self.home / "mailbox.db", timeout=10)
+        con.execute("DELETE FROM task_events WHERE action = 'create'")
+        con.commit()
+        con.close()
+        deleted = self.store.audit_events(t["id"])
+        self.assertFalse(deleted["ok"])
+        self.assertTrue(deleted["chain_broken"] or deleted["mismatches"])
 
     # ── supersedes 链 ───────────────────────────────────────────────────
     def test_supersedes_chain_not_tree(self):

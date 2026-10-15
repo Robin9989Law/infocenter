@@ -463,6 +463,12 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
             return 201, message
 
     # ── M9: /v1/locks 路由（写锁：同一时间只有一个 agent 能改同一路径）──────
+    if path == "/v1/audit":
+        if method != "GET":
+            raise MailError("method_not_allowed", "只支持 GET", 405)
+        task_id = query.get("task", [None])[0]
+        return 200, store.audit_events(task_id)
+
     if path == "/v1/locks":
         if method == "GET":
             return 200, store.lock_list()

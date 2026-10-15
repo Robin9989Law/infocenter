@@ -1,3 +1,5 @@
+import hashlib
+import json
 import os
 import re
 import secrets
@@ -306,6 +308,19 @@ class Store:
                 );
                 CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner, status);
                 CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace, status);
+                CREATE TABLE IF NOT EXISTS task_events (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    task_id TEXT NOT NULL,
+                    at TEXT NOT NULL,
+                    agent TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    from_status TEXT NOT NULL DEFAULT '',
+                    to_status TEXT NOT NULL DEFAULT '',
+                    detail TEXT NOT NULL DEFAULT '',
+                    prev_hash TEXT NOT NULL DEFAULT '',
+                    hash TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_task_events_task ON task_events(task_id, seq);
                 CREATE TABLE IF NOT EXISTS locks (
                     path TEXT PRIMARY KEY,
                     agent TEXT NOT NULL,
@@ -1870,6 +1885,16 @@ class Store:
                     sup, _task_priority(priority), now, now, agent,
                 ),
             )
+            _emit_task_event(
+                conn, tid, agent, "create", "", "todo",
+                {
+                    "workspace": workspace, "case_id": cid or "", "owner": owner_name,
+                    "title": title_text, "deps": _task_text(deps),
+                    "acceptance": _task_text(acceptance, TASK_ACCEPTANCE_MAX),
+                    "supersedes": sup or "", "priority": _task_priority(priority),
+                },
+                now,
+            )
             res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone())
         self._signal()
         return res
@@ -1947,20 +1972,19 @@ class Store:
             row = _find_task(conn, task_id)
             if row["status"] != "todo":
                 raise MailError("invalid_transition", f"只有 todo 能开工（当前 {row['status']}）", 409)
-            missing = [key for key in ("acceptance", "deps") if not str(row[key] or "").strip()]
-            if missing:
-                raise MailError(
-                    "spec_incomplete",
-                    "开工前必须齐：交付物(title) / 验收(acceptance) / 依赖(deps)；缺 "
-                    + " / ".join(missing)
-                    + "（确实没有依赖就写「无」）",
-                    400,
-                )
+            # 第三条线只兜底：规格不全**不拦人**（看板会把它标黄）。
             if agent != row["owner"] and not _is_coordinator(conn, agent):
                 raise MailError("not_yours", "只有该任务的 owner 或 coordinator 能开工", 403)
             conn.execute(
                 "UPDATE tasks SET status = 'doing', updated_at = ?, updated_by = ? WHERE id = ?",
                 (now, agent, row["id"]),
+            )
+            _emit_task_event(
+                conn, row["id"], agent, "start", row["status"], "doing",
+                {"status": "doing", "spec_incomplete": [
+                    k for k in ("acceptance", "deps") if not str(row[k] or "").strip()
+                ]},
+                now,
             )
             res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone())
         self._signal()
@@ -2016,6 +2040,15 @@ class Store:
                     row["id"],
                 ),
             )
+            _emit_task_event(
+                conn, row["id"], agent, "status", cur, st,
+                {
+                    "status": st,
+                    "blocked_reason": (reason or "").strip() if st == "blocked" else "",
+                    "handoff": hand,
+                },
+                now,
+            )
             res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone())
         self._signal()
         return res
@@ -2059,6 +2092,11 @@ class Store:
             sets += ["updated_at = ?", "updated_by = ?"]
             params += [now, agent, row["id"]]
             conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", tuple(params))
+            _emit_task_event(
+                conn, row["id"], agent, "update", row["status"], row["status"],
+                {key: value for key, value in patch.items()},
+                now,
+            )
             res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone())
         self._signal()
         return res
@@ -2077,6 +2115,11 @@ class Store:
             conn.execute(
                 "UPDATE tasks SET priority = ?, updated_at = ?, updated_by = ? WHERE id = ?",
                 (int(row["priority"]) + delta, now, agent, row["id"]),
+            )
+            _emit_task_event(
+                conn, row["id"], agent, "bump", row["status"], row["status"],
+                {"priority": int(row["priority"]) + delta, "by": delta},
+                now,
             )
             res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone())
         self._signal()
@@ -2153,16 +2196,22 @@ class Store:
                     else _lock_paths(paths)
                 )
                 conn.executemany("DELETE FROM locks WHERE path = ?", [(p,) for p in targets])
+                released = len(targets)
             else:
                 if paths is None:
-                    conn.execute("DELETE FROM locks WHERE agent = ?", (agent,))
+                    cur = conn.execute("DELETE FROM locks WHERE agent = ?", (agent,))
+                    released = int(cur.rowcount or 0)
                     targets = []
                 else:
                     targets = _lock_paths(paths)
+                    released = 0
                     for path in targets:
-                        conn.execute("DELETE FROM locks WHERE path = ? AND agent = ?", (path, agent))
+                        cur = conn.execute(
+                            "DELETE FROM locks WHERE path = ? AND agent = ?", (path, agent)
+                        )
+                        released += int(cur.rowcount or 0)
         self._signal()
-        return {"agent": agent, "released": targets, "force": bool(force)}
+        return {"agent": agent, "released": targets, "released_count": released, "force": bool(force)}
 
     def lock_list(self, agent: str | None = None) -> dict:
         normalize_name(agent) if agent else None
@@ -2207,6 +2256,62 @@ class Store:
             "covered": mine,
             "unlocked": unlocked,
             "locked_by_others": foreign,
+        }
+
+    def audit_events(self, task_id: str | None = None) -> dict:
+        """**机器验证留痕**：① 哈希链完整（防篡改/防删行）；② 每个任务「重放痕迹 == 当前行」。
+
+        漏写一行 ⇒ 重放结果与当前行不一致；改过一行 ⇒ 链断。两种都会在这里现形。
+        """
+        broken: list[dict] = []
+        mismatches: list[dict] = []
+        with self._session(readonly=True) as conn:
+            prev = ""
+            count = 0
+            for row in conn.execute("SELECT * FROM task_events ORDER BY seq"):
+                count += 1
+                if row["prev_hash"] != prev:
+                    broken.append({"seq": row["seq"], "task_id": row["task_id"], "why": "链断（前一条对不上）"})
+                expect = _task_event_hash(
+                    row["prev_hash"],
+                    {
+                        "task_id": row["task_id"], "at": row["at"], "agent": row["agent"],
+                        "action": row["action"], "from_status": row["from_status"],
+                        "to_status": row["to_status"], "detail": row["detail"],
+                    },
+                )
+                if row["hash"] != expect:
+                    broken.append({"seq": row["seq"], "task_id": row["task_id"], "why": "内容被改（哈希对不上）"})
+                prev = row["hash"]
+
+            tasks = conn.execute(
+                "SELECT * FROM tasks WHERE id = ?" if task_id else "SELECT * FROM tasks",
+                (task_id,) if task_id else (),
+            ).fetchall()
+            for row in tasks:
+                state = _replay_task_state(conn, row["id"])
+                if not state:
+                    mismatches.append({"task_id": row["id"], "why": "一条痕迹都没有"})
+                    continue
+                for key in TASK_EVENT_FIELDS:
+                    want = state.get(key)
+                    got = row[key]
+                    if key == "priority":
+                        want = int(want) if want not in (None, "") else 0
+                        got = int(got or 0)
+                    else:
+                        want = "" if want is None else str(want)
+                        got = "" if got is None else str(got)
+                    if want != got:
+                        mismatches.append(
+                            {"task_id": row["id"], "field": key, "replay": want, "row": got}
+                        )
+        return {
+            "ok": not broken and not mismatches,
+            "events": count,
+            "tasks": len(tasks),
+            "chain_broken": broken,
+            "mismatches": mismatches,
         }
 
     def _transition_case_in_tx(
@@ -3629,6 +3734,43 @@ def _lock_view(row: sqlite3.Row) -> dict:
     }
 
 
+TASK_EVENT_FIELDS = (
+    "workspace", "case_id", "owner", "title", "status",
+    "blocked_reason", "deps", "acceptance", "handoff", "supersedes", "priority",
+)
+
+
+def _task_event_hash(prev_hash: str, fields: dict) -> str:
+    """一条痕迹的哈希 = sha256(上一条的哈希 + 本条全部字段) ⇒ 改一个字就断链。"""
+    blob = "\x1f".join([prev_hash] + [str(fields.get(key, "")) for key in
+                                       ("task_id", "at", "agent", "action", "from_status", "to_status", "detail")])
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _emit_task_event(conn, task_id, agent, action, from_status, to_status, detail: dict, now: str) -> None:
+    """写一行痕迹（**必须与业务改动同一个事务**：改成功才有痕迹，改失败一起回滚）。
+
+    痕迹由**程序**生成（字段取自真实参数），不接受调用方自由发挥 ⇒ 少写不了、也乱写不了。
+    """
+    payload = json.dumps(detail or {}, ensure_ascii=False, sort_keys=True)
+    row = conn.execute("SELECT hash FROM task_events ORDER BY seq DESC LIMIT 1").fetchone()
+    prev_hash = row["hash"] if row else ""
+    fields = {
+        "task_id": task_id, "at": now, "agent": agent, "action": action,
+        "from_status": from_status or "", "to_status": to_status or "", "detail": payload,
+    }
+    conn.execute(
+        """
+        INSERT INTO task_events(task_id, at, agent, action, from_status, to_status, detail, prev_hash, hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            task_id, now, agent, action, from_status or "", to_status or "",
+            payload, prev_hash, _task_event_hash(prev_hash, fields),
+        ),
+    )
+
+
 def _task_priority(value) -> int:
     """优先级：整数（信只能 bump 它；越大越靠前）。"""
     try:
@@ -3682,51 +3824,38 @@ def _task_view(row: sqlite3.Row) -> dict:
     }
 
 
-TASK_HANDOFF_SECTIONS = (
-    ("progress", ("progress", "做到哪", "进度", "进展")),
-    ("artifacts", ("artifacts", "产物", "交付物")),
-    ("pitfalls", ("pitfalls", "坑", "注意", "踩坑")),
-)
-
-
 def _check_handoff(value) -> str:
-    """交接段：**一列**，但命令层要能拆出三段非空（progress / artifacts / pitfalls）。
+    """停任务的交接段：**一列自由文本**，命令层**只要求非空**。
 
-    认「行首标签 + 冒号」的写法（中英文标签都可以，允许 `- `/`* ` 前缀），例如：
-        progress: 做到 blocked 分支
-        artifacts: infocenter/store.py@sha256:abc
-        pitfalls: 上游 sha 会变，别信旧引用
-    三段缺一 ⇒ 拒（这是"无交接段即非法"的机器化）。
+    三段式（progress / artifacts / pitfalls）是 SKILL 里的**模板要求**，不在这里硬切——
+    第三条线只兜底："不能没有交接"，不规定"怎么写"。
     """
     text = _task_text(value, TASK_HANDOFF_MAX)
     if not text:
         raise MailError(
             "handoff_required",
-            "停任务必须写交接段（progress / artifacts / pitfalls 三段）；不写不许停",
-            400,
-        )
-    found: set[str] = set()
-    for raw_line in text.splitlines():
-        line = raw_line.strip().lstrip("-*").strip()
-        head, sep, rest = line.partition(":")
-        if not sep:
-            head, sep, rest = line.partition("：")
-        if not sep:
-            continue
-        key = head.strip().lower()
-        if not rest.strip():
-            continue
-        for name, aliases in TASK_HANDOFF_SECTIONS:
-            if key in aliases:
-                found.add(name)
-    missing = [name for name, _ in TASK_HANDOFF_SECTIONS if name not in found]
-    if missing:
-        raise MailError(
-            "handoff_incomplete",
-            "交接段缺格：" + " / ".join(missing) + "（三段都要非空；见 SKILL 模板）",
+            "停任务必须写交接段（做到哪 / 产物在哪 / 别踩什么坑）；不写不许停",
             400,
         )
     return text
+
+
+def _replay_task_state(conn: sqlite3.Connection, task_id: str) -> dict:
+    """把某个任务的痕迹从头重放，重建它「应该是什么样」。"""
+    state: dict = {}
+    for row in conn.execute(
+        "SELECT * FROM task_events WHERE task_id = ? ORDER BY seq", (task_id,)
+    ):
+        try:
+            detail = json.loads(row["detail"] or "{}")
+        except ValueError:
+            detail = {}
+        for key, value in detail.items():
+            if key in TASK_EVENT_FIELDS:
+                state[key] = value
+        if row["to_status"]:
+            state["status"] = row["to_status"]
+    return state
 
 
 def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:

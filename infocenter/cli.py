@@ -196,6 +196,9 @@ def main(argv=None) -> int:
     task.add_argument("--by", type=int, default=1, help="bump 的增量")
     task.add_argument("--priority", type=int, default=None)
 
+    audit = sub.add_parser("audit", help="机器验证留痕：哈希链 + 重放是否与当前状态一致")
+    audit.add_argument("--task", default=None, help="只验这一个任务")
+
     guard = sub.add_parser("guard", help="提交闸：工作区改动是否都被写锁覆盖（程序防火墙）")
     guard.add_argument("--path", dest="paths", action="append", default=None,
                        help="只查这些路径；不填=自动取 git 工作区的改动文件")
@@ -210,6 +213,8 @@ def main(argv=None) -> int:
     lock.add_argument("--task", dest="task_id", default=None, help="这次改的是哪个任务")
     lock.add_argument("--note", default=None, help="为什么锁")
     lock.add_argument("--force", action="store_true", help="强制抢占（仅 coordinator）")
+    lock.add_argument("--changed", action="store_true",
+                      help="锁住 git 工作区里所有改动文件（与 ic guard 配对；不用手敲路径）")
 
     unlock = sub.add_parser("unlock", help="放写锁（默认只放自己的）")
     unlock.add_argument("paths", nargs="*", help="要放的路径；不填 = 放掉自己的全部锁")
@@ -409,6 +414,9 @@ def main(argv=None) -> int:
                 },
                 home=home,
             )
+        elif args.cmd == "audit":
+            payload = call(args.url, agent, "GET", "/v1/audit",
+                           query={"task": args.task}, home=home)
         elif args.cmd == "guard":
             import subprocess
 
@@ -425,10 +433,19 @@ def main(argv=None) -> int:
                 {"paths": paths, "require_mine": not args.any_holder}, home=home,
             )
         elif args.cmd == "lock":
+            import subprocess
+
+            lock_paths = args.paths
+            if args.changed and not lock_paths:
+                lock_paths = _changed_paths(subprocess)
+                if not lock_paths:
+                    if not args.quiet:
+                        print("工作区没有改动，无需加锁")
+                    return 0
             payload = call(
                 args.url, agent, "POST", "/v1/locks",
                 {
-                    "paths": args.paths,
+                    "paths": lock_paths,
                     "ttl": args.ttl,
                     "task_id": args.task_id,
                     "note": args.note,
@@ -531,7 +548,7 @@ def main(argv=None) -> int:
         sys.stderr.write(f"{exc.code}: {exc.message}\n")
         return 1
     _emit(args.json, args.cmd, payload)
-    if args.cmd == "guard" and isinstance(payload, dict) and not payload.get("ok"):
+    if args.cmd in ("guard", "audit") and isinstance(payload, dict) and not payload.get("ok"):
         return 1
     return 0
 
@@ -763,6 +780,19 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             owner = item.get("owner_agent") or item.get("owner") or "未认领"
             print(f"{item.get('id')}  {item.get('status_label') or item.get('status')}  {owner}  {item.get('title')}")
         return
+    if cmd == "audit" and not as_json:
+        if payload.get("ok"):
+            print(f"留痕校验：通过（{payload.get('events', 0)} 行痕迹 / {payload.get('tasks', 0)} 个任务，链完整、重放一致）")
+        else:
+            print(f"留痕校验：**不通过**（{payload.get('events', 0)} 行痕迹 / {payload.get('tasks', 0)} 个任务）")
+            for item in payload.get("chain_broken") or []:
+                print(f"  链断: seq {item['seq']}  任务 {item['task_id']}  {item['why']}")
+            for item in payload.get("mismatches") or []:
+                if item.get("field"):
+                    print(f"  对不上: 任务 {item['task_id']}  字段 {item['field']}  痕迹={item['replay']!r} 现状={item['row']!r}")
+                else:
+                    print(f"  对不上: 任务 {item['task_id']}  {item['why']}")
+        return
     if cmd == "guard" and not as_json:
         if payload.get("ok"):
             print(f"提交闸：放行（{payload.get('checked', 0)} 个改动都有锁）")
@@ -785,11 +815,11 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             print(f"  {item['path']}{tail}")
         return
     if cmd == "unlock" and not as_json:
-        released = payload.get("released") or []
-        if payload.get("force") and not released:
-            print(f"{payload.get('agent')} 已清空**全部**写锁")
-        else:
-            print(f"已放锁 {len(released)} 个" + ("（含强制）" if payload.get("force") else ""))
+        count = payload.get("released_count")
+        if count is None:
+            count = len(payload.get("released") or [])
+        suffix = "（强制清场）" if payload.get("force") else ""
+        print(f"已放锁 {count} 个{suffix}")
         return
     if cmd == "locks" and not as_json:
         rows = payload.get("locks") or []
