@@ -2333,7 +2333,7 @@ class Store:
 
     # ── M9 写锁：同一时间只有一个 agent 能改同一个路径 ─────────────────────
     # 背景：两个 agent 同时改同一文件 ⇒ 两版改动混写（实测发生过）。
-    # 规矩：写文件前先 `ic lock <路径>`；拿不到（409）就**停手**并回信，不要硬写。
+    # 规矩：写文件前先 `ic lock <路径>`；拿不到（409）就 `ic queue` 记进自己的 TODO，不要发信、不要硬写。
 
     def lock_acquire(
         self,
@@ -2397,8 +2397,8 @@ class Store:
                     "locked",
                     "这些路径正被别人锁着："
                     + "、".join(f"{h['path']}（{h['agent']}，自 {h['since']}）" for h in held)
-                    + "；别硬写：排队等钥匙（`ic queue <路径> --note \"我要改什么\"`）——"
-                    "**谁提谁落**，轮到你时你落自己这一条；或回信给 coordinator",
+                    + "；别硬写。把要改的事记下来（`ic queue <路径> --note \"我要改什么\"`，会写进你自己的 TODO）。"
+                    "先做别的；轮到这条时 `ic lock`，能拿到就做，拿不到就跳过。不要发信、不要干等",
                     409,
                 )
             # skip_locked 把要的路径全跳过时 wanted 为空。这时不能拼 `IN ()`
@@ -4272,12 +4272,56 @@ def _fingerprint(path: str) -> tuple[int, int] | None:
     return (info.st_dev, info.st_ino)
 
 
+_CASE_FOLD_CACHE: dict[str, bool] = {}
+
+
+def _parent_folds_case(path: str) -> bool:
+    """父目录会不会把大小写不同的名字当成同一个文件。结果按目录缓存。
+
+    `os.path.normcase` 在 macOS 上并不改大小写（它只在 Windows 上折叠），
+    所以不能靠它判断。探测：建一个点文件，看大写名字是否已经存在，然后删掉。
+    父目录不可写或还不存在 ⇒ 当「区分大小写」（宁可不合并，也不把两个真文件收成一把）。
+    """
+    parent = os.path.dirname(os.path.abspath(path)) or "."
+    hit = _CASE_FOLD_CACHE.get(parent)
+    if hit is not None:
+        return hit
+    folded = False
+    if os.path.isdir(parent):
+        nonce = f".ic-case-{os.getpid()}-{threading.get_ident()}"
+        probe = os.path.join(parent, nonce)
+        other = os.path.join(parent, nonce.upper())
+        try:
+            fd = os.open(probe, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+            try:
+                folded = probe != other and os.path.exists(other)
+            finally:
+                try:
+                    os.unlink(probe)
+                except OSError:
+                    pass
+        except OSError:
+            folded = False
+    _CASE_FOLD_CACHE[parent] = folded
+    return folded
+
+
 def _same_file(a: str, b: str) -> bool:
-    """两个路径是不是**同一个文件**（字符串相同，或 inode 相同）。"""
+    """两个路径是不是**同一个文件**。
+
+    字符串相同，或 inode 相同。两边都还不存在时 inode 比不了：父目录若把大小写
+    当成同一个名字（macOS 默认卷），`NewFile.py` 与 `newfile.py` 会落成同一个文件，
+    却能各拿一把钥匙。两边都有 inode 且不同 ⇒ 真是两个文件，不合并。
+    """
     if a == b:
         return True
     left, right = _fingerprint(a), _fingerprint(b)
-    return left is not None and left == right
+    if left is not None and left == right:
+        return True
+    if left is None and right is None and _parent_folds_case(a) and _parent_folds_case(b):
+        return os.path.abspath(a).casefold() == os.path.abspath(b).casefold()
+    return False
 
 
 def _rows_covering(rows, paths: list[str]) -> list:
