@@ -1,0 +1,14 @@
+#!/bin/sh
+# 程序防火墙（M9）：提交前检查工作区改动是否都被写锁覆盖。
+# 服务的 role=coordinator 可替成员落地（该成员的锁在即可）。
+# 离线或服务不可达时不阻断，避免被锁死；确需绕过用 `git commit --no-verify`。
+if command -v ic >/dev/null 2>&1 && ic status >/dev/null 2>&1; then
+  if ! ic guard --quiet --any-holder; then
+    echo ""
+    echo "⛔ 提交被挡住：有改动没有写锁（程序防火墙 M9）。"
+    ic guard || true
+    echo "   → 先 \`ic lock <路径>\`（或让锁的主人提交）；确需绕过：git commit --no-verify"
+    exit 1
+  fi
+fi
+exit 0

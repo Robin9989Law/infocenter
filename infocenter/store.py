@@ -5,7 +5,7 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 BROADCAST = {"*", "all", "everyone"}
@@ -34,6 +34,10 @@ _LABEL_TO_CASE_STATUS = {
     "办结": "done",
 }
 SEALED_STATUSES = {"aborted", "done"}
+
+# M9 写锁：单次锁的默认有效秒数与上限（默认参数在 class Store 之前求值，常量必须定义在此处）
+LOCK_TTL = 1800
+LOCK_TTL_MAX = 12 * 3600
 
 WINDOW_STATE_LABELS = {
     "active": "在办",
@@ -283,6 +287,34 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_cases_workspace ON cases(workspace, updated_at);
                 CREATE INDEX IF NOT EXISTS idx_cases_owner ON cases(owner_window, status);
                 CREATE INDEX IF NOT EXISTS idx_case_nodes_case ON case_nodes(case_id, id ASC);
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id TEXT PRIMARY KEY,
+                    workspace TEXT NOT NULL,
+                    case_id TEXT,
+                    owner TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'todo',
+                    blocked_reason TEXT NOT NULL DEFAULT '',
+                    deps TEXT NOT NULL DEFAULT '',
+                    acceptance TEXT NOT NULL DEFAULT '',
+                    handoff TEXT NOT NULL DEFAULT '',
+                    supersedes TEXT,
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    updated_by TEXT NOT NULL DEFAULT ''
+                );
+                CREATE INDEX IF NOT EXISTS idx_tasks_owner ON tasks(owner, status);
+                CREATE INDEX IF NOT EXISTS idx_tasks_workspace ON tasks(workspace, status);
+                CREATE TABLE IF NOT EXISTS locks (
+                    path TEXT PRIMARY KEY,
+                    agent TEXT NOT NULL,
+                    window_id TEXT,
+                    task_id TEXT,
+                    note TEXT NOT NULL DEFAULT '',
+                    acquired_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
                 """
             )
             agent_cols = {row[1] for row in conn.execute("PRAGMA table_info(agents)")}
@@ -306,6 +338,7 @@ class Store:
             project_cols = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
             if "archived" not in project_cols:
                 conn.execute("ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+
 
     def seed(self) -> None:
         now = utcnow()
@@ -1770,6 +1803,412 @@ class Store:
         self._signal()
         return res
 
+    # ── M8 任务队列（工作包）────────────────────────────────────────────
+    # 口径见 PLAN §12.5（覆盖 ⑬ 里已撤销的两处）：单表；deps=字符串列（可空串，不 NULL）；
+    # handoff=停任务必填（命令层硬拒，自由文本）；权限=写法二；
+    # 开工三件套硬拒已撤、supersedes 成链校验已撤（列仍是软引用）；
+    # 任务无窗口归属；不复用案卷的 waiting_for/sealed/回复翻转。无 priority 列。
+
+    # ── M8 任务队列（工作包）────────────────────────────────────────────
+    # 口径见 PLAN §12.5：单表 tasks；deps=字符串列（不建 artifacts/task_deps）；
+    # handoff=停任务必填且三段可判空；权限=写法二；任务无窗口归属。
+
+    def task_add(
+        self,
+        agent: str,
+        title: str,
+        owner: str | None = None,
+        workspace: str | None = None,
+        deps: str | None = None,
+        acceptance: str | None = None,
+        case_id: str | None = None,
+        supersedes: str | None = None,
+        priority: int = 0,
+    ) -> dict:
+        """建任务：**只有 coordinator**，且**必须带 workspace**（否则 --mine 会串项目）。"""
+        agent = normalize_name(agent)
+        title_text = _subject(title if title is not None else "")
+        workspace = _workspace(workspace)
+        if not workspace:
+            raise MailError("workspace_required", "任务必须带 workspace（否则 --mine 会串项目）", 400)
+        owner_name = normalize_name(owner or agent)
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            _must_coordinator(conn, agent)
+            _upsert(conn, owner_name, None)
+            sup = normalize_case_id(supersedes) if supersedes else None
+            if sup:
+                old = _find_task(conn, sup)
+                if old["status"] not in TASK_TERMINAL:
+                    raise MailError(
+                        "task_not_terminal",
+                        f"只能取代已终结（done/stopped）的任务；{sup} 仍是 {old['status']}",
+                        409,
+                    )
+                branch = conn.execute("SELECT id FROM tasks WHERE supersedes = ?", (sup,)).fetchone()
+                if branch is not None:
+                    raise MailError(
+                        "supersedes_branch",
+                        f"{sup} 已被 {branch['id']} 取代（supersedes 成链不成树）",
+                        409,
+                    )
+            cid = normalize_case_id(case_id) if case_id else None
+            if cid is not None and _find_case(conn, cid) is None:
+                raise MailError("not_found", f"没有找到案卷：{cid}", 404)
+            tid = new_id()
+            conn.execute(
+                """
+                INSERT INTO tasks(
+                    id, workspace, case_id, owner, title, status, blocked_reason,
+                    deps, acceptance, handoff, supersedes, priority,
+                    created_at, updated_at, updated_by
+                ) VALUES (?, ?, ?, ?, ?, 'todo', '', ?, ?, '', ?, ?, ?, ?, ?)
+                """,
+                (
+                    tid, workspace, cid, owner_name, title_text,
+                    _task_text(deps), _task_text(acceptance, TASK_ACCEPTANCE_MAX),
+                    sup, _task_priority(priority), now, now, agent,
+                ),
+            )
+            res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone())
+        self._signal()
+        return res
+
+    def task_list(
+        self,
+        agent: str,
+        owner: str | None = None,
+        workspace: str | None = None,
+        status: str | None = None,
+        include_superseded: bool = False,
+        limit: int = 50,
+    ) -> dict:
+        """列表：默认只列**活线**；被取代的折叠进 `superseded` 供一行灰字展示。"""
+        normalize_name(agent)
+        workspace = _workspace(workspace) if workspace else None
+        owner_name = normalize_name(owner) if owner else None
+        want_status = _task_status(status) if status else None
+        limit = _limit(limit)
+        with self._session(readonly=True) as conn:
+            rows = conn.execute("SELECT * FROM tasks ORDER BY priority DESC, rowid DESC").fetchall()
+        if workspace:
+            rows = [r for r in rows if _workspace_scope(r["workspace"], workspace)]
+        if owner_name:
+            rows = [r for r in rows if r["owner"] == owner_name]
+        if want_status:
+            rows = [r for r in rows if r["status"] == want_status]
+        superseded_ids = {r["supersedes"] for r in rows if r["supersedes"]}
+        live = rows if include_superseded else [r for r in rows if r["id"] not in superseded_ids]
+        folded = [] if include_superseded else [r for r in rows if r["id"] in superseded_ids]
+        return {
+            "count": len(live[:limit]),
+            "total": len(live),
+            "tasks": [_task_view(r) for r in live[:limit]],
+            "superseded": [
+                {
+                    "id": r["id"],
+                    "title": r["title"],
+                    "status": r["status"],
+                    "owner": r["owner"],
+                    "superseded_by": next(
+                        (x["id"] for x in rows if x["supersedes"] == r["id"]), ""
+                    ),
+                    "handoff": (r["handoff"] or "")[:160],
+                }
+                for r in folded
+            ],
+        }
+
+    def task_get(self, agent: str, task_id: str) -> dict:
+        """详情：含完整 supersedes 链（一眼看出"第几次尝试、前几次停在哪"）。"""
+        normalize_name(agent)
+        with self._session(readonly=True) as conn:
+            row = _find_task(conn, task_id)
+            view = _task_view(row)
+            chain: list[dict] = []
+            seen = {row["id"]}
+            cursor = row["supersedes"]
+            while cursor and cursor not in seen:
+                seen.add(cursor)
+                prev = _find_task(conn, cursor)
+                chain.append(_task_view(prev))
+                cursor = prev["supersedes"]
+            nxt = conn.execute("SELECT id FROM tasks WHERE supersedes = ?", (row["id"],)).fetchone()
+        view["supersedes_chain"] = chain
+        view["superseded_by"] = nxt["id"] if nxt else ""
+        view["attempt"] = len(chain) + 1
+        return view
+
+    def task_start(self, agent: str, task_id: str) -> dict:
+        """开工：todo → doing（owner 或 coordinator）。**开工即冻结规格**；三件套必须齐。"""
+        agent = normalize_name(agent)
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            row = _find_task(conn, task_id)
+            if row["status"] != "todo":
+                raise MailError("invalid_transition", f"只有 todo 能开工（当前 {row['status']}）", 409)
+            missing = [key for key in ("acceptance", "deps") if not str(row[key] or "").strip()]
+            if missing:
+                raise MailError(
+                    "spec_incomplete",
+                    "开工前必须齐：交付物(title) / 验收(acceptance) / 依赖(deps)；缺 "
+                    + " / ".join(missing)
+                    + "（确实没有依赖就写「无」）",
+                    400,
+                )
+            if agent != row["owner"] and not _is_coordinator(conn, agent):
+                raise MailError("not_yours", "只有该任务的 owner 或 coordinator 能开工", 403)
+            conn.execute(
+                "UPDATE tasks SET status = 'doing', updated_at = ?, updated_by = ? WHERE id = ?",
+                (now, agent, row["id"]),
+            )
+            res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone())
+        self._signal()
+        return res
+
+    def task_set_status(
+        self,
+        agent: str,
+        task_id: str,
+        status: str,
+        reason: str | None = None,
+        handoff: str | None = None,
+    ) -> dict:
+        """改状态（写法二）：owner 可 doing↔blocked（blocked 必带原因）；done/stopped 仅 coordinator；
+        stopped **必须**带三段交接段；done/stopped 是终态、不可逆。"""
+        agent = normalize_name(agent)
+        st = _task_status(status)
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            row = _find_task(conn, task_id)
+            cur = row["status"]
+            if cur in TASK_TERMINAL:
+                raise MailError(
+                    "task_closed",
+                    f"任务已终结（{cur}），不可再改；继续请**新建任务线**并 supersedes 它",
+                    409,
+                )
+            if st == cur:
+                raise MailError("invalid_transition", f"已经是 {st}", 409)
+            is_coord = _is_coordinator(conn, agent)
+            mine = agent == row["owner"]
+            if st in ("done", "stopped"):
+                if not is_coord:
+                    raise MailError("not_coordinator", f"只有 coordinator 能把任务置为 {st}", 403)
+            else:
+                if not (mine or is_coord):
+                    raise MailError("not_yours", "只有该任务的 owner 或 coordinator 能改 doing/blocked", 403)
+            if st == "blocked" and not (reason or "").strip():
+                raise MailError("reason_required", "blocked 必带一行原因（--reason）", 400)
+            hand = _check_handoff(handoff) if st == "stopped" else (row["handoff"] or "")
+            conn.execute(
+                """
+                UPDATE tasks
+                SET status = ?, blocked_reason = ?, handoff = ?, updated_at = ?, updated_by = ?
+                WHERE id = ?
+                """,
+                (
+                    st,
+                    (reason or "").strip() if st == "blocked" else "",
+                    hand,
+                    now,
+                    agent,
+                    row["id"],
+                ),
+            )
+            res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone())
+        self._signal()
+        return res
+
+    def task_update(self, agent: str, task_id: str, **fields) -> dict:
+        """改规格：**仅 coordinator**，且**只在 todo**（开工即冻结；要改就 stop 后新建任务线）。"""
+        agent = normalize_name(agent)
+        allowed = {"title", "owner", "deps", "acceptance", "case_id", "priority"}
+        patch = {k: v for k, v in fields.items() if k in allowed and v is not None}
+        if not patch:
+            raise MailError("nothing_to_update", "没有要改的字段", 400)
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            _must_coordinator(conn, agent)
+            row = _find_task(conn, task_id)
+            if row["status"] != "todo":
+                raise MailError(
+                    "spec_frozen",
+                    f"任务已开工（{row['status']}）⇒ 规格已冻结；要改就 stopped 后**新建任务线**",
+                    409,
+                )
+            sets, params = [], []
+            for key, value in patch.items():
+                if key == "title":
+                    value = _subject(value)
+                elif key == "owner":
+                    value = normalize_name(value)
+                    _upsert(conn, value, None)
+                elif key == "acceptance":
+                    value = _task_text(value, TASK_ACCEPTANCE_MAX)
+                elif key == "deps":
+                    value = _task_text(value)
+                elif key == "case_id":
+                    value = normalize_case_id(value)
+                    if _find_case(conn, value) is None:
+                        raise MailError("not_found", f"没有找到案卷：{value}", 404)
+                elif key == "priority":
+                    value = _task_priority(value)
+                sets.append(f"{key} = ?")
+                params.append(value)
+            sets += ["updated_at = ?", "updated_by = ?"]
+            params += [now, agent, row["id"]]
+            conn.execute(f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", tuple(params))
+            res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone())
+        self._signal()
+        return res
+
+    def task_bump(self, agent: str, task_id: str, by: int = 1) -> dict:
+        """调优先级（信只能做这件事；**永不打断**运行中的任务）。仅 coordinator。"""
+        agent = normalize_name(agent)
+        try:
+            delta = int(by)
+        except (TypeError, ValueError):
+            raise MailError("invalid_by", "by 必须是整数") from None
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            _must_coordinator(conn, agent)
+            row = _find_task(conn, task_id)
+            conn.execute(
+                "UPDATE tasks SET priority = ?, updated_at = ?, updated_by = ? WHERE id = ?",
+                (int(row["priority"]) + delta, now, agent, row["id"]),
+            )
+            res = _task_view(conn.execute("SELECT * FROM tasks WHERE id = ?", (row["id"],)).fetchone())
+        self._signal()
+        return res
+
+    # ── M9 写锁：同一时间只有一个 agent 能改同一个路径 ─────────────────────
+    # 背景：两个 agent 同时改同一文件 ⇒ 两版改动混写（实测发生过）。
+    # 规矩：写文件前先 `ic lock <路径>`；拿不到（409）就**停手**并回信，不要硬写。
+
+    def lock_acquire(
+        self,
+        agent: str,
+        paths,
+        window_id: str | None = None,
+        task_id: str | None = None,
+        note: str | None = None,
+        ttl: int = LOCK_TTL,
+        force: bool = False,
+    ) -> dict:
+        """拿锁（可一次拿多个路径）：全部拿到才算成功，任一被他人占着就整体失败。"""
+        agent = normalize_name(agent)
+        window_id = normalize_window(window_id)
+        wanted = _lock_paths(paths)
+        ttl_seconds = _lock_ttl(ttl)
+        now = utcnow()
+        expires = _lock_expiry(now, ttl_seconds)
+        note_text = _task_text(note, 400)
+        task = normalize_case_id(task_id) if task_id else None
+        with self._session(immediate=True) as conn:
+            _locks_sweep(conn, now)
+            held = []
+            for path in wanted:
+                row = conn.execute("SELECT * FROM locks WHERE path = ?", (path,)).fetchone()
+                if row is not None and row["agent"] != agent and not force:
+                    held.append({"path": path, "agent": row["agent"], "since": row["acquired_at"]})
+            if held:
+                raise MailError(
+                    "locked",
+                    "这些路径正被别人锁着："
+                    + "、".join(f"{h['path']}（{h['agent']}，自 {h['since']}）" for h in held)
+                    + "；别硬写，先回信给 coordinator",
+                    409,
+                )
+            for path in wanted:
+                conn.execute(
+                    """
+                    INSERT INTO locks(path, agent, window_id, task_id, note, acquired_at, expires_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(path) DO UPDATE SET
+                        agent = excluded.agent, window_id = excluded.window_id,
+                        task_id = excluded.task_id, note = excluded.note,
+                        acquired_at = excluded.acquired_at, expires_at = excluded.expires_at
+                    """,
+                    (path, agent, window_id, task, note_text, now, expires),
+                )
+            rows = conn.execute(
+                "SELECT * FROM locks WHERE path IN (%s)" % ",".join("?" * len(wanted)), wanted
+            ).fetchall()
+            res = {"agent": agent, "ttl": ttl_seconds, "expires_at": expires, "locks": [_lock_view(r) for r in rows]}
+        self._signal()
+        return res
+
+    def lock_release(self, agent: str, paths=None, force: bool = False) -> dict:
+        """放锁：只放自己的；`force` 仅 coordinator 可用（清场）。"""
+        agent = normalize_name(agent)
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            _locks_sweep(conn, now)
+            if force:
+                _must_coordinator(conn, agent)
+                targets = (
+                    [r["path"] for r in conn.execute("SELECT path FROM locks").fetchall()]
+                    if paths is None
+                    else _lock_paths(paths)
+                )
+                conn.executemany("DELETE FROM locks WHERE path = ?", [(p,) for p in targets])
+            else:
+                if paths is None:
+                    conn.execute("DELETE FROM locks WHERE agent = ?", (agent,))
+                    targets = []
+                else:
+                    targets = _lock_paths(paths)
+                    for path in targets:
+                        conn.execute("DELETE FROM locks WHERE path = ? AND agent = ?", (path, agent))
+        self._signal()
+        return {"agent": agent, "released": targets, "force": bool(force)}
+
+    def lock_list(self, agent: str | None = None) -> dict:
+        normalize_name(agent) if agent else None
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            _locks_sweep(conn, now)
+            rows = conn.execute("SELECT * FROM locks ORDER BY acquired_at").fetchall()
+        return {"count": len(rows), "locks": [_lock_view(r) for r in rows], "now": now}
+
+    def guard_changes(self, agent: str, paths, require_mine: bool = True) -> dict:
+        """**提交闸**：工作区里每个被改的文件都必须被一个**未过期锁**覆盖。
+
+        规则：① 没有任何锁 ⇒ 违规（谁都没声明在改它）；② `require_mine=True`（默认，成员自己提交）时
+        锁必须是自己的，除非调用者是 coordinator（可替成员落地）；③ `require_mine=False`（**git 钩子用**）
+        只要求"有锁覆盖"——互斥已在"拿锁"那一步生效，钩子只需保证**没有裸改动落地**。
+        """
+        agent = normalize_name(agent)
+        wanted = _lock_paths(paths) if paths else []
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            _locks_sweep(conn, now)
+            is_coord = _is_coordinator(conn, agent)
+            by_path = {
+                row["path"]: row for row in conn.execute("SELECT * FROM locks").fetchall()
+            }
+        unlocked: list[str] = []
+        mine: list[dict] = []
+        foreign: list[dict] = []
+        for path in wanted:
+            row = by_path.get(path)
+            if row is None:
+                unlocked.append(path)
+            elif (not require_mine) or row["agent"] == agent or is_coord:
+                mine.append({"path": path, "holder": row["agent"]})
+            else:
+                foreign.append({"path": path, "holder": row["agent"]})
+        return {
+            "ok": not unlocked and not foreign,
+            "agent": agent,
+            "require_mine": bool(require_mine),
+            "checked": len(wanted),
+            "covered": mine,
+            "unlocked": unlocked,
+            "locked_by_others": foreign,
+        }
+
     def _transition_case_in_tx(
         self,
         conn: sqlite3.Connection,
@@ -1988,6 +2427,8 @@ class Store:
                 "UPDATE deliveries SET claimed_by = NULL, claimed_at = NULL WHERE claimed_by = ?",
                 (wid,),
             )
+            # M9：窗口离场同样释放它拿着的写锁（僵死锁会把别人永远挡在门外）。
+            conn.execute("DELETE FROM locks WHERE window_id = ?", (wid,))
             aborted_ids = _abort_window_cases(
                 conn,
                 window_id=wid,
@@ -3096,6 +3537,196 @@ def _node_view(row: sqlite3.Row) -> dict:
         "created_at_local": local_time(row["created_at"]),
         "line": line,
     }
+
+
+TASK_STATUSES = ("todo", "doing", "blocked", "stopped", "done")
+TASK_TERMINAL = ("stopped", "done")
+TASK_ACCEPTANCE_MAX = 200
+TASK_TEXT_MAX = 2000
+TASK_HANDOFF_MAX = 4000
+# owner 含本人与 coordinator；coord 仅 coordinator。不允许暂停/回退/换规格。
+_TASK_OWNER_MOVES = {("todo", "doing"), ("doing", "blocked"), ("blocked", "doing")}
+_TASK_COORD_MOVES = {
+    ("doing", "done"),
+    ("blocked", "done"),
+    ("doing", "stopped"),
+    ("blocked", "stopped"),
+}
+
+
+def _task_status(value) -> str:
+    text = str(value or "").strip().lower()
+    if text not in TASK_STATUSES:
+        raise MailError(
+            "invalid_task_status", f"任务状态只能是 {'/'.join(TASK_STATUSES)}", 400
+        )
+    return text
+
+
+def _task_text(value, limit: int = TASK_TEXT_MAX) -> str:
+    text = str(value or "").strip()
+    if len(text) > limit:
+        raise MailError(
+            "task_text_too_long", f"内容超过 {limit} 字；请写进文件，这里只留引用", 400
+        )
+    return text
+
+
+
+
+
+
+def _lock_paths(paths) -> list[str]:
+    """把路径规整成绝对路径列表（去重）；空 ⇒ 400。"""
+    if isinstance(paths, str):
+        items = [part for part in re.split(r"[\s,]+", paths) if part.strip()]
+    elif isinstance(paths, (list, tuple, set)):
+        items = [str(part).strip() for part in paths if str(part).strip()]
+    else:
+        items = []
+    if not items:
+        raise MailError("path_required", "至少要给一个路径", 400)
+    out: list[str] = []
+    for item in items:
+        try:
+            path = str(Path(item).expanduser().resolve())
+        except OSError:
+            path = str(Path(item).expanduser())
+        if path not in out:
+            out.append(path)
+    return out
+
+
+def _lock_ttl(value) -> int:
+    try:
+        seconds = int(value if value not in (None, "") else LOCK_TTL)
+    except (TypeError, ValueError):
+        seconds = LOCK_TTL
+    return max(30, min(seconds, LOCK_TTL_MAX))
+
+
+def _lock_expiry(now_iso: str, ttl: int) -> str:
+    base = datetime.strptime(now_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    return (base + timedelta(seconds=ttl)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _locks_sweep(conn: sqlite3.Connection, now_iso: str) -> int:
+    """过期锁自动释放（防僵死）。"""
+    return conn.execute("DELETE FROM locks WHERE expires_at <= ?", (now_iso,)).rowcount
+
+
+def _lock_view(row: sqlite3.Row) -> dict:
+    return {
+        "path": row["path"],
+        "agent": row["agent"],
+        "window_id": row["window_id"] or "",
+        "task_id": row["task_id"] or "",
+        "note": row["note"] or "",
+        "acquired_at": row["acquired_at"],
+        "acquired_at_local": local_time(row["acquired_at"]),
+        "expires_at": row["expires_at"],
+        "expires_at_local": local_time(row["expires_at"]),
+    }
+
+
+def _task_priority(value) -> int:
+    """优先级：整数（信只能 bump 它；越大越靠前）。"""
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        raise MailError("invalid_priority", "priority 必须是整数", 400) from None
+    return max(-99, min(n, 99))
+
+
+def _is_coordinator(conn: sqlite3.Connection, agent: str) -> bool:
+    row = conn.execute("SELECT role FROM agents WHERE name = ?", (agent,)).fetchone()
+    return bool(row and str(row["role"] or "") == "coordinator")
+
+
+def _must_coordinator(conn: sqlite3.Connection, agent: str) -> None:
+    if not _is_coordinator(conn, agent):
+        raise MailError(
+            "not_coordinator",
+            f"{agent} 不是 coordinator；建任务 / 改规格只有 coordinator 能做",
+            403,
+        )
+
+
+def _find_task(conn: sqlite3.Connection, task_id) -> sqlite3.Row:
+    tid = normalize_case_id(task_id) if task_id else ""
+    row = conn.execute("SELECT * FROM tasks WHERE id = ?", (tid,)).fetchone()
+    if row is None:
+        raise MailError("not_found", f"没有找到任务：{task_id}", 404)
+    return row
+
+
+def _task_view(row: sqlite3.Row) -> dict:
+    return {
+        "id": row["id"],
+        "workspace": row["workspace"] or "",
+        "case_id": row["case_id"] or "",
+        "owner": row["owner"],
+        "title": row["title"],
+        "status": row["status"],
+        "blocked_reason": row["blocked_reason"] or "",
+        "deps": row["deps"] or "",
+        "acceptance": row["acceptance"] or "",
+        "handoff": row["handoff"] or "",
+        "supersedes": row["supersedes"] or "",
+        "priority": int(row["priority"] or 0),
+        "created_at": row["created_at"],
+        "created_at_local": local_time(row["created_at"]),
+        "updated_at": row["updated_at"],
+        "updated_at_local": local_time(row["updated_at"]),
+        "updated_by": row["updated_by"] or "",
+    }
+
+
+TASK_HANDOFF_SECTIONS = (
+    ("progress", ("progress", "做到哪", "进度", "进展")),
+    ("artifacts", ("artifacts", "产物", "交付物")),
+    ("pitfalls", ("pitfalls", "坑", "注意", "踩坑")),
+)
+
+
+def _check_handoff(value) -> str:
+    """交接段：**一列**，但命令层要能拆出三段非空（progress / artifacts / pitfalls）。
+
+    认「行首标签 + 冒号」的写法（中英文标签都可以，允许 `- `/`* ` 前缀），例如：
+        progress: 做到 blocked 分支
+        artifacts: infocenter/store.py@sha256:abc
+        pitfalls: 上游 sha 会变，别信旧引用
+    三段缺一 ⇒ 拒（这是"无交接段即非法"的机器化）。
+    """
+    text = _task_text(value, TASK_HANDOFF_MAX)
+    if not text:
+        raise MailError(
+            "handoff_required",
+            "停任务必须写交接段（progress / artifacts / pitfalls 三段）；不写不许停",
+            400,
+        )
+    found: set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip().lstrip("-*").strip()
+        head, sep, rest = line.partition(":")
+        if not sep:
+            head, sep, rest = line.partition("：")
+        if not sep:
+            continue
+        key = head.strip().lower()
+        if not rest.strip():
+            continue
+        for name, aliases in TASK_HANDOFF_SECTIONS:
+            if key in aliases:
+                found.add(name)
+    missing = [name for name, _ in TASK_HANDOFF_SECTIONS if name not in found]
+    if missing:
+        raise MailError(
+            "handoff_incomplete",
+            "交接段缺格：" + " / ".join(missing) + "（三段都要非空；见 SKILL 模板）",
+            400,
+        )
+    return text
 
 
 def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:

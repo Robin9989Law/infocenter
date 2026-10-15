@@ -4,7 +4,7 @@ import json
 from urllib.parse import parse_qs, unquote, urlparse
 
 from infocenter import __version__, config
-from infocenter.store import MailError, Store, normalize_name, normalize_window
+from infocenter.store import LOCK_TTL, MailError, Store, normalize_name, normalize_window
 
 MAX_BODY = 1_000_000
 
@@ -167,6 +167,11 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
     is_d_route = (
         path == "/v1/cases"
         or path.startswith("/v1/cases/")
+        or path == "/v1/tasks"
+        or path.startswith("/v1/tasks/")
+        or path == "/v1/locks"
+        or path.startswith("/v1/locks/")
+        or path == "/v1/guard"
         or path == "/v1/windows"
         or path.startswith("/v1/windows/")
         or path == "/v1/projects"
@@ -456,6 +461,99 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 pid=req_pid,
             )
             return 201, message
+
+    # ── M9: /v1/locks 路由（写锁：同一时间只有一个 agent 能改同一路径）──────
+    if path == "/v1/locks":
+        if method == "GET":
+            return 200, store.lock_list()
+        if method == "POST":
+            paths = body.get("paths", body.get("path"))
+            if paths is None:
+                raise MailError("path_required", "至少要给一个路径（paths）", 400)
+            return 201, store.lock_acquire(
+                agent,
+                paths,
+                window_id=window_id,
+                task_id=_opt_str(body, "task_id") or _opt_str(body, "task"),
+                note=_opt_str(body, "note"),
+                ttl=body.get("ttl", LOCK_TTL),
+                force=_flag(query.get("force", ["0"])[0]) or bool(body.get("force")),
+            )
+
+    if path == "/v1/guard":
+        if method != "POST":
+            raise MailError("method_not_allowed", "只支持 POST", 405)
+        paths = body.get("paths")
+        if not isinstance(paths, (list, tuple)) or not paths:
+            raise MailError("path_required", "需要 paths（要落地检查的路径列表）", 400)
+        result = store.guard_changes(agent, list(paths), require_mine=body.get("require_mine", True))
+        # 这是**报告**不是错误：始终 200，由 CLI 依据 ok 决定退出码。
+        return 200, result
+
+    if path == "/v1/locks/release":
+        if method != "POST":
+            raise MailError("method_not_allowed", "只支持 POST", 405)
+        return 200, store.lock_release(
+            agent,
+            paths=body.get("paths", body.get("path")),
+            force=_flag(query.get("force", ["0"])[0]) or bool(body.get("force")),
+        )
+
+    # ── M8: /v1/tasks 路由（任务队列 / 工作包）───────────────────────────
+    if path == "/v1/tasks":
+        if method == "GET":
+            return 200, store.task_list(
+                agent,
+                owner=query.get("owner", [None])[0],
+                workspace=query.get("workspace", [None])[0],
+                status=query.get("status", [None])[0],
+                include_superseded=_flag(query.get("all", ["0"])[0]),
+                limit=query.get("limit", ["50"])[0],
+            )
+        if method == "POST":
+            title = _opt_str(body, "title")
+            if not isinstance(title, str) or not title.strip():
+                raise MailError("invalid_subject", "建任务需要提供 title")
+            return 201, store.task_add(
+                agent,
+                title=title,
+                owner=_opt_str(body, "owner"),
+                workspace=_opt_str(body, "workspace"),
+                deps=_opt_str(body, "deps"),
+                acceptance=_opt_str(body, "acceptance"),
+                case_id=_opt_str(body, "case_id"),
+                supersedes=_opt_str(body, "supersedes"),
+                priority=body.get("priority", 0),
+            )
+
+    if path.startswith("/v1/tasks/"):
+        rest = path[len("/v1/tasks/") :]
+        if method == "GET" and "/" not in rest and rest:
+            return 200, store.task_get(agent, rest)
+        if method == "POST" and "/" in rest:
+            task_id, action = rest.rsplit("/", 1)
+            if not task_id or "/" in task_id:
+                raise MailError("not_found", "没有这个接口", 404)
+            if action == "start":
+                return 200, store.task_start(agent, task_id)
+            if action == "status":
+                return 200, store.task_set_status(
+                    agent,
+                    task_id,
+                    _need_str(body, "status"),
+                    reason=_opt_str(body, "reason"),
+                    handoff=_opt_str(body, "handoff"),
+                )
+            if action == "update":
+                fields = {
+                    key: body[key]
+                    for key in ("title", "owner", "deps", "acceptance", "case_id", "priority")
+                    if key in body
+                }
+                return 200, store.task_update(agent, task_id, **fields)
+            if action == "bump":
+                return 200, store.task_bump(agent, task_id, by=body.get("by", 1))
+            raise MailError("not_found", "没有这个接口", 404)
 
     # ── D1: /v1/cases 路由 ────────────────────────────────────────────────
     if path == "/v1/cases":

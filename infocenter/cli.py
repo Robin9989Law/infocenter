@@ -180,6 +180,49 @@ def main(argv=None) -> int:
     cases.add_argument("--owner", default=None, help="主办身份")
     cases.add_argument("--limit", type=int, default=20)
 
+    task = sub.add_parser("task", help="任务队列（工作包）：建 / 看 / 开工 / 改状态 / 调优先级")
+    task.add_argument("action", choices=["add", "show", "start", "set", "update", "bump"], help="子动作")
+    task.add_argument("id", nargs="?", default=None, help="任务编号（add 不填）")
+    task.add_argument("status", nargs="?", default=None, help="set 的目标状态：doing|blocked|done|stopped")
+    task.add_argument("--title", default=None)
+    task.add_argument("--owner", default=None, help="谁负责（默认=自己）")
+    task.add_argument("--workspace", default=None, help="任务所属项目目录（必填）")
+    task.add_argument("--deps", default=None, help="依赖：path@sha256:<hex>（多条用空格或分号）")
+    task.add_argument("--acceptance", default=None, help="一行验收（≤200 字）")
+    task.add_argument("--case", dest="case_id", default=None, help="挂到哪个案卷（控制包）")
+    task.add_argument("--supersedes", default=None, help="取代哪条已终结的旧任务线")
+    task.add_argument("--reason", default=None, help="blocked 必带一行原因")
+    task.add_argument("--handoff", default=None, help="停任务必带的交接段（做到哪/产物在哪/别踩什么坑）")
+    task.add_argument("--by", type=int, default=1, help="bump 的增量")
+    task.add_argument("--priority", type=int, default=None)
+
+    guard = sub.add_parser("guard", help="提交闸：工作区改动是否都被写锁覆盖（程序防火墙）")
+    guard.add_argument("--path", dest="paths", action="append", default=None,
+                       help="只查这些路径；不填=自动取 git 工作区的改动文件")
+    guard.add_argument("--quiet", action="store_true", help="静默，只用退出码")
+    guard.add_argument("--any-holder", action="store_true",
+                       help="只要求有锁覆盖（git 钩子用）；默认要求是你自己的锁")
+
+    locks = sub.add_parser("locks", help="看现在谁锁了什么（写锁）")
+    lock = sub.add_parser("lock", help="拿写锁：同一时间只有一个 agent 能改同一路径")
+    lock.add_argument("paths", nargs="*", help="要锁的路径（相对路径会解析成绝对路径）")
+    lock.add_argument("--ttl", type=int, default=None, help="锁的有效秒数（默认 1800，最长 12h）")
+    lock.add_argument("--task", dest="task_id", default=None, help="这次改的是哪个任务")
+    lock.add_argument("--note", default=None, help="为什么锁")
+    lock.add_argument("--force", action="store_true", help="强制抢占（仅 coordinator）")
+
+    unlock = sub.add_parser("unlock", help="放写锁（默认只放自己的）")
+    unlock.add_argument("paths", nargs="*", help="要放的路径；不填 = 放掉自己的全部锁")
+    unlock.add_argument("--force", action="store_true", help="清场（仅 coordinator）")
+
+    tasks = sub.add_parser("tasks", help="列出任务队列")
+    tasks.add_argument("--mine", action="store_true", help="只看我的（按 workspace 隔离，默认 cwd）")
+    tasks.add_argument("--owner", default=None)
+    tasks.add_argument("--workspace", default=None)
+    tasks.add_argument("--status", default=None)
+    tasks.add_argument("--all", action="store_true", help="含被取代的旧线")
+    tasks.add_argument("--limit", type=int, default=50)
+
     windows = sub.add_parser(
         "windows",
         help=f"列出办公室（默认：在办、暂停、{_RECENT_LEFT_TEXT}内离场；--all 看全）",
@@ -366,6 +409,104 @@ def main(argv=None) -> int:
                 },
                 home=home,
             )
+        elif args.cmd == "guard":
+            import subprocess
+
+            paths = args.paths
+            if not paths:
+                paths = _changed_paths(subprocess)
+                if not paths:
+                    payload = {"ok": True, "checked": 0, "covered": [], "unlocked": [], "locked_by_others": []}
+                    if not args.quiet:
+                        print("提交闸：工作区无改动，放行")
+                    return 0
+            payload = call(
+                args.url, agent, "POST", "/v1/guard",
+                {"paths": paths, "require_mine": not args.any_holder}, home=home,
+            )
+        elif args.cmd == "lock":
+            payload = call(
+                args.url, agent, "POST", "/v1/locks",
+                {
+                    "paths": args.paths,
+                    "ttl": args.ttl,
+                    "task_id": args.task_id,
+                    "note": args.note,
+                    "force": bool(args.force),
+                },
+                home=home,
+            )
+        elif args.cmd == "unlock":
+            payload = call(
+                args.url, agent, "POST", "/v1/locks/release",
+                {"paths": args.paths or None, "force": bool(args.force)},
+                home=home,
+            )
+        elif args.cmd == "locks":
+            payload = call(args.url, agent, "GET", "/v1/locks", home=home)
+        elif args.cmd == "task":
+            if args.action == "add":
+                body = {
+                    "title": args.title,
+                    "owner": args.owner,
+                    "workspace": args.workspace,
+                    "deps": args.deps,
+                    "acceptance": args.acceptance,
+                    "case_id": args.case_id,
+                    "supersedes": args.supersedes,
+                }
+                if args.priority is not None:
+                    body["priority"] = args.priority
+                payload = call(
+                    args.url, agent, "POST", "/v1/tasks",
+                    {key: value for key, value in body.items() if value is not None}, home=home,
+                )
+            elif args.action == "show":
+                payload = call(args.url, agent, "GET", f"/v1/tasks/{args.id}", home=home)
+            elif args.action == "start":
+                payload = call(args.url, agent, "POST", f"/v1/tasks/{args.id}/start", {}, home=home)
+            elif args.action == "set":
+                body = {"status": args.status}
+                if args.reason:
+                    body["reason"] = args.reason
+                if args.handoff:
+                    body["handoff"] = args.handoff
+                payload = call(args.url, agent, "POST", f"/v1/tasks/{args.id}/status", body, home=home)
+            elif args.action == "update":
+                fields = {
+                    "title": args.title,
+                    "owner": args.owner,
+                    "deps": args.deps,
+                    "acceptance": args.acceptance,
+                    "case_id": args.case_id,
+                    "priority": args.priority,
+                }
+                payload = call(
+                    args.url, agent, "POST", f"/v1/tasks/{args.id}/update",
+                    {key: value for key, value in fields.items() if value is not None}, home=home,
+                )
+            else:  # bump
+                payload = call(args.url, agent, "POST", f"/v1/tasks/{args.id}/bump", {"by": args.by}, home=home)
+        elif args.cmd == "tasks":
+            owner = args.owner
+            workspace = args.workspace
+            if args.mine:
+                owner = agent
+                workspace = workspace or str(Path.cwd())
+            payload = call(
+                args.url,
+                agent,
+                "GET",
+                "/v1/tasks",
+                query={
+                    "owner": owner,
+                    "workspace": workspace,
+                    "status": args.status,
+                    "all": "1" if args.all else "0",
+                    "limit": str(args.limit),
+                },
+                home=home,
+            )
         elif args.cmd == "windows":
             payload = call(
                 args.url,
@@ -390,7 +531,35 @@ def main(argv=None) -> int:
         sys.stderr.write(f"{exc.code}: {exc.message}\n")
         return 1
     _emit(args.json, args.cmd, payload)
+    if args.cmd == "guard" and isinstance(payload, dict) and not payload.get("ok"):
+        return 1
     return 0
+
+
+def _changed_paths(subprocess) -> list[str]:
+    """取当前 git 工作区里被改/新增的文件（绝对路径）；删除的不算。"""
+    from pathlib import Path as _P
+
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain", "-uall"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if out.returncode != 0:
+        return []
+    paths: list[str] = []
+    for line in out.stdout.splitlines():
+        code, _, rest = line[:2], line[2:3], line[3:]
+        if code.strip().startswith("D"):
+            continue
+        name = rest.strip().strip('"')
+        if " -> " in name:  # rename
+            name = name.split(" -> ", 1)[1]
+        if not name:
+            continue
+        paths.append(str(_P(name).expanduser().resolve()))
+    return paths
 
 
 def _mcp_identity(args) -> str | None:
@@ -593,6 +762,88 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
         for item in rows:
             owner = item.get("owner_agent") or item.get("owner") or "未认领"
             print(f"{item.get('id')}  {item.get('status_label') or item.get('status')}  {owner}  {item.get('title')}")
+        return
+    if cmd == "guard" and not as_json:
+        if payload.get("ok"):
+            print(f"提交闸：放行（{payload.get('checked', 0)} 个改动都有锁）")
+        else:
+            print(f"提交闸：**拦住**（查了 {payload.get('checked', 0)} 个）")
+            for path in payload.get("unlocked") or []:
+                print(f"  没有锁: {path}")
+            for item in payload.get("locked_by_others") or []:
+                print(f"  被别人锁着: {item['path']}  ← {item['holder']}")
+            print("  规矩：写文件前先 `ic lock <路径>`；拿不到就停手回信，不要硬写。")
+        return
+    if cmd == "lock" and not as_json:
+        rows = payload.get("locks") or []
+        print(
+            f"已拿到 {len(rows)} 个写锁（{payload.get('agent')}，到 "
+            f"{payload.get('expires_at')} 过期）——只有你能改这些路径"
+        )
+        for item in rows:
+            tail = f"（任务 {item['task_id']}）" if item.get("task_id") else ""
+            print(f"  {item['path']}{tail}")
+        return
+    if cmd == "unlock" and not as_json:
+        released = payload.get("released") or []
+        if payload.get("force") and not released:
+            print(f"{payload.get('agent')} 已清空**全部**写锁")
+        else:
+            print(f"已放锁 {len(released)} 个" + ("（含强制）" if payload.get("force") else ""))
+        return
+    if cmd == "locks" and not as_json:
+        rows = payload.get("locks") or []
+        print(f"写锁 {payload.get('count', len(rows))} 个")
+        for item in rows:
+            task = f"（任务 {item['task_id']}）" if item.get("task_id") else ""
+            print(
+                f"  {item['path']}  ← {item['agent']}{task}  到 "
+                f"{item.get('expires_at_local') or item['expires_at']}"
+            )
+        return
+    if cmd == "tasks" and not as_json:
+        rows = payload.get("tasks") or []
+        total = payload.get("total", len(rows))
+        print(f"任务 {total} 条（活线 {payload.get('count', len(rows))}）")
+        for item in rows:
+            mark = "!" if item.get("priority") else " "
+            print(f"{mark} {item.get('id')}  {str(item.get('status')):<8} {str(item.get('owner')):<9} {item.get('title')}")
+            if item.get("deps"):
+                print(f"    依赖: {item['deps']}")
+            if item.get("acceptance"):
+                print(f"    验收: {item['acceptance']}")
+            if item.get("blocked_reason"):
+                print(f"    卡在: {item['blocked_reason']}")
+        for old in payload.get("superseded") or []:
+            tail = f"；交接: {old['handoff']}" if old.get("handoff") else ""
+            print(
+                f"  ← {old.get('id')}  {old.get('status')}  {old.get('title')}"
+                f"（被 {old.get('superseded_by') or '?'} 取代{tail}）"
+            )
+        return
+    if cmd == "task" and not as_json:
+        print(
+            f"{payload.get('id')}  {payload.get('title')}  [{payload.get('status')}]"
+            f"  owner={payload.get('owner')}  priority={payload.get('priority', 0)}"
+        )
+        if payload.get("case_id"):
+            print(f"控制包: {payload['case_id']}")
+        if payload.get("deps"):
+            print(f"依赖: {payload['deps']}")
+        if payload.get("acceptance"):
+            print(f"验收: {payload['acceptance']}")
+        if payload.get("blocked_reason"):
+            print(f"卡在: {payload['blocked_reason']}")
+        if payload.get("handoff"):
+            print(f"交接: {payload['handoff']}")
+        chain = payload.get("supersedes_chain") or []
+        if chain:
+            print(f"第 {payload.get('attempt')} 次尝试；此前：")
+            for prev in chain:
+                extra = f"  交接: {prev['handoff'][:60]}" if prev.get("handoff") else ""
+                print(f"  ← {prev.get('id')}  {prev.get('status')}  {prev.get('title')}{extra}")
+        if payload.get("superseded_by"):
+            print(f"已被 {payload['superseded_by']} 取代")
         return
     if cmd == "windows" and not as_json:
         rows = payload.get("windows") or []

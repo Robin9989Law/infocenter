@@ -13,3 +13,4 @@ dist/
 PLAN.md
 TODO-*.md
 _work/
+uv.lock
