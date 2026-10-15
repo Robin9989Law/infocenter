@@ -14,6 +14,12 @@
   heartbeat    无信心跳间隔（秒）：守护进程定期触发一次 headless 规划运行，推进 TODO；0 或不填=纯信件驱动
   heartbeat_mode    可选："idle"（默认，新信会重置心跳计时）或 "always"（严格按间隔调度，新信不重置）
   heartbeat_prompt  可选：替代内置的心跳规划提示词（支持 {agent} {project} 占位符）；不填用内置模板
+  idle_backoff      可选，默认 true：心跳「空转」（进展信号文件未变）时，心跳间隔按 ×2 指数拉长
+  idle_backoff_max  可选：空转退避的间隔上限（秒），默认 7200
+  progress_files    可选：空转判定的「进展信号」文件（相对项目目录或绝对路径），默认 ["TODO-<名字>.md"]
+  failure_threshold 可选：连续失败多少次后进入冷却，默认 3
+  failure_cooldown  可选：普通失败冷却时长（秒），默认 3600
+  permanent_cooldown 可选：额度/鉴权类永久失败的冷却时长（秒），默认 21600
 """
 
 import json
@@ -30,7 +36,12 @@ DEFAULT_AGENTS = (
     {"name": "human", "description": "用户"},
 )
 
-_KNOWN_KEYS = {"name", "description", "role", "launch", "app", "headless", "poll", "heartbeat", "heartbeat_mode", "heartbeat_prompt"}
+_KNOWN_KEYS = {
+    "name", "description", "role", "launch", "app", "headless",
+    "poll", "heartbeat", "heartbeat_mode", "heartbeat_prompt", "headless_timeout",
+    "idle_backoff", "idle_backoff_max", "progress_files",
+    "failure_threshold", "failure_cooldown", "permanent_cooldown",
+}
 
 
 def config_path(home) -> Path:

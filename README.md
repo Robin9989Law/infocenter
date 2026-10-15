@@ -325,8 +325,16 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `heartbeat_mode` | 可选：`"idle"`（默认，新信会重置心跳计时）或 `"always"`（严格按间隔调度，新信不重置） |
 | `heartbeat_prompt` | 可选：替代内置的心跳规划提示词（支持 `{agent}` `{project}` 占位符）；不填用内置模板 |
 | `headless_timeout` | 可选：单次 headless 的墙钟上限（秒），缺省 1800（30 分钟），钳制在 10 秒～7 天。挂死的 headless 到期即被 SIGKILL，守护随即可继续收信，不再整轮停摆 |
+| `idle_backoff` | 可选，默认 `true`：心跳「空转」（进展信号文件未变）时，把下次心跳间隔按 ×2 指数拉长，避免无事时也每 10 分钟跑一整个会话 |
+| `idle_backoff_max` | 可选：空转退避的间隔上限（秒），缺省 7200 |
+| `progress_files` | 可选：空转判定的「进展信号」文件（相对项目目录或绝对路径），缺省 `["TODO-<名字>.md"]` |
+| `failure_threshold` | 可选：连续失败多少次后进入冷却（秒级重试改为长冷却），缺省 3 |
+| `failure_cooldown` | 可选：普通连续失败的冷却时长（秒），缺省 3600 |
+| `permanent_cooldown` | 可选：额度/鉴权类**永久失败**的冷却时长（秒），缺省 21600（6 小时） |
 
-**守护对 config 是热加载的**：收信守护进程每一轮都会重读 `config.json`，所以改 `headless` / `heartbeat_mode` / `heartbeat_prompt` / `headless_timeout`（以及启动时没有用 `--heartbeat` 显式传入的 `heartbeat`）**不需要重启守护**，下一轮即生效；把某个身份的 `headless` 清空，它的守护会在当前轮结束后优雅退出。`poll` 与显式传入的 `--heartbeat` 仍要重启守护才会变。
+> **空转治理（idle guard）**：守护命中模型额度/鉴权上限（输出含 `usage limit`、`quota`、`invalid credential`、`401` 等）时不再按 `heartbeat` 间隔硬撞，而是进入**长冷却**；普通失败连续达 `failure_threshold` 次也进入冷却。冷却期内**不触发 headless（新信也不跑、游标不前进，冷却结束会重新投递）**，`ic crew status` 会标注「额度/鉴权不可用，剩 N 分钟」。此外心跳空转时按 `idle_backoff` 指数拉长间隔。这些状态与调参键都可由守护热读，改 `config.json` 下一轮生效。
+
+**守护对 config 是热加载的**：收信守护进程每一轮都会重读 `config.json`，所以改 `headless` / `heartbeat_mode` / `heartbeat_prompt` / `headless_timeout` / `idle_backoff` / `idle_backoff_max` / `progress_files` / `failure_threshold` / `failure_cooldown` / `permanent_cooldown`（以及启动时没有用 `--heartbeat` 显式传入的 `heartbeat`）**不需要重启守护**，下一轮即生效；把某个身份的 `headless` 清空，它的守护会在当前轮结束后优雅退出。`poll` 与显式传入的 `--heartbeat` 仍要重启守护才会变。
 
 名单之外的 agent 也可以随时自行注册（`PUT /v1/agents/{name}`），这一入口始终保持开放。
 

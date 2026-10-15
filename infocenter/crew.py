@@ -85,11 +85,28 @@ def log_file(home, key: str) -> Path:
 # 新 pid 文件带启动时刻；和进程启动时间差过这么多秒就当成 pid 已被别人复用。
 _PID_START_SLACK = 15
 OFFICE_REGISTER_ATTEMPTS = 3
-_HEADLESS_RETRY = {"timeout", "fail", "start_failed", "interrupted"}
+_HEADLESS_RETRY = {"timeout", "fail", "start_failed", "interrupted", "quota"}
 # 单次 headless 的默认墙钟上限（秒）；可在身份配置里用 "headless_timeout" 覆盖。
 HEADLESS_TIMEOUT = 1800
 _HEADLESS_RETRY_BASE = 2
 _HEADLESS_RETRY_MAX = 300
+
+# —— 空转治理（idle guard）——
+# 背景：守护每 heartbeat 秒无条件跑一整个 headless 会话；模型额度打爆、凭据失效后
+# 仍照原间隔硬撞，空烧额度且日志刷屏。这里把「模型已不可用」与「本轮确实无事」分开处理：
+#   1) 永久性失败（额度/鉴权）指纹命中 ⇒ 长冷却，冷却期内不再触发 headless（新信也不跑，游标不前进）；
+#   2) 普通连续失败达阈值 ⇒ 短冷却；
+#   3) 心跳「空转」（进展信号文件未变）⇒ 心跳间隔指数拉长，封顶 idle_backoff_max。
+PERMANENT_FAILURE_PATTERNS = (
+    "usage limit", "spend limit", "monthly cycle", "quota", "insufficient",
+    "out of credit", "no credit", "credit balance", "payment required",
+    "invalid credential", "invalid api key", "unauthorized", "authentication",
+    "billing",
+)
+FAILURE_THRESHOLD = 3
+FAILURE_COOLDOWN = 3600
+PERMANENT_COOLDOWN = 21600
+IDLE_BACKOFF_MAX = 7200
 
 
 def _retry_delay(rounds: int) -> int:
@@ -99,6 +116,95 @@ def _retry_delay(rounds: int) -> int:
     """
     rounds = max(1, int(rounds))
     return min(_HEADLESS_RETRY_MAX, _HEADLESS_RETRY_BASE * (2 ** min(rounds - 1, 16)))
+
+
+def _classify_failure(text: str) -> str:
+    """按 headless 输出尾部把非零退出归类。
+
+    命中额度/鉴权类指纹 ⇒ "quota"（模型已不可用，进长冷却，别拿 heartbeat 硬撞）；
+    否则 ⇒ "fail"（普通失败，走指数退避 + 连续失败冷却）。
+    """
+    low = (text or "").lower()
+    for pat in PERMANENT_FAILURE_PATTERNS:
+        if pat in low:
+            return "quota"
+    return "fail"
+
+
+def _int_or(item: dict, key: str, default: int) -> int:
+    """取整数配置：缺失/空/非法回落默认；显式 0 视为有效值。"""
+    raw = item.get(key)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _failure_threshold(item: dict) -> int:
+    return max(1, min(_int_or(item, "failure_threshold", FAILURE_THRESHOLD), 1000))
+
+
+def _cooldown_seconds(item: dict, kind: str) -> int:
+    """冷却时长（秒）：永久性失败用 permanent_cooldown，普通失败用 failure_cooldown。"""
+    permanent = kind == "quota"
+    key = "permanent_cooldown" if permanent else "failure_cooldown"
+    default = PERMANENT_COOLDOWN if permanent else FAILURE_COOLDOWN
+    return max(0, min(_int_or(item, key, default), 30 * 86400))
+
+
+def _idle_backoff_enabled(item: dict) -> bool:
+    val = item.get("idle_backoff")
+    if val is None:
+        return True
+    if isinstance(val, str):
+        return val.strip().lower() not in {"0", "false", "no", "off", ""}
+    return bool(val)
+
+
+def _idle_backoff_max(item: dict) -> int:
+    return max(0, min(_int_or(item, "idle_backoff_max", IDLE_BACKOFF_MAX), 7 * 86400))
+
+
+def _effective_heartbeat(heartbeat: int, idle_rounds: int, enabled: bool, cap: int) -> int:
+    """空转轮数越多，心跳间隔越长（×2 每次），但不超过 max(heartbeat, cap)。"""
+    if not heartbeat or not enabled or idle_rounds <= 0:
+        return heartbeat
+    stretched = heartbeat * (2 ** min(int(idle_rounds), 8))
+    return max(heartbeat, min(cap, stretched)) if cap else stretched
+
+
+def _progress_files(project: str, agent: str, item: dict) -> list[Path]:
+    """空转判定用的「进展信号」文件（默认 = 本仓 TODO-<agent>.md）。"""
+    raw = item.get("progress_files")
+    names: list[str] = []
+    if isinstance(raw, str):
+        names = [part.strip() for part in raw.split(",") if part.strip()]
+    elif isinstance(raw, (list, tuple)):
+        names = [str(part).strip() for part in raw if str(part).strip()]
+    if not names:
+        names = [f"TODO-{agent}.md"]
+    out: list[Path] = []
+    for name in names:
+        path = Path(name)
+        out.append(path if path.is_absolute() else Path(project) / path)
+    return out
+
+
+def _progress_snapshot(paths: list[Path]):
+    """进展信号文件的 (路径, mtime_ns, size) 快照；一个都不存在时返回 None（无法判定）。"""
+    snap = []
+    found = False
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            snap.append((str(path), None, None))
+            continue
+        found = True
+        snap.append((str(path), stat.st_mtime_ns, stat.st_size))
+    return tuple(snap) if found else None
 
 
 def _pid_alive(pid: int) -> bool:
@@ -292,6 +398,22 @@ def _write_meta(home, key: str, meta: dict) -> None:
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     tmp.replace(path)
+
+
+def _set_cooldown_meta(home, key: str, kind: str, seconds: int) -> None:
+    """把冷启动状态写进守护 meta（kind 为空即清除），供 `ic crew status` / 管理台显示。"""
+    if not home or not key:
+        return
+    meta = _read_meta(home, key)
+    if not meta:
+        return
+    if kind and int(seconds) > 0:
+        meta["cooldown_kind"] = kind
+        meta["cooldown_until_ts"] = int(time.time()) + int(seconds)
+    else:
+        meta.pop("cooldown_kind", None)
+        meta.pop("cooldown_until_ts", None)
+    _write_meta(home, key, meta)
 
 
 # watch 把当前守护的 home/key 放这里，_run_headless 据此记下正在跑的子进程。
@@ -534,6 +656,23 @@ def _office_mark(row: dict) -> str:
     return ""
 
 
+def _cooldown_mark(row: dict) -> str:
+    """守护因额度/鉴权或连续失败进入冷却时的标记（剩多少分钟）；守护已死则不显示。"""
+    if not row.get("daemon_alive"):
+        return ""
+    until = row.get("cooldown_until_ts")
+    if not until:
+        return ""
+    try:
+        left = int(until) - int(time.time())
+    except (TypeError, ValueError):
+        return ""
+    if left <= 0:
+        return ""
+    kind = str(row.get("cooldown_kind") or "冷却")
+    return f" \033[33m{kind}，剩 {max(1, left // 60)} 分钟\033[0m"
+
+
 def status(home, project: str | None = None) -> dict:
     entries = config.load(home)["agents"]
     sessions = _tmux_sessions()
@@ -559,6 +698,8 @@ def status(home, project: str | None = None) -> dict:
             "daemon_alive": pid is not None,
             "cursor": cursor,
             "office_registered": office,
+            "cooldown_kind": meta.get("cooldown_kind") or "",
+            "cooldown_until_ts": meta.get("cooldown_until_ts"),
         })
     by_agent: dict[str, list[dict]] = {}
     for row in rows:
@@ -577,6 +718,7 @@ def status(home, project: str | None = None) -> dict:
                     else f"守护（{Path(d['dir']).name}）已死"
                 )
                 + _office_mark(d)
+                + _cooldown_mark(d)
                 for d in daemons
             ]
         elif str(item.get("headless") or "").strip():
@@ -980,10 +1122,13 @@ def build_heartbeat_prompt(
     )
     return (
         f"你是 {agent}，项目目录 {project}。心跳检查（没有新信件）："
-        f"阅读 {project} 下的 PLAN.md 和你自己的 TODO-{agent}.md，"
-        f"推进你名下（owner={agent}）的下一个未完成事项，并把进展写回 TODO-{agent}.md。"
+        f"1）先看有没有该办的事：`ic --as {agent} inbox`（本项目未读）；再读你自己的 TODO-{agent}.md（只读这一份）。"
+        f"2）若本项目 0 未读、TODO-{agent}.md 里也没有可推进的下一步 ⇒ 立即结束本次运行："
+        f"不要读 PLAN.md、不要写文件、不要发信。"
+        f"3）有可推进项才动手：推进你名下（owner={agent}）的下一个未完成事项，把进展写回 TODO-{agent}.md。"
+        f"4）只有确需查计划时才按需读 PLAN.md 的相关段落，禁止把整份 PLAN.md 读进来；"
         f"发现 PLAN.md 有空缺、依赖过期或需要调整，给{coord_target}发信说明，不要直接改 PLAN.md。"
-        f"开始或切换任务时，用 `ic --as {agent} register --activity \"一句话状态\"` 自报进展，主协调 agent 靠它调配资源。"
+        f"5）开始或切换任务时，用 `ic --as {agent} register --activity \"一句话状态\"` 自报进展，主协调 agent 靠它调配资源。"
         f"无 workspace 的未读信不会自动派给守护：查收件时若发现明确属于本项目的，顺手处理；否则留给交互会话。"
         f"需要别人输入或裁定时，用 `ic --as {agent} send/reply` 给相关人留言。"
         f"接着办已有的事时，先 `ic --as {agent} cases` 读案卷，干完用 "
@@ -1069,6 +1214,11 @@ def watch(
             print(f"[{utcnow()}] 办公室登记连续失败，守护退出，不进入收信循环", flush=True)
             return 1
         last_run = time.monotonic()
+        failure_streak = 0
+        cooldown_until = 0.0
+        cooldown_kind = ""
+        cooldown_logged = False
+        idle_rounds = 0
         while True:
             # F-1：每轮重读 config，使 headless / heartbeat_mode / heartbeat_prompt（及未显式传入的
             # heartbeat）改动**无需重启守护**即可生效——治理层改 config.json 后即刻作用于下一轮。
@@ -1083,6 +1233,32 @@ def watch(
             if heartbeat_from_config:
                 new_heartbeat = _heartbeat_seconds(entry or {})
                 heartbeat = max(0, min(int(new_heartbeat or 0), 86400))
+            # 空转治理：模型打不通时进冷却，冷却期内不触发 headless（新信也不跑、游标不前进，
+            # 冷却结束会重新投递），避免像以前那样照 heartbeat 间隔硬撞一个已经不可用的模型。
+            if cooldown_until and time.monotonic() < cooldown_until:
+                if not cooldown_logged:
+                    left = int(cooldown_until - time.monotonic())
+                    print(
+                        f"[{utcnow()}] {agent} 进入冷却（{cooldown_kind}），{left}s 内不再触发 headless",
+                        flush=True,
+                    )
+                    cooldown_logged = True
+                    _set_cooldown_meta(home, key, cooldown_kind, left)
+                time.sleep(min(60.0, max(1.0, cooldown_until - time.monotonic())))
+                continue
+            if cooldown_until:
+                print(f"[{utcnow()}] {agent} 冷却结束，恢复收信与心跳", flush=True)
+                cooldown_until = 0.0
+                cooldown_logged = False
+                failure_streak = 0
+                retry_rounds = 0
+                idle_rounds = 0
+                last_run = time.monotonic()
+                _set_cooldown_meta(home, key, "", 0)
+            progress_paths = _progress_files(project, agent, entry or {})
+            idle_on = _idle_backoff_enabled(entry or {})
+            idle_cap = _idle_backoff_max(entry or {})
+            beat = _effective_heartbeat(heartbeat, idle_rounds, idle_on, idle_cap)
             try:
                 try:
                     payload = request(
@@ -1121,28 +1297,43 @@ def watch(
                     outcome = _run_headless(template, prompt, project, agent=agent, timeout=htimeout)
                     if outcome in _HEADLESS_RETRY:
                         retry_rounds += 1
+                        failure_streak += 1
+                        idle_rounds = 0
                         # N2：同一批信只补一次 [自动] 中断节点，避免永久失败时刷屏写一堆。
                         if not interrupted_noted:
                             _note_interrupted(url, agent, window_id, fresh)
                             interrupted_noted = True
-                        delay = _retry_delay(retry_rounds)
-                        print(
-                            f"[{utcnow()}] headless {outcome}，游标留在 {cursor}，"
-                            f"第 {retry_rounds} 次重试，{delay}s 后",
-                            flush=True,
-                        )
-                        time.sleep(delay)
+                        if outcome == "quota" or failure_streak >= _failure_threshold(entry or {}):
+                            cooldown_until = time.monotonic() + _cooldown_seconds(entry or {}, outcome)
+                            cooldown_kind = "额度/鉴权不可用" if outcome == "quota" else "连续失败"
+                            cooldown_logged = False
+                            print(
+                                f"[{utcnow()}] headless {outcome}，连续 {failure_streak} 次失败 ⇒ "
+                                f"{cooldown_kind}，进入冷却（游标留在 {cursor}，冷却后再投递）",
+                                flush=True,
+                            )
+                        else:
+                            delay = _retry_delay(retry_rounds)
+                            print(
+                                f"[{utcnow()}] headless {outcome}，游标留在 {cursor}，"
+                                f"第 {retry_rounds} 次重试，{delay}s 后",
+                                flush=True,
+                            )
+                            time.sleep(delay)
                     else:
                         retry_rounds = 0
+                        failure_streak = 0
+                        idle_rounds = 0
                         interrupted_noted = False
                         _commit(new_cursor)
                         if mode != "always":
                             last_run = time.monotonic()
-                elif heartbeat and time.monotonic() - last_run >= heartbeat:
-                    print(f"[{utcnow()}] 无新信，心跳 {heartbeat}s 到期，触发规划运行", flush=True)
+                elif beat and time.monotonic() - last_run >= beat:
+                    print(f"[{utcnow()}] 无新信，心跳 {beat}s 到期，触发规划运行", flush=True)
                     is_coord = str((entry or {}).get("role") or "") == "coordinator"
                     coord_name = config.coordinator(home)
-                    _run_headless(
+                    before = _progress_snapshot(progress_paths)
+                    h_outcome = _run_headless(
                         template,
                         build_heartbeat_prompt(agent, project, is_coord, custom_prompt, coordinator_name=coord_name),
                         project,
@@ -1151,6 +1342,31 @@ def watch(
                     )
                     _commit(new_cursor)
                     last_run = time.monotonic()
+                    if h_outcome in _HEADLESS_RETRY:
+                        failure_streak += 1
+                        idle_rounds = 0
+                        if h_outcome == "quota" or failure_streak >= _failure_threshold(entry or {}):
+                            cooldown_until = time.monotonic() + _cooldown_seconds(entry or {}, h_outcome)
+                            cooldown_kind = "额度/鉴权不可用" if h_outcome == "quota" else "连续失败"
+                            cooldown_logged = False
+                            print(
+                                f"[{utcnow()}] 心跳 headless {h_outcome}，连续 {failure_streak} 次失败 ⇒ "
+                                f"{cooldown_kind}，进入冷却",
+                                flush=True,
+                            )
+                    else:
+                        failure_streak = 0
+                        after = _progress_snapshot(progress_paths)
+                        if before is not None and after is not None and before == after:
+                            idle_rounds += 1
+                            nxt = _effective_heartbeat(heartbeat, idle_rounds, idle_on, idle_cap)
+                            print(
+                                f"[{utcnow()}] 心跳空转第 {idle_rounds} 轮（进展信号未变），"
+                                f"下次心跳间隔拉长到 {nxt}s",
+                                flush=True,
+                            )
+                        else:
+                            idle_rounds = 0
                 elif new_cursor != cursor:
                     _commit(new_cursor)
             except StopIteration:
@@ -1336,7 +1552,8 @@ def _run_headless(
                 outcome = "ok"
             else:
                 print(f"[{utcnow()}] headless 退出码 {code}，输出尾部：{tail}", flush=True)
-                outcome = "fail"
+                # 额度/鉴权类永久失败与普通失败分开：前者用长冷却，别照原间隔硬撞。
+                outcome = _classify_failure(run_tail)
         if outcome == "timeout":
             print(f"[{utcnow()}] headless 超时（{timeout} 秒）", flush=True)
     finally:

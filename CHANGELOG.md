@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **空转治理（idle guard）**：守护命中模型**额度/鉴权上限**（输出含 `usage limit` / `quota` / `invalid credential` / `401` 等）不再按 `heartbeat` 间隔硬撞，而是进入**永久失败长冷却**（`permanent_cooldown`，缺省 6h）；普通失败连续达 `failure_threshold` 次进入短冷却（`failure_cooldown`，缺省 1h）。冷却期内不触发 headless（**新信也不跑、游标不前进**，冷却结束重新投递），`ic crew status` 标注「额度/鉴权不可用，剩 N 分钟」
+- **心跳空转退避**：心跳「空转」（`progress_files`，默认 `TODO-<名字>.md`，未变）时间隔按 ×2 指数拉长，封顶 `idle_backoff_max`（缺省 2h）；新信或进展出现即复位。可 `idle_backoff: false` 关闭
+- **headless 永久失败分类**：`_run_headless` 非零退出按输出尾部归为 `quota`（永久）或 `fail`（可重试），写入 `*.runs.jsonl`
+- **内置 member 心跳提示词改为短路式**：先看未读与自己的 `TODO-<名字>.md`，无事即结束；只在确需时**按需**读 PLAN.md 的相关段落（禁止整份读入）——避免每次空转把数百 KB 的 PLAN.md 反复喂进模型
 - **管理台 `/ui`**（单页、原生 `fetch`、无外链）：顶部成员状态条 + 项目 / 办公室 / 案件三栏级联；写操作全在二级页面（新建项目、设定地址、归档 / 取消归档、网页起停守护、立案、暂停 / 恢复 / 中止 / 办结 / 重开、转办）
 - **`/ui#human` 干预中枢**：向所有项目广播、对全局在跑的办公室与未结案卷直接干预、查看任一身份的信件往来
 - **一键重启** `POST /v1/restart`：重启服务端与全部在跑的项目守护，并轮询 `/health` 直到恢复
@@ -25,6 +29,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 测试数量从 16 增加到 158（A 质量 / B 联邦 / C 发布 / D 窗口·案卷·应用 + M5 最后评审加固），全量零 `ResourceWarning`
 
 ### Fixed
+- **`headless_timeout` 配置从未生效**：该键不在 `config._KNOWN_KEYS` 里，`config.load()` 会把它丢掉 ⇒ 守护的 `config.entry()` 永远读不到，单轮墙钟上限一直回落 1800s（`+` 新增 `headless_timeout` 与本次空转治理各键的 config 往返回归）
 - **命令注入（高危）**：headless 命令模板把 `{prompt}` 套进引号时的引号逃逸 → 拒绝并提示改法
 - 同一项目「绝对路径 + 裸目录名」合并时归档标记随机翻转（改为永远优先锚点元数据）
 - `POST /v1/crew`（`up`）指向不存在目录返回 400 而非 500
