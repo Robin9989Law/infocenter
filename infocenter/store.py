@@ -2169,6 +2169,8 @@ class Store:
         note_text = _task_text(note, 400)
         task = normalize_case_id(task_id) if task_id else None
         with self._session(immediate=True) as conn:
+            if force:  # 抢锁＝不可逆干扰，只有 coordinator 能做（与 lock_release 对称）
+                _must_coordinator(conn, agent)
             _locks_sweep(conn, now)
             held = []
             for path in wanted:
@@ -2195,41 +2197,73 @@ class Store:
                     """,
                     (path, agent, window_id, task, note_text, now, expires),
                 )
+            for path in wanted:
+                _emit_task_event(
+                    conn, task or "", agent, "lock", "", "",
+                    {"path": path, "ttl": ttl_seconds, "force": bool(force),
+                     "window_id": window_id or "", "expires_at": expires},
+                    now,
+                )
             rows = conn.execute(
                 "SELECT * FROM locks WHERE path IN (%s)" % ",".join("?" * len(wanted)), wanted
             ).fetchall()
-            res = {"agent": agent, "ttl": ttl_seconds, "expires_at": expires, "locks": [_lock_view(r) for r in rows]}
+            res = {
+                "agent": agent,
+                "ttl": ttl_seconds,
+                "expires_at": expires,  # 存储口径：UTC
+                "expires_at_beijing": beijing_time(expires),  # 给人看：北京时间
+                "locks": [_lock_view(r) for r in rows],
+            }
         self._signal()
         return res
 
     def lock_release(self, agent: str, paths=None, force: bool = False) -> dict:
-        """放锁：只放自己的；`force` 仅 coordinator 可用（清场）。"""
+        """放锁：只放自己的；`force` 仅 coordinator 可用（清场）。**放锁留痕**（谁放了什么）。"""
         agent = normalize_name(agent)
         now = utcnow()
         with self._session(immediate=True) as conn:
             _locks_sweep(conn, now)
             if force:
                 _must_coordinator(conn, agent)
-                targets = (
+                wanted = (
                     [r["path"] for r in conn.execute("SELECT path FROM locks").fetchall()]
                     if paths is None
                     else _lock_paths(paths)
                 )
-                conn.executemany("DELETE FROM locks WHERE path = ?", [(p,) for p in targets])
-                released = len(targets)
+                rows = (
+                    conn.execute(
+                        "SELECT * FROM locks WHERE path IN (%s)" % ",".join("?" * len(wanted)), wanted
+                    ).fetchall()
+                    if wanted
+                    else []
+                )
+                conn.executemany("DELETE FROM locks WHERE path = ?", [(p,) for p in wanted])
             else:
                 if paths is None:
-                    cur = conn.execute("DELETE FROM locks WHERE agent = ?", (agent,))
-                    released = int(cur.rowcount or 0)
-                    targets = []
+                    rows = conn.execute("SELECT * FROM locks WHERE agent = ?", (agent,)).fetchall()
+                    conn.execute("DELETE FROM locks WHERE agent = ?", (agent,))
                 else:
-                    targets = _lock_paths(paths)
-                    released = 0
-                    for path in targets:
-                        cur = conn.execute(
-                            "DELETE FROM locks WHERE path = ? AND agent = ?", (path, agent)
-                        )
-                        released += int(cur.rowcount or 0)
+                    wanted = _lock_paths(paths)
+                    rows = (
+                        conn.execute(
+                            "SELECT * FROM locks WHERE agent = ? AND path IN (%s)"
+                            % ",".join("?" * len(wanted)),
+                            [agent, *wanted],
+                        ).fetchall()
+                        if wanted
+                        else []
+                    )
+                    for path in wanted:
+                        conn.execute("DELETE FROM locks WHERE path = ? AND agent = ?", (path, agent))
+            targets = [row["path"] for row in rows]
+            released = len(rows)
+            for row in rows:
+                _emit_task_event(
+                    conn, row["task_id"] or "", row["agent"], "unlock", "", "",
+                    {"path": row["path"], "force": bool(force),
+                     "held_since": row["acquired_at"]},
+                    now,
+                )
         self._signal()
         return {"agent": agent, "released": targets, "released_count": released, "force": bool(force)}
 
@@ -2278,18 +2312,22 @@ class Store:
             "locked_by_others": foreign,
         }
 
-    def audit_events(self, task_id: str | None = None) -> dict:
-        """**机器验证留痕**：① 哈希链完整（防篡改/防删行）；② 每个任务「重放痕迹 == 当前行」。
+    def audit_events(self, task_id: str | None = None, anchor: dict | None = None) -> dict:
+        """**机器验证留痕**：① 哈希链完整（防篡改/防删行）；② 每个任务「重放痕迹 == 当前行」；
+        ③ **外锚**（可选，见 `anchor`）——链头被提交进 git 后，整表重做/改链也能查出来。
 
-        漏写一行 ⇒ 重放结果与当前行不一致；改过一行 ⇒ 链断。两种都会在这里现形。
+        漏写一行 ⇒ 重放结果与当前行不一致；改过一行 ⇒ 链断；整表重做 ⇒ 外锚对不上。
         """
         broken: list[dict] = []
         mismatches: list[dict] = []
         with self._session(readonly=True) as conn:
             prev = ""
             count = 0
+            tip_seq = 0
+            tip_hash = ""
             for row in conn.execute("SELECT * FROM task_events ORDER BY seq"):
                 count += 1
+                tip_seq, tip_hash = int(row["seq"]), row["hash"]
                 if row["prev_hash"] != prev:
                     broken.append({"seq": row["seq"], "task_id": row["task_id"], "why": "链断（前一条对不上）"})
                 expect = _task_event_hash(
@@ -2326,12 +2364,42 @@ class Store:
                         mismatches.append(
                             {"task_id": row["id"], "field": key, "replay": want, "row": got}
                         )
+            # ③ 外锚：链头曾经被写进 git（仓库外），这里核对"那个点还在不在、还是不是原来的哈希"。
+            anchor_result: dict | None = None
+            if anchor:
+                want_seq = int(anchor.get("seq") or 0)
+                want_hash = str(anchor.get("hash") or "")
+                row = conn.execute("SELECT * FROM task_events WHERE seq = ?", (want_seq,)).fetchone()
+                if row is None:
+                    why = f"锚点那一行（seq {want_seq}）在库里找不到了：链被重做或被截短"
+                elif row["hash"] != want_hash:
+                    why = f"锚点那一行（seq {want_seq}）哈希对不上：链被重做或被改过"
+                else:
+                    why = ""
+                after = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM task_events WHERE seq > ?", (want_seq,)
+                    ).fetchone()[0]
+                )
+                anchor_result = {
+                    "ok": not why,
+                    "seq": want_seq,
+                    "hash": want_hash,
+                    "why": why,
+                    "at": str(anchor.get("at") or ""),
+                    # 锚点之后的新痕迹"未被见证"——不可怕，但必须显式可见，好再打一次锚。
+                    "unwitnessed": after,
+                }
+        ok = not broken and not mismatches and (anchor_result is None or anchor_result["ok"])
         return {
-            "ok": not broken and not mismatches,
+            "ok": ok,
             "events": count,
             "tasks": len(tasks),
+            "tip_seq": tip_seq,
+            "tip_hash": tip_hash,
             "chain_broken": broken,
             "mismatches": mismatches,
+            "anchor": anchor_result,
         }
 
     def _transition_case_in_tx(
@@ -3735,9 +3803,31 @@ def _lock_expiry(now_iso: str, ttl: int) -> str:
     return (base + timedelta(seconds=ttl)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _lock_remaining(expires_iso: str) -> int:
+    """锁还剩多少秒（给"快到期、该续期了"的提示用）。"""
+    moment = _parse_utc(expires_iso)
+    if moment is None:
+        return 0
+    return int((moment - datetime.now(timezone.utc)).total_seconds())
+
+
 def _locks_sweep(conn: sqlite3.Connection, now_iso: str) -> int:
-    """过期锁自动释放（防僵死）。"""
-    return conn.execute("DELETE FROM locks WHERE expires_at <= ?", (now_iso,)).rowcount
+    """过期锁自动释放（防僵死）。**顺手留痕**：自动回收也是改动，必须留下谁掉了什么锁。
+
+    这是"死流程"里唯一自动改的东西（只回收，绝不改语义状态），所以更要留痕。
+    """
+    rows = conn.execute("SELECT * FROM locks WHERE expires_at <= ?", (now_iso,)).fetchall()
+    if not rows:
+        return 0
+    conn.execute("DELETE FROM locks WHERE expires_at <= ?", (now_iso,))
+    for row in rows:
+        _emit_task_event(
+            conn, row["task_id"] or "", row["agent"], "lock_expire", "", "",
+            {"path": row["path"], "expired_at": row["expires_at"], "auto": True,
+             "window_id": row["window_id"] or ""},
+            now_iso,
+        )
+    return len(rows)
 
 
 def _lock_view(row: sqlite3.Row) -> dict:
@@ -3751,6 +3841,7 @@ def _lock_view(row: sqlite3.Row) -> dict:
         "acquired_at_beijing": beijing_time(row["acquired_at"]),
         "expires_at": row["expires_at"],
         "expires_at_beijing": beijing_time(row["expires_at"]),
+        "expires_in_seconds": _lock_remaining(row["expires_at"]),
     }
 
 

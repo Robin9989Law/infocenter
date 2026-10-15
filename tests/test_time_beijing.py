@@ -122,6 +122,7 @@ class BeijingEndToEndTest(unittest.TestCase):
     def test_locks_and_agents_expose_beijing(self):
         got = self.store.lock_acquire("opencode", paths=["/tmp/a.py"], ttl=600)
         self.assertTrue(got["expires_at"].endswith("Z"), got["expires_at"])  # 存储：UTC
+        self.assertTrue(got["expires_at_beijing"].endswith("+0800"), got["expires_at_beijing"])
         row = got["locks"][0]
         self.assertTrue(row["acquired_at_beijing"].endswith("+0800"), row["acquired_at_beijing"])
         self.assertTrue(row["expires_at_beijing"].endswith("+0800"), row["expires_at_beijing"])

@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **留痕外锚（`ic audit --anchor`）**：把哈希链链头写进仓库里的 `.infocenter-audit-anchor`，**连同 git 一起提交** ⇒ 锚落在**库外**。`ic audit` 核对"锚点那一行还在不在、哈希是否仍是原来的"：链被改、被截短、**整表删掉重建自洽假链**都会报「外锚对不上」。三家评审（kimi / cursor / grok）一致指出的缺口正是"链整个在库里 ⇒ 改一行再把后面哈希全部重算，`ic audit` 照样绿"。实测（真改库）：偷改一个字段被当场抓住；把哈希"补圆"则只有靠锚才认得出。`ic audit` 另报「锚点之后还有 N 行没被见证」（锚只保护锚点之前的历史 ⇒ **每次提交前打一次锚**）
+- **锁的痕迹**：`lock` / `unlock` / **锁到期自动回收**（`lock_expire`）各追加一行只增痕迹。cursor 指出抢锁/放锁是静默 DELETE、事后看不见；到期回收是死流程里唯一会自动做的事，更要留痕
+- **`ic guard --install-hook`**：一条命令把 `.githooks/pre-commit` 装上（`core.hooksPath`，幂等、自动补可执行位）。第 2 道闸以前只是"这台机器上的本地配置"（cursor：新 clone 就没钩子了）；`ic guard` 没装时会提醒
+- `ic audit --quiet`（给 git 钩子用，只给退出码）；`.githooks/pre-commit` 增加**留痕校验**一道（链断 / 重放不一致 / 外锚对不上 ⇒ 拦住提交；离线或服务不可达不阻断）
 - **`ic_thread` 线程树定位**：线程仍按时间序返回，但每封信多带 `parent_id` / `depth` / `root_id` / `children`（纯派生，存储不变、不嵌套）。agent 不必拿 id 两两对照就能看出谁回谁、某分支在第几层，可只聚焦某个分支。可见集内构树：父信不可见（未参与/跨线程导入）时该封按根处理，但 `parent_id` 仍返回真实 `reply_to`
 - **空转治理（idle guard）**：守护命中模型**额度/鉴权上限**（输出含 `usage limit` / `quota` / `invalid credential` / `401` 等）不再按 `heartbeat` 间隔硬撞，而是进入**永久失败长冷却**（`permanent_cooldown`，缺省 6h）；普通失败连续达 `failure_threshold` 次进入短冷却（`failure_cooldown`，缺省 1h）。冷却期内不触发 headless（**新信也不跑、游标不前进**，冷却结束重新投递），`ic crew status` 标注「额度/鉴权不可用，剩 N 分钟」
 - **心跳空转退避**：心跳「空转」（`progress_files`，默认 `TODO-<名字>.md`，未变）时间隔按 ×2 指数拉长，封顶 `idle_backoff_max`（缺省 2h）；新信或进展出现即复位。可 `idle_backoff: false` 关闭
@@ -32,6 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 测试数量从 16 增加到 158（A 质量 / B 联邦 / C 发布 / D 窗口·案卷·应用 + M5 最后评审加固），全量零 `ResourceWarning`
 
 ### Fixed
+- **`ic lock --force` 不核身份（第 1 道闸的洞）**：CLI 写着"仅 coordinator"，`store.lock_acquire` 只看一个布尔 ⇒ **任意 agent 用 HTTP body 就能抢别人的锁**（与 `lock_release --force` 不对称）。现与放锁一致：`force` 必须 coordinator
+- `ic lock` 回执仍在打裸 UTC（`...Z`）——上一版只改了列表视图、漏了顶层 `expires_at`；补 `expires_at_beijing`，并在回执里写明"**续期＝重复执行同一命令**"
+- `ic locks` 增加"剩 N 分"与**快到期提醒**（cursor：TTL 到了人还在写 ⇒ sweep 放锁、别人进来，"第 1 道闸自己消失"；默认 TTL 内写不完必须能续）
 - **时间统一北京时间（各 agent 机器时区不一致导致对不上表）**：展示层原来用 `.astimezone()`（**机器本地时区**）⇒ 同一封信在不同机器上显示不同时间（实测四家常报四个时刻）。现**固定 UTC+8**：新增 `BEIJING` / `beijing_time()` / `beijing_hhmm()` / `beijing_stamp()`，**存储仍为 UTC**（`...Z`，排序比较用），**所有给人/给 agent 看的字段一律 `*_beijing`**（旧 `*_local` 键**已废弃并改名**：`created_at_local` → `created_at_beijing`、`last_seen_local`、`activity_at_local`、`expires_at_local`、`acquired_at_local`、`updated_at_local`、`first_seen_local` 同理），日志戳、`ic inbox` / `ic send` / `ic lock` / `ic locks` / `ic agents` / `ic task` / `/ui` 看板同步改。+ `tests/test_time_beijing.py`（9 项：**把机器时区改成纽约/伦敦/东京/基里巴斯，展示必须一字不变**）
 - **跨窗认领必须按 workspace 作用域（M6-0，高危静默丢信）**：不做 workspace 过滤的长轮询窗口（常见于他项目的 MCP/CLI 会话）以前会把**别的项目**的信一并软认领；一旦被别窗认领，正确项目的守护/窗口在 `/v1/events` 与 `ic inbox` 里就再也看不到它 ⇒ **派单/来信静默丢失**（实测一次事故里 12+ 封如此被扣住）。现：① 窗口只认领属于自己 workspace 的信，他项目窗口**看得见但不认领**；② 每轮惰性对账回收「认领窗口已离场/已死」或「与信 workspace 不相容」的错位认领（历史脏数据自愈）；③ **窗口离场即释放**其名下认领。+ 新增 `tests/test_m6_claim_scope.py`（5 项）
 - **`headless_timeout` 配置从未生效**：该键不在 `config._KNOWN_KEYS` 里，`config.load()` 会把它丢掉 ⇒ 守护的 `config.entry()` 永远读不到，单轮墙钟上限一直回落 1800s（`+` 新增 `headless_timeout` 与本次空转治理各键的 config 往返回归）

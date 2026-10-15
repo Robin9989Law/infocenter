@@ -8,7 +8,7 @@ from infocenter import DEFAULT_HOST, DEFAULT_PORT, __version__, config
 from infocenter.client import call, ensure_server, healthy, request, resolve_url
 from infocenter.paths import home_dir
 from infocenter.server import read_meta, serve, stop
-from infocenter.store import MailError, normalize_name
+from infocenter.store import MailError, beijing_stamp, normalize_name
 
 
 # C-16：全局参数分两段处理。
@@ -198,6 +198,11 @@ def main(argv=None) -> int:
 
     audit = sub.add_parser("audit", help="机器验证留痕：哈希链 + 重放是否与当前状态一致")
     audit.add_argument("--task", default=None, help="只验这一个任务")
+    audit.add_argument("--quiet", action="store_true", help="静默，只用退出码（给 git 钩子用）")
+    audit.add_argument("--anchor", action="store_true",
+                       help="把当前链头写成**外锚**文件（要连同 git 一起提交；库被整表重做时能查出来）")
+    audit.add_argument("--anchor-file", dest="anchor_file", default=".infocenter-audit-anchor",
+                       help="外锚文件路径（默认 ./.infocenter-audit-anchor，放在仓库里随提交进 git）")
 
     guard = sub.add_parser("guard", help="提交闸：工作区改动是否都被写锁覆盖（程序防火墙）")
     guard.add_argument("--path", dest="paths", action="append", default=None,
@@ -205,6 +210,8 @@ def main(argv=None) -> int:
     guard.add_argument("--quiet", action="store_true", help="静默，只用退出码")
     guard.add_argument("--any-holder", action="store_true",
                        help="只要求有锁覆盖（git 钩子用）；默认要求是你自己的锁")
+    guard.add_argument("--install-hook", action="store_true",
+                       help="把本仓库的提交闸钩子装上（git config core.hooksPath .githooks），幂等")
 
     locks = sub.add_parser("locks", help="看现在谁锁了什么（写锁）")
     lock = sub.add_parser("lock", help="拿写锁：同一时间只有一个 agent 能改同一路径")
@@ -415,11 +422,24 @@ def main(argv=None) -> int:
                 home=home,
             )
         elif args.cmd == "audit":
-            payload = call(args.url, agent, "GET", "/v1/audit",
-                           query={"task": args.task}, home=home)
+            if args.anchor:
+                return _write_audit_anchor(args, agent, home)
+            query = {"task": args.task}
+            anchor = _read_audit_anchor(Path(args.anchor_file))
+            if anchor:
+                query.update(
+                    {
+                        "anchor_seq": anchor["seq"],
+                        "anchor_hash": anchor["hash"],
+                        "anchor_at": anchor.get("at", ""),
+                    }
+                )
+            payload = call(args.url, agent, "GET", "/v1/audit", query=query, home=home)
         elif args.cmd == "guard":
             import subprocess
 
+            if args.install_hook:
+                return _install_commit_hook(subprocess)
             paths = args.paths
             if not paths:
                 paths = _changed_paths(subprocess)
@@ -547,10 +567,93 @@ def main(argv=None) -> int:
     except MailError as exc:
         sys.stderr.write(f"{exc.code}: {exc.message}\n")
         return 1
+    if args.cmd == "audit" and getattr(args, "quiet", False):
+        # 给 git 钩子用：一个字都不打，只给退出码
+        return 0 if isinstance(payload, dict) and payload.get("ok") else 1
     _emit(args.json, args.cmd, payload)
     if args.cmd in ("guard", "audit") and isinstance(payload, dict) and not payload.get("ok"):
         return 1
     return 0
+
+
+ANCHOR_HEADER = (
+    "# 留痕外锚（链头）：这一行连同 git 一起提交。库被整表重做 / 链被改时，`ic audit` 靠它查出来。\n"
+)
+
+
+def _read_audit_anchor(path) -> dict | None:
+    """读外锚文件（没有/读不懂都当没有，不拦人）。"""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[0].isdigit() and len(parts[1]) == 64:
+            return {"seq": int(parts[0]), "hash": parts[1], "at": " ".join(parts[2:])}
+    return None
+
+
+def _write_audit_anchor(args, agent: str, home=None) -> int:
+    """把当前链头写成外锚文件。**链不干净就拒绝打锚**（不能给坏链盖章）。"""
+    payload = call(args.url, agent, "GET", "/v1/audit", query={"task": args.task}, home=home)
+    if not payload.get("ok"):
+        print("留痕校验不通过 ⇒ 拒绝打外锚（打锚前链必须是好的）")
+        return 1
+    seq, tip = payload.get("tip_seq") or 0, payload.get("tip_hash") or ""
+    if not seq or not tip:
+        print("还没有任何痕迹，没什么可锚的")
+        return 0
+    stamp = beijing_stamp()
+    path = Path(args.anchor_file)
+    path.write_text(ANCHOR_HEADER + f"{seq} {tip} {stamp}\n", encoding="utf-8")
+    print(f"外锚已写入 {path}")
+    print(f"  seq {seq}  {tip[:16]}…  （{stamp} 北京时间）")
+    print("  库内痕迹已被钉住：链被改/被截短/整表重做，`ic audit` 都会报「外锚对不上」。")
+    print("  **记得 git 提交这个文件**——提交之前，锚还不算在库外。")
+    return 0
+
+
+def _install_commit_hook(subprocess, cwd=None) -> int:
+    """装提交闸钩子：新 clone 一条命令装上，别让第 2 道闸变成「可选项」。幂等。"""
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=cwd, capture_output=True, text=True)
+    if top.returncode != 0 or not top.stdout.strip():
+        print("这里不是 git 仓库（或没装 git），提交闸装不了")
+        return 1
+    root = top.stdout.strip()
+    hook = Path(root) / ".githooks" / "pre-commit"
+    if not hook.exists():
+        print(f"仓库里没有自带钩子 {hook}，装不了")
+        return 1
+    hook.chmod(hook.stat().st_mode | 0o755)
+    subprocess.run(["git", "config", "core.hooksPath", ".githooks"], cwd=root, capture_output=True, text=True)
+    got = subprocess.run(
+        ["git", "config", "core.hooksPath"], cwd=root, capture_output=True, text=True
+    ).stdout.strip()
+    if got != ".githooks":
+        print(f"装上了但读回来是 {got!r}，请手工执行：git config core.hooksPath .githooks")
+        return 1
+    print(f"提交闸已装（幂等）：core.hooksPath = .githooks，钩子 {hook}")
+    print("  以后每次 git commit 都会自动跑 `ic guard --quiet --any-holder`。")
+    return 0
+
+
+def _hook_warning() -> str:
+    """钩子没装就冒一句——闸门只在「有人手动跑 ic guard」时生效，这必须让人知道。"""
+    import subprocess
+
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if top.returncode != 0 or not top.stdout.strip():
+        return ""
+    got = subprocess.run(
+        ["git", "config", "core.hooksPath"], cwd=top.stdout.strip(), capture_output=True, text=True
+    ).stdout.strip()
+    if got == ".githooks":
+        return ""
+    return "  ⚠ 本仓库没装提交闸钩子：现在只有显式跑 `ic guard` 才拦得住（`ic guard --install-hook` 装上）"
 
 
 def _changed_paths(subprocess) -> list[str]:
@@ -794,6 +897,19 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
                     print(f"  对不上: 任务 {item['task_id']}  字段 {item['field']}  痕迹={item['replay']!r} 现状={item['row']!r}")
                 else:
                     print(f"  对不上: 任务 {item['task_id']}  {item['why']}")
+        anchor = payload.get("anchor")
+        if anchor:
+            if anchor.get("ok"):
+                print(f"  外锚: 对上（seq {anchor['seq']}，{anchor.get('at') or '未记时间'}）")
+                if anchor.get("unwitnessed"):
+                    print(
+                        f"       锚点之后还有 {anchor['unwitnessed']} 行没被见证"
+                        f"（不受锚保护，建议再打一次：`ic audit --anchor`）"
+                    )
+            else:
+                print(f"  外锚: **对不上** —— {anchor.get('why')}")
+        else:
+            print("  外锚: 无（`ic audit --anchor` 打一个，并把它提交进 git，才挡得住整表重做）")
         return
     if cmd == "guard" and not as_json:
         if payload.get("ok"):
@@ -805,12 +921,16 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             for item in payload.get("locked_by_others") or []:
                 print(f"  被别人锁着: {item['path']}  ← {item['holder']}")
             print("  规矩：写文件前先 `ic lock <路径>`；拿不到就停手回信，不要硬写。")
+        warn = _hook_warning()
+        if warn:
+            print(warn)
         return
     if cmd == "lock" and not as_json:
         rows = payload.get("locks") or []
         print(
             f"已拿到 {len(rows)} 个写锁（{payload.get('agent')}，到 "
             f"{payload.get('expires_at_beijing') or payload.get('expires_at')} 过期）——只有你能改这些路径"
+            f"（续期：重复执行同一命令即可）"
         )
         for item in rows:
             tail = f"（任务 {item['task_id']}）" if item.get("task_id") else ""
@@ -828,9 +948,11 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
         print(f"写锁 {payload.get('count', len(rows))} 个")
         for item in rows:
             task = f"（任务 {item['task_id']}）" if item.get("task_id") else ""
+            left = int(item.get("expires_in_seconds") or 0)
+            soon = "  ⚠ 快到期：重复 `ic lock <路径>` 即续期" if left <= 300 else ""
             print(
                 f"  {item['path']}  ← {item['agent']}{task}  到 "
-                f"{item.get('expires_at_beijing') or item['expires_at']}"
+                f"{item.get('expires_at_beijing') or item['expires_at']}（剩 {left // 60} 分）{soon}"
             )
         return
     if cmd == "tasks" and not as_json:

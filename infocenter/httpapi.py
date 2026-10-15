@@ -467,7 +467,14 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         if method != "GET":
             raise MailError("method_not_allowed", "只支持 GET", 405)
         task_id = query.get("task", [None])[0]
-        return 200, store.audit_events(task_id)
+        anchor_seq = query.get("anchor_seq", [None])[0]
+        anchor_hash = query.get("anchor_hash", [None])[0]
+        anchor = (
+            {"seq": anchor_seq, "hash": anchor_hash, "at": query.get("anchor_at", [""])[0]}
+            if anchor_seq and anchor_hash
+            else None
+        )
+        return 200, store.audit_events(task_id, anchor=anchor)
 
     if path == "/v1/locks":
         if method == "GET":

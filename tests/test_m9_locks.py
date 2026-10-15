@@ -85,6 +85,28 @@ class WriteLockStoreTest(unittest.TestCase):
         self.store.lock_release("opencode", force=True)
         self.assertEqual(self.store.lock_list()["count"], 0, "coordinator 可清场")
 
+    def test_acquire_force_needs_coordinator(self):
+        """`--force` 抢锁＝不可逆干扰：非 coordinator 一律拒（CLI 与 store 口径必须一致）。"""
+        self.store.lock_acquire("cursor", [A], window_id="w-c1")
+        with self.assertRaises(MailError) as ctx:
+            self.store.lock_acquire("grok", [A], force=True)
+        self.assertEqual(ctx.exception.code, "not_coordinator")
+        self.assertEqual(self.store.lock_list()["locks"][0]["agent"], "cursor", "没被抢走")
+        got = self.store.lock_acquire("opencode", [A], force=True)  # coordinator 可抢
+        self.assertEqual(got["locks"][0]["agent"], "opencode")
+
+    def test_relock_by_holder_is_renewal(self):
+        """同一个人重复锁同一路径 = 续期（长任务不必等锁过期被人抢）。"""
+        first = self.store.lock_acquire("cursor", [A], ttl=60)
+        again = self.store.lock_acquire("cursor", [A], ttl=600)
+        self.assertEqual(again["locks"][0]["agent"], "cursor")
+        self.assertGreater(again["expires_at"], first["expires_at"])
+
+    def test_lock_reply_carries_beijing_time(self):
+        got = self.store.lock_acquire("cursor", [A], ttl=60)
+        self.assertTrue(got["expires_at"].endswith("Z"), "存储口径仍是 UTC")
+        self.assertTrue(got["expires_at_beijing"].endswith("+0800"), got["expires_at_beijing"])
+
     def test_expired_lock_is_swept(self):
         self.store.lock_acquire("cursor", [A], window_id="w-c1")
         con = sqlite3.connect(self.home / "mailbox.db", timeout=10)
