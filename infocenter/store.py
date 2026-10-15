@@ -563,20 +563,23 @@ class Store:
                 claimed_by = row["delivery_claimed_by"]
                 claimed_at = row["delivery_claimed_at"]
                 if claimed_by is None:
-                    cur = conn.execute(
-                        """
-                        UPDATE deliveries
-                        SET claimed_by = ?, claimed_at = COALESCE(claimed_at, ?)
-                        WHERE message_id = ? AND to_agent = ?
-                          AND (claimed_by IS NULL OR claimed_by = ?)
-                        """,
-                        (window_id, now, row["id"], agent, window_id),
-                    )
-                    if cur.rowcount == 0:
-                        continue
-                    _propagate_thread_claim(conn, row["thread_id"], agent, window_id, now)
-                    claimed_by = window_id
-                    claimed_at = claimed_at or now
+                    # M6-0：只认领属于本窗 workspace 的信；他项目窗口**照常看见**但**不认领**，
+                    # 认领留给该项目自己的窗口/守护（否则它会被永久挡住）。
+                    if _auto_claim_allowed(conn, window_id, row["workspace"]):
+                        cur = conn.execute(
+                            """
+                            UPDATE deliveries
+                            SET claimed_by = ?, claimed_at = COALESCE(claimed_at, ?)
+                            WHERE message_id = ? AND to_agent = ?
+                              AND (claimed_by IS NULL OR claimed_by = ?)
+                            """,
+                            (window_id, now, row["id"], agent, window_id),
+                        )
+                        if cur.rowcount == 0:
+                            continue
+                        _propagate_thread_claim(conn, row["thread_id"], agent, window_id, now)
+                        claimed_by = window_id
+                        claimed_at = claimed_at or now
                 last_seq = row["delivery_seq"]
                 messages.append(
                     _view(
@@ -1829,6 +1832,11 @@ class Store:
                     """,
                     (now, now, wid),
                 )
+            # M6-0：窗口离场即释放它名下的认领，避免僵尸认领把信永远挡住（其它窗口/守护可接手）。
+            conn.execute(
+                "UPDATE deliveries SET claimed_by = NULL, claimed_at = NULL WHERE claimed_by = ?",
+                (wid,),
+            )
             aborted_ids = _abort_window_cases(
                 conn,
                 window_id=wid,
@@ -2096,6 +2104,69 @@ def _is_window_gone(win_row: sqlite3.Row | None) -> bool:
     return False
 
 
+def _workspace_compatible(message_workspace: str | None, window_workspace: str | None) -> bool:
+    """信的 workspace 与窗口的 workspace 是否相容。
+
+    任一侧为空 ⇒ 相容（信息不足，不下「跨项目」判断，保持既有行为）。
+    """
+    if not (message_workspace or "").strip() or not (window_workspace or "").strip():
+        return True
+    return _workspace_scope(message_workspace, window_workspace)
+
+
+def _window_workspace(conn: sqlite3.Connection, window_id: str | None) -> str | None:
+    if not window_id:
+        return None
+    row = conn.execute(
+        "SELECT workspace FROM windows WHERE window_id = ?", (window_id,)
+    ).fetchone()
+    return row["workspace"] if row else None
+
+
+def _auto_claim_allowed(conn: sqlite3.Connection, window_id: str, message_workspace: str | None) -> bool:
+    """M6-0：只允许认领「属于本窗口 workspace」的信。
+
+    否则，一个**不做 workspace 过滤**的长轮询窗口（常见于他项目的 MCP/CLI 会话）会把别的项目的
+    信一并认领走；而认领一旦落在别窗，正确项目的守护/窗口在 `/v1/events` 与 `ic inbox` 里就
+    **再也看不到它**（过滤条件 `claimed_by IS NULL OR = 本窗`）⇒ 派单/来信**静默丢失**。
+    """
+    return _workspace_compatible(message_workspace, _window_workspace(conn, window_id))
+
+
+def _release_stale_claims(conn: sqlite3.Connection) -> int:
+    """M6-0 修复：释放「认领窗口已离场/已死」或「认领窗口与信的 workspace 不相容」的认领。
+
+    这两类都是陈旧/错位认领，会把信从正确项目的窗口里隐藏掉。每轮惰性对账时调用，可自愈历史脏数据。
+    """
+    rows = conn.execute(
+        """
+        SELECT d.message_id, d.to_agent, d.claimed_by,
+               m.workspace AS message_workspace,
+               w.workspace, w.state, w.left_at, w.pid
+        FROM deliveries d
+        JOIN messages m ON m.id = d.message_id
+        JOIN windows w ON w.window_id = d.claimed_by
+        WHERE d.claimed_by IS NOT NULL
+        """
+    ).fetchall()
+    released = 0
+    for row in rows:
+        stale = _is_window_gone(row) or not _workspace_compatible(
+            row["message_workspace"], row["workspace"]
+        )
+        if not stale:
+            continue
+        conn.execute(
+            """
+            UPDATE deliveries SET claimed_by = NULL, claimed_at = NULL
+            WHERE message_id = ? AND to_agent = ? AND claimed_by = ?
+            """,
+            (row["message_id"], row["to_agent"], row["claimed_by"]),
+        )
+        released += 1
+    return released
+
+
 def _lazy_reconcile_case(conn: sqlite3.Connection, case_row: sqlite3.Row, now: str | None = None) -> sqlite3.Row:
     """崩溃惰性补齐：当未封卷案卷的主办窗口已不在（进程死/窗口被删/状态已离场）时，
     自动补写 `[自动]` 节点并中止封卷。"""
@@ -2163,6 +2234,8 @@ def _lazy_reconcile_all(conn: sqlite3.Connection, now: str | None = None) -> Non
                 "UPDATE windows SET state = 'left', left_at = COALESCE(left_at, ?) WHERE window_id = ?",
                 (now, w_row["window_id"]),
             )
+    # M6-0：对账顺带回收陈旧/错位认领（离场/已死窗口、或跨项目窗口扣住的信），避免来信被静默隐藏。
+    _release_stale_claims(conn)
 
 
 def _abort_window_cases(
