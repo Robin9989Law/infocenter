@@ -273,36 +273,32 @@ $ git commit -m "锚：留痕链头"          # 锚进了 git，才算落在库�
 | **用完了放回去** | ① `git commit` 之后 `.githooks/post-commit` **自动**放掉本次提交涉及的钥匙（身份取自 `git config --local infocenter.agent`，由 `ic guard --install-hook` 写入）；② 也可手动 `ic unlock`；③ 锁 TTL 兜底 |
 | **放回自己的，不许动别人的** | `ic unlock` 只放自己的；`ic lock --changed` 遇到别人的锁跳过并报告 |
 
-### 排队改同一个文件：默认**谁提谁落**（持有者只管放钥匙）
+### 拿不到钥匙怎么办：**记进自己的 TODO**（不排队、不通知、不点名）
 
-A 拿着钥匙在改 `store.py`，B、C 也想改。规矩（human 定稿）：
+A 拿着钥匙在改 `store.py`，B 也想改。规矩（human 定稿，2026-10-15）：
 
-- **A（持有者）改完直接放钥匙，不负责合并**——别指望它顺手把别人的活一起干了；
-- **默认「谁提谁落」**：B、C 排队提改动，等**自己**拿到钥匙时落**自己**那几条，不替别人干活；
-- **合并只是可选加速**：持有者愿意顺手把别人的也并进来可以做（`--merge`），但必须写明"按谁的要求改了什么"，进只增链 ⇒ 责任可追；不合并也算合规。
+- **不排队**：`ic queue` 不是队列——它只在库里记一笔"这个文件有件事要改"，**不占钥匙、不排顺序、不点名下一位**；
+- **不通知**：没人替你转告 A，你也别发信去催。**协作公理：沟通效率太低，且随 agent 数量递减——能不沟通就不沟通**，一律走共享状态（锁表 + 只增痕迹 + 各自 TODO）；
+- **记进自己的 TODO**：`ic queue` 顺手把这行写进**你自己**的 `TODO-<名字>.md`。拿不到钥匙就**跳过，去做你 TODO 里的下一件**；等你（钥匙空着）时再回来落这一条——落自己那几条，不替别人干活；
+- **持有者只管放钥匙**：A 改完直接提交，钥匙自动放回，不负责合并、也不负责喊人。
 
 ```bash
-# B（拿不到钥匙，也不硬写）：把改动**提**给持有者
+# B 拿不到钥匙：不硬写、不发信，记进自己的 TODO
 $ ic --as B queue infocenter/store.py --note "把 foo() 改成 bar()"
-已排队 q271（infocenter/store.py）
+已记下 q271（infocenter/store.py）
   内容：把 foo() 改成 bar()
-  默认等你自己拿到钥匙后落这一条（A 顺手合并只是可选加速）
+  ✍️ 已写进你的 TODO：/…/TODO-B.md      # 下次心跳读自己 TODO 时就会被捡起来
 
-# A（持有者）一眼看到：📥 有 2 条排队（默认由排队的人自己拿到钥匙后落）
-$ ic --as A locks
-  infocenter/store.py  ← A（任务 …）  …  📥 有 2 条排队（`ic queue infocenter/store.py --merge` 可选加速）
-
-# A 愿意顺手加速，才把 B、C 的内容并进自己这一次改动，然后收口
-$ ic --as A queue infocenter/store.py --merge
-已合并 2 条（infocenter/store.py）；这个文件还剩 0 条排队
+# 之后 B 自己拿到钥匙时，才落这一条
+$ ic --as B queue infocenter/store.py          # 看这个文件还挂着哪几条
+$ ic --as B queue infocenter/store.py --merge  # 落自己那几条（钥匙在手才行）
+已合并 2 条（infocenter/store.py）；这个文件还剩 0 条
 ```
 
-- `--patch-file 补丁.txt` 可以带补丁；`--id q271` 只合并指定几条。
-- **只有拿钥匙的人能合并**（谁提谁落也意味着：钥匙不在你手上时，别替别人落）；别人合并会拿 403。
-  `ic lock` / `ic queue` 会告诉你"这个文件有 N 条排队、队首是谁"——**队首决定下一个拿钥匙的人**；
-  你不是队首就**只做最小改动**，或把钥匙让给队首。
-- 提议与合并**都进那条只增链**（`propose` / `propose_merged`）⇒ 谁提了什么、谁合并了，事后可查、可验。
-- 拿不到钥匙时的 409 文案会直接把 `ic queue` 教给他。
+- `--patch-file 补丁.txt` 可以带补丁；`--id q271` 只落指定几条。
+- **只有拿钥匙的人能落**（钥匙不在你手上时别替别人落）；别人落会拿 403。
+- 提议与落地**都进那条只增链**（`propose` / `propose_merged`）⇒ 谁提了什么、谁落地了，事后可查、可验。
+- 拿不到钥匙时的 409 文案会直接把 `ic queue` 教给他（**不教"回信叫人"**）。
 
 需要"今天先不锁了、全放开"时：`ic unlock --force`（coordinator 清场）或直接 `chmod -R u+w <路径>` —— 这是**故意绕过**，会写进痕迹的例外。
 
@@ -453,7 +449,13 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `failure_cooldown` | 可选：普通连续失败的冷却时长（秒），缺省 3600 |
 | `permanent_cooldown` | 可选：额度/鉴权类**永久失败**的冷却时长（秒），缺省 21600（6 小时） |
 
-> **空转治理（idle guard）**：守护命中模型额度/鉴权上限（输出含 `usage limit`、`quota`、`invalid credential`、`401` 等）时不再按 `heartbeat` 间隔硬撞，而是进入**长冷却**；普通失败连续达 `failure_threshold` 次也进入冷却。冷却期内**不触发 headless（新信也不跑、游标不前进，冷却结束会重新投递）**，`ic crew status` 会标注「额度/鉴权不可用，剩 N 分钟」。此外心跳空转时按 `idle_backoff` 指数拉长间隔。这些状态与调参键都可由守护热读，改 `config.json` 下一轮生效。
+> **空转治理（idle guard）**：守护命中模型额度/鉴权上限（输出含 `usage limit`、`quota`、`invalid credential`、`401` 等）时不再按 `heartbeat` 间隔硬撞，而是进入**长冷却**；普通失败连续达 `failure_threshold` 次也进入冷却。冷却期内不按 `heartbeat` 硬撞，但仍**每分钟轻探一次**（`wait=0`，只问一句就走）：
+>
+> - **新指令能进来**：探到**进入冷却之后才到**的**高优先级**信 ⇒ 提前结束冷却、立刻处理（真新指令不该被"模型不可用"关在门外）。**只认冷却之后新到的**：失败时游标不前进，同一封没投出去的信会被反复看见，拿它当新指令就是「进冷却 → 立刻被打断 → 再失败」的死循环（实测见过每分钟 36 次 headless、1399 次触发 0 产出）；
+> - **超时不算失败**：headless 超时（缺省 `HEADLESS_TIMEOUT` 1800s，可用 `headless_timeout` 调）**不涨失败计数、永不进冷却**，只按指数退避重试（封顶 300s）。慢模型不该被判死——旧实现把"连续超时"当"连续失败" ⇒ 判定超时配得比 1800s 短时，慢模型必然进冷却、必然空转；
+> - **额度 / 鉴权**（quota / 401 类）**仍立刻冷却**；真失败累计到 `failure_threshold` 仍冷却。
+>
+> `ic crew status` 会标注「额度/鉴权不可用，剩 N 分钟」。此外心跳空转时按 `idle_backoff` 指数拉长间隔。这些状态与调参键都可由守护热读，改 `config.json` 下一轮生效。
 
 **守护对 config 是热加载的**：收信守护进程每一轮都会重读 `config.json`，所以改 `headless` / `heartbeat_mode` / `heartbeat_prompt` / `headless_timeout` / `idle_backoff` / `idle_backoff_max` / `progress_files` / `failure_threshold` / `failure_cooldown` / `permanent_cooldown`（以及启动时没有用 `--heartbeat` 显式传入的 `heartbeat`）**不需要重启守护**，下一轮即生效；把某个身份的 `headless` 清空，它的守护会在当前轮结束后优雅退出。`poll` 与显式传入的 `--heartbeat` 仍要重启守护才会变。
 
