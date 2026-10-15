@@ -9,9 +9,3 @@ def home_dir() -> Path:
     if raw:
         return Path(raw).expanduser()
     return Path.home() / ".infocenter"
-
-
-def default_url() -> str:
-    from infocenter import DEFAULT_HOST, DEFAULT_PORT
-
-    return f"http://{DEFAULT_HOST}:{DEFAULT_PORT}"

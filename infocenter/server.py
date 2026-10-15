@@ -10,7 +10,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from infocenter import DEFAULT_HOST, DEFAULT_PORT, config
 from infocenter.httpapi import MAX_BODY, handle
-from infocenter.paths import home_dir
 from infocenter.store import MailError, Store
 
 _WEB_DIR = os.path.join(os.path.dirname(__file__), "web")

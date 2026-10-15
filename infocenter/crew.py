@@ -33,7 +33,6 @@ from infocenter.store import (
     MailError,
     _workspace_scope,
     beijing_stamp,
-    iso_ago,
     new_window_id,
     normalize_name,
     utcnow,

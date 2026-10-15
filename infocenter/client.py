@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 
 from infocenter.paths import ROOT, home_dir
-from infocenter.server import discover_url, healthy, owned_url, read_meta
+from infocenter.server import discover_url, healthy, owned_url
 from infocenter.store import MailError
 
 # 守护注入给 headless 子进程。子进程仍继承窗口号（认领算宿主办公室），
@@ -160,7 +160,3 @@ def _window_header(window: str | None) -> str:
     if window is None:
         window = os.environ.get("INFOCENTER_WINDOW", "")
     return str(window or "").strip()
-
-
-def running_meta(home=None):
-    return read_meta(home or home_dir())

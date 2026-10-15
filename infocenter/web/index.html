@@ -265,7 +265,6 @@ let state = {
   selectedProject: null,
   selectedWbs: null,
   selectedWindow: null,
-  selectedCase: null,
   settingsTarget: null,
   showArchived: false,
   activity: [],
@@ -371,10 +370,8 @@ function selectProject(ws) {
   state.selectedProject = (state.selectedProject === ws) ? null : ws;
   state.selectedWindow = null;
   state.selectedWbs = null;
-  state.selectedCase = null;
   render();
 }
-function wbsKey(path) { return path && path.length ? path : "__none__"; }
 
 function buildWbsTree(cases) {
   const root = { name: "", path: "", children: [], count: 0, open: 0 };
@@ -425,16 +422,6 @@ function renderWbsNodes(node, depth) {
 function selectWbs(path) {
   state.selectedWbs = (state.selectedWbs === path) ? null : path;
   state.selectedWindow = null;
-  render();
-}
-
-function selectWindow(wid) {
-  state.selectedWindow = (state.selectedWindow === wid) ? null : wid;
-  state.selectedCase = null;
-  render();
-}
-function selectCase(id) {
-  state.selectedCase = (state.selectedCase === id) ? null : id;
   render();
 }
 
@@ -965,24 +952,6 @@ async function sendHuman() {
     await loadAgents(); await loadActivity();
   } catch (e) { alert("发送失败：" + e.message); }
 }
-async function loadHeadlessRuns() {
-  const el = document.getElementById("s-runs");
-  if (!el) return;
-  try {
-    const data = await api("/v1/headless/runs?limit=15");
-    const runs = data.runs || [];
-    el.innerHTML = runs.length === 0
-      ? '<div class="empty">暂无记录（收信守护需重启一次后才会记录）</div>'
-      : runs.map(r => `
-        <div class="irow block"><span class="grow"><b>${escapeHtml(r.agent || "")}</b> · ${escapeHtml(String(r.dir || "").split("/").filter(Boolean).pop() || "")} · ${escapeHtml(String(r.end || "").replace("T", " ").replace("Z", ""))} · ${escapeHtml(r.outcome || "")}</span>
-          <details><summary>上下文 / 输出</summary>
-            <div class="body-text">${escapeHtml(r.prompt || "（无提示词）")}</div>
-            <div class="body-text">${escapeHtml(r.tail || "")}</div>
-          </details></div>`).join("");
-  } catch (e) {
-    el.innerHTML = '<div class="empty">加载失败：' + escapeHtml(e.message) + '</div>';
-  }
-}
 async function loadAgentMail(name) {
   const el = document.getElementById("s-agent-mail");
   if (!el) return;
@@ -1155,7 +1124,6 @@ document.getElementById("modal-body").addEventListener("click", ev => {
     const pid = state.settingsTarget && state.settingsTarget.id;
     state.selectedProject = pid || null;
     state.selectedWindow = el.dataset.wid;
-    state.selectedCase = null;
     closeSettings(); render();
   }
   else if (act === "goto-case") openSettings("case", el.dataset.cid);

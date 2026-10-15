@@ -106,13 +106,6 @@ def _read_document(home) -> dict:
     return raw
 
 
-def _save_agents(home, agents: list[dict]) -> None:
-    """写回 agents，保留 node、peers、outbox_dir 以及其他顶层键。"""
-    raw = _read_document(home)
-    raw["agents"] = agents
-    save(home, raw)
-
-
 def federation_settings(home) -> dict:
     """读 node / peers / outbox_dir。不创建 config.json。
 

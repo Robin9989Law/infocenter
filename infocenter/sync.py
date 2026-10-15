@@ -21,10 +21,11 @@ from infocenter.store import (
     MailError,
     Store,
     _body,
+    _is_wire_name,
     _priority,
     _subject,
     _workspace_scope,
-    normalize_name,
+    utcnow,
 )
 
 MAX_ENVELOPE = 1_000_000
@@ -50,20 +51,8 @@ COUNT_KEYS = (
 
 
 def is_wire_name(value) -> bool:
-    """恰好一个点，左右都是节点段，整串过 normalize_name。"""
-    if not isinstance(value, str):
-        return False
-    name = value.strip().lower()
-    left, dot, right = name.partition(".")
-    if not dot or "." in right:
-        return False
-    if not SEGMENT_RE.fullmatch(left) or not SEGMENT_RE.fullmatch(right):
-        return False
-    try:
-        normalize_name(name)
-    except MailError:
-        return False
-    return True
+    """恰好一个点、左右都是合法节点段，且整串合法。"""
+    return _is_wire_name(value)
 
 
 def canonical_wire(value) -> str | None:
@@ -256,7 +245,7 @@ class _Ledger:
             INSERT INTO events(action, path, sha256, size, mtime_ns, reason, message_id, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (action, path, digest, size, mtime_ns, reason, message_id, _utcnow()),
+            (action, path, digest, size, mtime_ns, reason, message_id, utcnow()),
         )
         self.conn.commit()
 
@@ -284,12 +273,6 @@ class _Ledger:
         )
         conn.commit()
         self.conn = conn
-
-
-def _utcnow() -> str:
-    from infocenter.store import utcnow
-
-    return utcnow()
 
 
 def _export_messages(home, project, node, outbox, counts, ledger) -> None:
