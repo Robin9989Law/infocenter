@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 测试数量从 16 增加到 158（A 质量 / B 联邦 / C 发布 / D 窗口·案卷·应用 + M5 最后评审加固），全量零 `ResourceWarning`
 
 ### Fixed
+- **时间统一北京时间（各 agent 机器时区不一致导致对不上表）**：展示层原来用 `.astimezone()`（**机器本地时区**）⇒ 同一封信在不同机器上显示不同时间（实测四家常报四个时刻）。现**固定 UTC+8**：新增 `BEIJING` / `beijing_time()` / `beijing_hhmm()` / `beijing_stamp()`，**存储仍为 UTC**（`...Z`，排序比较用），**所有给人/给 agent 看的字段一律 `*_beijing`**（旧 `*_local` 键**已废弃并改名**：`created_at_local` → `created_at_beijing`、`last_seen_local`、`activity_at_local`、`expires_at_local`、`acquired_at_local`、`updated_at_local`、`first_seen_local` 同理），日志戳、`ic inbox` / `ic send` / `ic lock` / `ic locks` / `ic agents` / `ic task` / `/ui` 看板同步改。+ `tests/test_time_beijing.py`（9 项：**把机器时区改成纽约/伦敦/东京/基里巴斯，展示必须一字不变**）
 - **跨窗认领必须按 workspace 作用域（M6-0，高危静默丢信）**：不做 workspace 过滤的长轮询窗口（常见于他项目的 MCP/CLI 会话）以前会把**别的项目**的信一并软认领；一旦被别窗认领，正确项目的守护/窗口在 `/v1/events` 与 `ic inbox` 里就再也看不到它 ⇒ **派单/来信静默丢失**（实测一次事故里 12+ 封如此被扣住）。现：① 窗口只认领属于自己 workspace 的信，他项目窗口**看得见但不认领**；② 每轮惰性对账回收「认领窗口已离场/已死」或「与信 workspace 不相容」的错位认领（历史脏数据自愈）；③ **窗口离场即释放**其名下认领。+ 新增 `tests/test_m6_claim_scope.py`（5 项）
 - **`headless_timeout` 配置从未生效**：该键不在 `config._KNOWN_KEYS` 里，`config.load()` 会把它丢掉 ⇒ 守护的 `config.entry()` 永远读不到，单轮墙钟上限一直回落 1800s（`+` 新增 `headless_timeout` 与本次空转治理各键的 config 往返回归）
 - **命令注入（高危）**：headless 命令模板把 `{prompt}` 套进引号时的引号逃逸 → 拒绝并提示改法

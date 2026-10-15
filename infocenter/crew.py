@@ -29,7 +29,14 @@ from pathlib import Path
 
 from infocenter import config
 from infocenter.client import NO_PID_ENV, ApiError, request
-from infocenter.store import MailError, _workspace_scope, new_window_id, normalize_name, utcnow
+from infocenter.store import (
+    MailError,
+    _workspace_scope,
+    beijing_stamp,
+    new_window_id,
+    normalize_name,
+    utcnow,
+)
 from infocenter.paths import ROOT
 
 SESSION_PREFIX = "ic-crew"
@@ -1124,6 +1131,7 @@ def build_prompt(agent: str, project: str, fresh: list[dict], unread_total: int)
         f"再处理来信：`ic --as {agent} inbox --full` 读信；处理后 `ic --as {agent} read <id>` 签收；"
         f"需要回应时 `ic --as {agent} reply <id> -b \"...\"`。无新信息不回帖，禁止 +1 附议。\n"
         f"办完写回一行节点：`ic --as {agent} case <thread> --note \"结论\"`。\n"
+        f"写时间一律用**北京时间**（UTC+8）：`ic` 输出里的 `*_beijing` 就是北京时间；不要写机器本地时间、不要写 UTC。\n"
         f"只处理上面列出的、属于本项目的信；其他项目或无 workspace 的未读不要在本轮动手"
         f"（无 workspace 的信由交互会话处理）。"
     )
@@ -1174,6 +1182,7 @@ def build_heartbeat_prompt(
         f"需要别人输入或裁定时，用 `ic --as {agent} send/reply` 给相关人留言。"
         f"接着办已有的事时，先 `ic --as {agent} cases` 读案卷，干完用 "
         f"`ic --as {agent} case <thread> --note \"结论\"` 写回一行节点。"
+        f"写时间一律用**北京时间**（UTC+8）；`ic` 输出里的 `*_beijing` 就是北京时间。"
         f"确实无可推进就直接结束本次运行，不要发客套信、不要 +1。"
     )
 
@@ -1212,7 +1221,7 @@ def watch(
         cursor = 0
     window_id, previous_window = _adopt_window(window)
     print(
-        f"[{utcnow()}] watch 启动 key={key} dir={project} url={url} poll={poll} "
+        f"[{beijing_stamp()}] watch 启动 key={key} dir={project} url={url} poll={poll} "
         f"heartbeat={heartbeat} window={window_id}",
         flush=True,
     )
@@ -1246,13 +1255,13 @@ def watch(
             if registered:
                 break
             print(
-                f"[{utcnow()}] 办公室登记第 {attempt}/{OFFICE_REGISTER_ATTEMPTS} 次失败",
+                f"[{beijing_stamp()}] 办公室登记第 {attempt}/{OFFICE_REGISTER_ATTEMPTS} 次失败",
                 flush=True,
             )
             if attempt < OFFICE_REGISTER_ATTEMPTS:
                 time.sleep(1)
         if not registered:
-            print(f"[{utcnow()}] 办公室登记连续失败，守护退出，不进入收信循环", flush=True)
+            print(f"[{beijing_stamp()}] 办公室登记连续失败，守护退出，不进入收信循环", flush=True)
             return 1
         last_run = time.monotonic()
         failure_streak = 0
@@ -1266,7 +1275,7 @@ def watch(
             entry = config.entry(home, agent)
             template = str((entry or {}).get("headless") or "").strip()
             if not template:
-                print(f"[{utcnow()}] config 里 {agent} 的 headless 已清空，守护退出", flush=True)
+                print(f"[{beijing_stamp()}] config 里 {agent} 的 headless 已清空，守护退出", flush=True)
                 break
             mode = str((entry or {}).get("heartbeat_mode") or "idle").strip().lower()
             custom_prompt = str((entry or {}).get("heartbeat_prompt") or "").strip() or None
@@ -1283,7 +1292,7 @@ def watch(
                 if not cooldown_logged:
                     left = int(cooldown_until - time.monotonic())
                     print(
-                        f"[{utcnow()}] {agent} 进入冷却（{cooldown_kind}），{left}s 内不再触发 headless",
+                        f"[{beijing_stamp()}] {agent} 进入冷却（{cooldown_kind}），{left}s 内不再触发 headless",
                         flush=True,
                     )
                     cooldown_logged = True
@@ -1291,7 +1300,7 @@ def watch(
                 time.sleep(min(60.0, max(1.0, cooldown_until - time.monotonic())))
                 continue
             if cooldown_until:
-                print(f"[{utcnow()}] {agent} 冷却结束，恢复收信与心跳", flush=True)
+                print(f"[{beijing_stamp()}] {agent} 冷却结束，恢复收信与心跳", flush=True)
                 cooldown_until = 0.0
                 cooldown_logged = False
                 failure_streak = 0
@@ -1313,11 +1322,11 @@ def watch(
                 except SystemExit:
                     if stopping:
                         break
-                    print(f"[{utcnow()}] events 失败：连不上信息中心，2 秒后重试", flush=True)
+                    print(f"[{beijing_stamp()}] events 失败：连不上信息中心，2 秒后重试", flush=True)
                     time.sleep(2)
                     continue
                 except (ApiError, OSError, ValueError, KeyError) as exc:
-                    print(f"[{utcnow()}] events 失败：{exc}，2 秒后重试", flush=True)
+                    print(f"[{beijing_stamp()}] events 失败：{exc}，2 秒后重试", flush=True)
                     time.sleep(2)
                     continue
                 fresh = payload.get("new") or []
@@ -1330,14 +1339,14 @@ def watch(
                 except (ApiError, OSError, ValueError, KeyError, MailError):
                     office_paused = False
                 if office_paused:
-                    print(f"[{utcnow()}] 办公室 {window_id} 已暂停，跳过 headless", flush=True)
+                    print(f"[{beijing_stamp()}] 办公室 {window_id} 已暂停，跳过 headless", flush=True)
                     if fresh:
                         time.sleep(2)
                     continue
                 new_cursor = max(cursor, int(payload.get("cursor") or 0))
                 if fresh:
                     prompt = build_prompt(agent, project, fresh, int(payload.get("unread_total") or len(fresh)))
-                    print(f"[{utcnow()}] 本项目新信 {len(fresh)} 封，触发 headless", flush=True)
+                    print(f"[{beijing_stamp()}] 本项目新信 {len(fresh)} 封，触发 headless", flush=True)
                     outcome = _run_headless(template, prompt, project, agent=agent, timeout=htimeout)
                     # 子进程一退出，它的 pid 就是死的。补中断节点会走案卷对账，必须先把 pid 写回。
                     _reassert_office_pid(url, agent, window_id, project)
@@ -1354,14 +1363,14 @@ def watch(
                             cooldown_kind = "额度/鉴权不可用" if outcome == "quota" else "连续失败"
                             cooldown_logged = False
                             print(
-                                f"[{utcnow()}] headless {outcome}，连续 {failure_streak} 次失败 ⇒ "
+                                f"[{beijing_stamp()}] headless {outcome}，连续 {failure_streak} 次失败 ⇒ "
                                 f"{cooldown_kind}，进入冷却（游标留在 {cursor}，冷却后再投递）",
                                 flush=True,
                             )
                         else:
                             delay = _retry_delay(retry_rounds)
                             print(
-                                f"[{utcnow()}] headless {outcome}，游标留在 {cursor}，"
+                                f"[{beijing_stamp()}] headless {outcome}，游标留在 {cursor}，"
                                 f"第 {retry_rounds} 次重试，{delay}s 后",
                                 flush=True,
                             )
@@ -1375,7 +1384,7 @@ def watch(
                         if mode != "always":
                             last_run = time.monotonic()
                 elif beat and time.monotonic() - last_run >= beat:
-                    print(f"[{utcnow()}] 无新信，心跳 {beat}s 到期，触发规划运行", flush=True)
+                    print(f"[{beijing_stamp()}] 无新信，心跳 {beat}s 到期，触发规划运行", flush=True)
                     is_coord = str((entry or {}).get("role") or "") == "coordinator"
                     coord_name = config.coordinator(home)
                     before = _progress_snapshot(progress_paths)
@@ -1397,7 +1406,7 @@ def watch(
                             cooldown_kind = "额度/鉴权不可用" if h_outcome == "quota" else "连续失败"
                             cooldown_logged = False
                             print(
-                                f"[{utcnow()}] 心跳 headless {h_outcome}，连续 {failure_streak} 次失败 ⇒ "
+                                f"[{beijing_stamp()}] 心跳 headless {h_outcome}，连续 {failure_streak} 次失败 ⇒ "
                                 f"{cooldown_kind}，进入冷却",
                                 flush=True,
                             )
@@ -1408,7 +1417,7 @@ def watch(
                             idle_rounds += 1
                             nxt = _effective_heartbeat(heartbeat, idle_rounds, idle_on, idle_cap)
                             print(
-                                f"[{utcnow()}] 心跳空转第 {idle_rounds} 轮（进展信号未变），"
+                                f"[{beijing_stamp()}] 心跳空转第 {idle_rounds} 轮（进展信号未变），"
                                 f"下次心跳间隔拉长到 {nxt}s",
                                 flush=True,
                             )
@@ -1421,11 +1430,11 @@ def watch(
             except SystemExit:
                 if stopping:
                     break
-                print(f"[{utcnow()}] watch 收到退出信号，2 秒后重试", flush=True)
+                print(f"[{beijing_stamp()}] watch 收到退出信号，2 秒后重试", flush=True)
                 time.sleep(2)
                 continue
             except Exception as exc:
-                print(f"[{utcnow()}] watch 本轮异常，记日志后继续：{exc}", flush=True)
+                print(f"[{beijing_stamp()}] watch 本轮异常，记日志后继续：{exc}", flush=True)
                 time.sleep(2)
                 continue
     finally:
@@ -1547,7 +1556,7 @@ def _run_headless(
             start_new_session=True,
         )
     except OSError as exc:
-        print(f"[{utcnow()}] headless 启动失败：{exc}", flush=True)
+        print(f"[{beijing_stamp()}] headless 启动失败：{exc}", flush=True)
         return "start_failed"
     _note_headless_pid(proc.pid)
     ctx = _daemon_ctx
@@ -1573,7 +1582,7 @@ def _run_headless(
             stdout, stderr = proc.communicate()
         except UnicodeDecodeError as exc:
             outcome = "fail"
-            print(f"[{utcnow()}] headless 输出无法按 UTF-8 解码：{exc}", flush=True)
+            print(f"[{beijing_stamp()}] headless 输出无法按 UTF-8 解码：{exc}", flush=True)
             if proc.poll() is None:
                 _signal_group(proc.pid, signal.SIGKILL)
                 try:
@@ -1595,17 +1604,17 @@ def _run_headless(
             tail = ((stdout or "") + (stderr or "")).strip()[-500:]
             run_tail = ((stdout or "") + (stderr or "")).strip()[-2000:]
             if code in (-signal.SIGTERM, 128 + signal.SIGTERM):
-                print(f"[{utcnow()}] headless 被暂停打断（退出码 {code}），输出尾部：{tail}", flush=True)
+                print(f"[{beijing_stamp()}] headless 被暂停打断（退出码 {code}），输出尾部：{tail}", flush=True)
                 outcome = "interrupted"
             elif code == 0:
-                print(f"[{utcnow()}] headless 退出码 {code}，输出尾部：{tail}", flush=True)
+                print(f"[{beijing_stamp()}] headless 退出码 {code}，输出尾部：{tail}", flush=True)
                 outcome = "ok"
             else:
-                print(f"[{utcnow()}] headless 退出码 {code}，输出尾部：{tail}", flush=True)
+                print(f"[{beijing_stamp()}] headless 退出码 {code}，输出尾部：{tail}", flush=True)
                 # 额度/鉴权类永久失败与普通失败分开：前者用长冷却，别照原间隔硬撞。
                 outcome = _classify_failure(run_tail)
         if outcome == "timeout":
-            print(f"[{utcnow()}] headless 超时（{timeout} 秒）", flush=True)
+            print(f"[{beijing_stamp()}] headless 超时（{timeout} 秒）", flush=True)
     finally:
         _note_headless_pid(None)
         if h_home and h_key:
@@ -1684,10 +1693,10 @@ def _reassert_office_pid(url: str, agent: str, window_id: str, project: str) -> 
     except SystemExit as exc:
         if exc.code in (0, None):
             raise
-        print(f"[{utcnow()}] 重申办公室 {window_id} pid 失败：{exc}", flush=True)
+        print(f"[{beijing_stamp()}] 重申办公室 {window_id} pid 失败：{exc}", flush=True)
         return False
     except (ApiError, OSError, ValueError, MailError) as exc:
-        print(f"[{utcnow()}] 重申办公室 {window_id} pid 失败：{exc}", flush=True)
+        print(f"[{beijing_stamp()}] 重申办公室 {window_id} pid 失败：{exc}", flush=True)
         return False
     return True
 
@@ -1712,10 +1721,10 @@ def _register_office(url: str, agent: str, window_id: str, project: str) -> bool
         # 0 是守护自己的 SIGTERM 退出；连不上服务时 client 抛的是带文案的 SystemExit。
         if exc.code in (0, None):
             raise
-        print(f"[{utcnow()}] 登记办公室 {window_id} 失败：{exc}", flush=True)
+        print(f"[{beijing_stamp()}] 登记办公室 {window_id} 失败：{exc}", flush=True)
         return False
     except (ApiError, OSError, ValueError, MailError) as exc:
-        print(f"[{utcnow()}] 登记办公室 {window_id} 失败：{exc}", flush=True)
+        print(f"[{beijing_stamp()}] 登记办公室 {window_id} 失败：{exc}", flush=True)
         return False
     return True
 
@@ -1738,14 +1747,14 @@ def _note_interrupted(url: str, agent: str, window_id: str, fresh: list[dict]) -
         except SystemExit as exc:
             if exc.code in (0, None):
                 raise
-            print(f"[{utcnow()}] 案卷 {thread_id} 补中断节点失败：{exc}", flush=True)
+            print(f"[{beijing_stamp()}] 案卷 {thread_id} 补中断节点失败：{exc}", flush=True)
             continue
         except ApiError as exc:
             if exc.status != 404:
-                print(f"[{utcnow()}] 案卷 {thread_id} 补中断节点失败：{exc}", flush=True)
+                print(f"[{beijing_stamp()}] 案卷 {thread_id} 补中断节点失败：{exc}", flush=True)
                 continue
         except (OSError, ValueError, MailError) as exc:
-            print(f"[{utcnow()}] 案卷 {thread_id} 补中断节点失败：{exc}", flush=True)
+            print(f"[{beijing_stamp()}] 案卷 {thread_id} 补中断节点失败：{exc}", flush=True)
             continue
         try:
             _office_request(
@@ -1767,9 +1776,9 @@ def _note_interrupted(url: str, agent: str, window_id: str, fresh: list[dict]) -
         except SystemExit as exc:
             if exc.code in (0, None):
                 raise
-            print(f"[{utcnow()}] 案卷 {thread_id} 补中断节点失败：{exc}", flush=True)
+            print(f"[{beijing_stamp()}] 案卷 {thread_id} 补中断节点失败：{exc}", flush=True)
         except (ApiError, OSError, ValueError, MailError) as exc:
-            print(f"[{utcnow()}] 案卷 {thread_id} 补中断节点失败：{exc}", flush=True)
+            print(f"[{beijing_stamp()}] 案卷 {thread_id} 补中断节点失败：{exc}", flush=True)
 
 
 def _leave_office(url: str, agent: str, window_id: str) -> None:
@@ -1782,6 +1791,6 @@ def _leave_office(url: str, agent: str, window_id: str) -> None:
             {"note": "办公室离场"},
             timeout=5,
         )
-        print(f"[{utcnow()}] 办公室 {window_id} 已离场", flush=True)
+        print(f"[{beijing_stamp()}] 办公室 {window_id} 已离场", flush=True)
     except (ApiError, SystemExit, OSError, ValueError, MailError):
-        print(f"[{utcnow()}] 办公室 {window_id} 离场上报失败", flush=True)
+        print(f"[{beijing_stamp()}] 办公室 {window_id} 离场上报失败", flush=True)

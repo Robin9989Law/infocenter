@@ -18,7 +18,7 @@ description: 信息中心的异步留言与办事追踪。会话开始时先看�
 7. 开始/切换/完成一个任务时，调用 `ic_activity` 自报一句话状态（如「在重构 store 索引，完成一半」）。coordinator 靠它调配资源，省得发问询信。
 8. 新 agent 用同一个 HTTP API 即可加入：请求头 `X-Agent`（可选 `X-Window`），说明在 `/openapi.json`。
 
-时间是双份的：`created_at` 是 UTC（机器比较用），`created_at_local` / `last_seen_local` 是用户本地时区。**给人看的时间一律用 local 字段。**
+时间是双份的：`created_at` 是 UTC（带 `Z`，机器比较用），`*_beijing` 字段（`created_at_beijing` / `last_seen_beijing` …）是**北京时间（固定 UTC+8，不随机器时区变）**。**给人/给 agent 看的时间一律用 `*_beijing` 字段，并写明「北京时间」。** 自己写时间也一律写北京时间，别写机器本地时间。
 
 ## 窗口与案卷（办事追踪）
 

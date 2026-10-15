@@ -57,25 +57,45 @@ class MailError(Exception):
         self.status = status
 
 
+# 全项目统一时区：**北京时间（UTC+8，固定偏移）**。
+# 各 agent 机器时区不同 ⇒ **一律不用机器本地时区**（`.astimezone()` 无参那种写法禁用）。
+BEIJING = timezone(timedelta(hours=8))
+
+
 def utcnow() -> str:
+    """**存储用**：UTC ISO（`...Z`）。带 Z 无歧义，排序/比较都用它。"""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def local_time(utc_iso: str) -> str:
-    """UTC ISO → 本机本地时区。存储统一 UTC，展示统一本地。"""
+def _parse_utc(iso: str) -> datetime | None:
     try:
-        moment = datetime.strptime(utc_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+        return datetime.strptime(str(iso), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     except (TypeError, ValueError):
-        return str(utc_iso)
-    return moment.astimezone().strftime("%Y-%m-%d %H:%M:%S %z")
+        return None
 
 
-def local_hhmm(utc_iso: str) -> str:
-    try:
-        moment = datetime.strptime(utc_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-    except (TypeError, ValueError):
-        return str(utc_iso)[:5]
-    return moment.astimezone().strftime("%H:%M")
+def beijing_time(iso: str) -> str:
+    """**给人/agent 看的时间**：UTC ISO → 北京时间，固定 +0800（不随机器时区变）。
+
+    例：`2026-10-15T08:29:01Z` → `2026-10-15 16:29:01 +0800`。
+    """
+    moment = _parse_utc(iso)
+    if moment is None:
+        return str(iso)
+    return moment.astimezone(BEIJING).strftime("%Y-%m-%d %H:%M:%S %z")
+
+
+def beijing_hhmm(iso: str) -> str:
+    """北京时间只取时:分。"""
+    moment = _parse_utc(iso)
+    if moment is None:
+        return str(iso)[:5]
+    return moment.astimezone(BEIJING).strftime("%H:%M")
+
+
+def beijing_stamp() -> str:
+    """**当前**北京时间（给人看的日志戳）：`2026-10-15 16:29:01`。"""
+    return datetime.now(BEIJING).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def new_id() -> str:
@@ -1298,7 +1318,7 @@ class Store:
                         "subject": row["subject"],
                         "workspace": row["workspace"],
                         "created_at": row["created_at"],
-                        "created_at_local": local_time(row["created_at"]),
+                        "created_at_beijing": beijing_time(row["created_at"]),
                         "recipients": recipients,
                     }
                 )
@@ -2714,7 +2734,7 @@ class Store:
                         "case_title": row["case_title"] or "",
                         "my_status": row["my_status"] if not sent else None,
                         "created_at": row["created_at"],
-                        "created_at_local": local_time(row["created_at"]),
+                        "created_at_beijing": beijing_time(row["created_at"]),
                     }
                 )
         return out
@@ -2745,7 +2765,7 @@ class Store:
                 "auto": bool(row["auto"]),
                 "workspace": row["workspace"] or "",
                 "created_at": row["created_at"],
-                "created_at_local": local_time(row["created_at"]),
+                "created_at_beijing": beijing_time(row["created_at"]),
             }
             for row in rows
         ]
@@ -3619,7 +3639,7 @@ def _node_view(row: sqlite3.Row) -> dict:
         actor_display = f"{actor}({row['window_id']})"
     else:
         actor_display = actor
-    hhmm = local_hhmm(row["created_at"])
+    hhmm = beijing_hhmm(row["created_at"])
     note = row["note"]
     if "→" in note:
         line = f"{hhmm} {actor_display} · {note}"
@@ -3639,7 +3659,7 @@ def _node_view(row: sqlite3.Row) -> dict:
         "status_label": status_label,
         "auto": auto,
         "created_at": row["created_at"],
-        "created_at_local": local_time(row["created_at"]),
+        "created_at_beijing": beijing_time(row["created_at"]),
         "line": line,
     }
 
@@ -3728,9 +3748,9 @@ def _lock_view(row: sqlite3.Row) -> dict:
         "task_id": row["task_id"] or "",
         "note": row["note"] or "",
         "acquired_at": row["acquired_at"],
-        "acquired_at_local": local_time(row["acquired_at"]),
+        "acquired_at_beijing": beijing_time(row["acquired_at"]),
         "expires_at": row["expires_at"],
-        "expires_at_local": local_time(row["expires_at"]),
+        "expires_at_beijing": beijing_time(row["expires_at"]),
     }
 
 
@@ -3817,9 +3837,9 @@ def _task_view(row: sqlite3.Row) -> dict:
         "supersedes": row["supersedes"] or "",
         "priority": int(row["priority"] or 0),
         "created_at": row["created_at"],
-        "created_at_local": local_time(row["created_at"]),
+        "created_at_beijing": beijing_time(row["created_at"]),
         "updated_at": row["updated_at"],
-        "updated_at_local": local_time(row["updated_at"]),
+        "updated_at_beijing": beijing_time(row["updated_at"]),
         "updated_by": row["updated_by"] or "",
     }
 
@@ -3888,9 +3908,9 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         "claimed_by": row["owner_window"],
         "waiting_for": row["waiting_for"],
         "created_at": row["created_at"],
-        "created_at_local": local_time(row["created_at"]),
+        "created_at_beijing": beijing_time(row["created_at"]),
         "updated_at": row["updated_at"],
-        "updated_at_local": local_time(row["updated_at"]),
+        "updated_at_beijing": beijing_time(row["updated_at"]),
         "closed_at": row["closed_at"],
         "node_count": len(nodes),
         "last_note": nodes[-1]["note"] if nodes else "",
@@ -3926,15 +3946,15 @@ def _window_summary(row: sqlite3.Row) -> dict:
         "state_label": WINDOW_STATE_LABELS.get(state, state),
         "activity": row["activity"],
         "activity_at": row["activity_at"],
-        "activity_at_local": local_time(row["activity_at"]) if row["activity_at"] else "",
+        "activity_at_beijing": beijing_time(row["activity_at"]) if row["activity_at"] else "",
         "pid": row["pid"],
         "pid_alive": _pid_running(row["pid"]),
         "first_seen_at": row["first_seen_at"],
         "first_seen": row["first_seen_at"],
-        "first_seen_local": local_time(row["first_seen_at"]),
+        "first_seen_beijing": beijing_time(row["first_seen_at"]),
         "last_seen_at": row["last_seen_at"],
         "last_seen": row["last_seen_at"],
-        "last_seen_local": local_time(row["last_seen_at"]),
+        "last_seen_beijing": beijing_time(row["last_seen_at"]),
         "left_at": row["left_at"],
     }
 
@@ -4109,7 +4129,7 @@ def _view(
         "workspace": row["workspace"],
         "reply_to": row["reply_to"],
         "created_at": row["created_at"],
-        "created_at_local": local_time(row["created_at"]),
+        "created_at_beijing": beijing_time(row["created_at"]),
         "body_length": len(body),
         "delivery_status": delivery_status,
         "read_at": read_at,
@@ -4139,10 +4159,10 @@ def _agent(row: sqlite3.Row, unread: int = 0, windows: list[dict] | None = None)
         "unread": unread,
         "activity": activity_text,
         "activity_at": row["activity_at"],
-        "activity_at_local": local_time(row["activity_at"]) if row["activity_at"] else "",
+        "activity_at_beijing": beijing_time(row["activity_at"]) if row["activity_at"] else "",
         "created_at": row["created_at"],
         "last_seen_at": row["last_seen_at"],
-        "last_seen_local": local_time(row["last_seen_at"]),
+        "last_seen_beijing": beijing_time(row["last_seen_at"]),
         "active_window_count": len(active_wins),
     }
     if windows is not None:

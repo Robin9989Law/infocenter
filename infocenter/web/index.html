@@ -428,7 +428,7 @@ function render() {
         <button class="stat" data-stat-window="${wid}" title="实时状态 / 历史痕迹"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M7 16v-5"/><path d="M12 16V8"/><path d="M17 16v-3"/></svg></button>
         <button class="gear" data-gear="window" data-gear-id="${wid}" title="办公室设置"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
         <div class="title">${escapeHtml(w.agent)}${proj ? " · " + escapeHtml(proj) : ""}</div>
-        <div class="meta"><span class="status ${cls}">${escapeHtml(st)}</span> · 窗口 <span class="cid copy" data-copy="${wid}" title="点击复制窗口号">${wid}</span> · 最近 ${escapeHtml(w.last_seen_local || "")}</div>
+        <div class="meta"><span class="status ${cls}">${escapeHtml(st)}</span> · 窗口 <span class="cid copy" data-copy="${wid}" title="点击复制窗口号">${wid}</span> · 最近 ${escapeHtml(w.last_seen_beijing || "")}</div>
         <div class="meta">${w.activity ? escapeHtml(w.activity) : (w.case_count || 0) + " 案"}</div>
       </div>`;
     }).join("");
@@ -493,7 +493,7 @@ function render() {
             const proj = p ? (p.name || p.workspace) : (a.workspace ? String(a.workspace).split("/").filter(Boolean).pop() : "");
             const office = (a.agent || "") + (a.window_id ? " · " + a.window_id : "");
             return `<tr class="${a.auto ? 'auto' : ''}">
-            <td class="time">${escapeHtml(a.created_at_local || "")}</td>
+            <td class="time">${escapeHtml(a.created_at_beijing || "")}</td>
             <td>${escapeHtml(proj)}</td>
             <td>${escapeHtml(office)}</td>
             <td title="${escapeHtml(a.case_title || "")}">${a.case_id ? '<span class="cid copy" data-copy="' + escapeHtml(a.case_id) + '">' + escapeHtml(a.case_id) + '</span>' : "—"}</td>
@@ -631,7 +631,7 @@ function openSettings(kind, id) {
       <div class="kv"><b>窗口</b><span class="cid copy" data-copy="${escapeHtml(id)}" title="点击复制">${escapeHtml(id)}</span></div>
       <div class="kv"><b>项目</b>${escapeHtml(w.workspace || "—")}</div>
       <div class="kv"><b>状态</b>${escapeHtml(st)}</div>
-      <div class="kv"><b>最近活动</b>${escapeHtml(w.activity_at_local || w.last_seen_local || "")}</div>
+      <div class="kv"><b>最近活动</b>${escapeHtml(w.activity_at_beijing || w.last_seen_beijing || "")}</div>
       ${w.activity ? `<div class="kv"><b>在做什么</b>${escapeHtml(w.activity)}</div>` : ""}
       <div class="kv"><b>进程</b>${w.pid != null ? escapeHtml(String(w.pid)) : "—"}</div>
       <div class="kv quiet">状态：在办=会话在线；暂停=已叫停（可恢复）；离场=已退出（名下未封卷案卷自动中止封卷）。</div>
@@ -664,7 +664,7 @@ function openSettings(kind, id) {
       <div class="kv"><b>项目</b>${escapeHtml(w.workspace || "—")}</div>
       <div class="kv"><b>状态</b>${escapeHtml(st)} · ${alive === null ? "无进程记录" : (alive ? "进程存活 ✓" : "进程已不在 ✗")}</div>
       <div class="kv"><b>进程 pid</b>${w.pid != null ? escapeHtml(String(w.pid)) : "—"}</div>
-      <div class="kv"><b>最近活动</b>${escapeHtml(w.activity_at_local || w.last_seen_local || "")}</div>
+      <div class="kv"><b>最近活动</b>${escapeHtml(w.activity_at_beijing || w.last_seen_beijing || "")}</div>
       ${w.activity ? `<div class="kv"><b>在做什么</b>${escapeHtml(w.activity)}</div>` : ""}
       <div class="kv"><b>名下未封卷案卷</b>${w.case_count != null ? w.case_count : (w.cases || []).length} 份</div>
       <div class="settings-actions"><button class="btn resume" data-act="refresh-stat">刷新</button></div>
@@ -672,7 +672,7 @@ function openSettings(kind, id) {
       <div class="section-title">历史痕迹（${traces.length}）</div>
       ${traces.length === 0 ? '<div class="empty">暂无痕迹</div>' : `<table class="nodes"><thead><tr><th>时间</th><th>节点</th><th>内容</th><th>案卷</th></tr></thead><tbody>`
         + traces.map(a => `<tr class="${a.auto ? 'auto' : ''}">
-            <td class="time">${escapeHtml(a.created_at_local || "")}</td>
+            <td class="time">${escapeHtml(a.created_at_beijing || "")}</td>
             <td class="action">${escapeHtml(a.action || "")}${a.auto ? ' [自动]' : ''}</td>
             <td class="note">${escapeHtml(a.note || "")}</td>
             <td>${escapeHtml(a.case_title || "")}</td>
@@ -757,7 +757,7 @@ function openSettings(kind, id) {
     titleEl.textContent = "信件 · " + (m.subject || id);
     bodyEl.innerHTML = `
       <button class="btn resume" data-act="back-mail">← 返回</button>
-      <div class="kv"><b>时间</b>${escapeHtml(m.created_at_local || "")}</div>
+      <div class="kv"><b>时间</b>${escapeHtml(m.created_at_beijing || "")}</div>
       <div class="kv"><b>方向</b>${m.direction === "out" ? "发出 → " + escapeHtml((m.to || []).join(", ")) : "← 收到 " + escapeHtml(m.other || "")}</div>
       <div class="kv"><b>项目</b>${escapeHtml(proj)}</div>
       <div class="kv"><b>办公室</b>${escapeHtml(m.claimed_by || "—")}</div>
@@ -833,7 +833,7 @@ async function loadCaseNodes(id) {
         <tbody>${nodes.map(n => `
           <tr class="${n.auto ? 'auto' : ''}">
             <td class="action">${escapeHtml(n.action || "")}${n.auto ? ' [自动]' : ''}</td>
-            <td class="time">${escapeHtml(n.created_at_local || "")}</td>
+            <td class="time">${escapeHtml(n.created_at_beijing || "")}</td>
             <td>${escapeHtml(n.agent || "")}</td>
             <td class="note">${escapeHtml(n.note || "")}</td>
           </tr>`).join("")}</tbody>
@@ -925,7 +925,7 @@ async function loadAgentMail(name) {
             ? `<button class="btn resume" data-read="${escapeHtml(m.id)}">标为已读</button>`
             : escapeHtml(st);
           return `<tr>
-          <td class="time">${escapeHtml(m.created_at_local || "")}</td>
+          <td class="time">${escapeHtml(m.created_at_beijing || "")}</td>
           <td>${dir}</td>
           <td>${escapeHtml(m.other || "")}</td>
           <td>${escapeHtml(proj)}</td>

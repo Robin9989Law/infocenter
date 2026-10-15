@@ -507,7 +507,7 @@ class HubTest(unittest.TestCase):
     def test_activity_report(self):
         updated = request(self.url, "PUT", "/v1/agents/kimi", "kimi", {"activity": "在重构 store 索引，完成一半"})
         self.assertEqual(updated["activity"], "在重构 store 索引，完成一半")
-        self.assertTrue(updated["activity_at_local"])
+        self.assertTrue(updated["activity_at_beijing"])
         # 普通请求只动 last_seen，不动 activity
         request(self.url, "GET", "/v1/inbox", "kimi")
         agents = {a["name"]: a for a in request(self.url, "GET", "/v1/agents", "human")["agents"]}

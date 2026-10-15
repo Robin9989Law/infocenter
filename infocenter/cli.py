@@ -734,9 +734,9 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
         for item in payload["agents"]:
             role = " [coordinator]" if item.get("role") == "coordinator" else ""
             desc = f"（{item['description']}）" if item.get("description") else ""
-            print(f"{item['name']}{role}  未读 {item.get('unread', 0)}  最后活动 {item.get('last_seen_local', '')}{desc}")
+            print(f"{item['name']}{role}  未读 {item.get('unread', 0)}  最后活动 {item.get('last_seen_beijing', '')}{desc}")
             if item.get("activity"):
-                print(f"    正在: {item['activity']}  [{item.get('activity_at_local', '')}]")
+                print(f"    正在: {item['activity']}  [{item.get('activity_at_beijing', '')}]")
             for office in item.get("windows") or []:
                 label = office.get("state_label") or office.get("state") or ""
                 where = office.get("workspace") or ""
@@ -753,6 +753,8 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
     if cmd == "send" or cmd == "reply":
         print(f"已送出 {payload['id']}")
         print(f"给: {', '.join(payload['to'])}")
+        if payload.get("created_at_beijing"):
+            print(f"时间: {payload['created_at_beijing']}（北京时间）")
         print(f"主题: {payload['subject']}")
         return
     if cmd == "inbox":
@@ -760,7 +762,7 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
         print(f"{payload['agent']} 的{label} {payload['count']} 封")
         for message in payload["messages"]:
             mark = "!" if message["priority"] == "high" else " "
-            print(f"{mark} {message['id']}  {message.get('created_at_local') or message['created_at']}  来自 {message['from']}")
+            print(f"{mark} {message['id']}  {message.get('created_at_beijing') or message['created_at']}  来自 {message['from']}")
             print(f"  {message['subject']}")
             if message.get("preview"):
                 print(f"  {message['preview']}")
@@ -808,7 +810,7 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
         rows = payload.get("locks") or []
         print(
             f"已拿到 {len(rows)} 个写锁（{payload.get('agent')}，到 "
-            f"{payload.get('expires_at')} 过期）——只有你能改这些路径"
+            f"{payload.get('expires_at_beijing') or payload.get('expires_at')} 过期）——只有你能改这些路径"
         )
         for item in rows:
             tail = f"（任务 {item['task_id']}）" if item.get("task_id") else ""
@@ -828,7 +830,7 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             task = f"（任务 {item['task_id']}）" if item.get("task_id") else ""
             print(
                 f"  {item['path']}  ← {item['agent']}{task}  到 "
-                f"{item.get('expires_at_local') or item['expires_at']}"
+                f"{item.get('expires_at_beijing') or item['expires_at']}"
             )
         return
     if cmd == "tasks" and not as_json:
@@ -856,6 +858,8 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             f"{payload.get('id')}  {payload.get('title')}  [{payload.get('status')}]"
             f"  owner={payload.get('owner')}  priority={payload.get('priority', 0)}"
         )
+        if payload.get("created_at_beijing"):
+            print(f"时间: 建于 {payload['created_at_beijing']}，动过 {payload.get('updated_at_beijing')}（北京时间）")
         if payload.get("case_id"):
             print(f"控制包: {payload['case_id']}")
         if payload.get("deps"):
@@ -896,6 +900,8 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
     if cmd in {"peek", "read", "archive"}:
         print(f"{payload['id']}  {payload['delivery_status'] or '发出'}  来自 {payload['from']}")
         print(f"给: {', '.join(payload['to'])}")
+        if payload.get("created_at_beijing"):
+            print(f"时间: {payload['created_at_beijing']}（北京时间）")
         print(f"主题: {payload['subject']}")
         print()
         print(payload.get("body", ""))
