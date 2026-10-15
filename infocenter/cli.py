@@ -225,7 +225,7 @@ def main(argv=None) -> int:
     guard.add_argument("--install-hook", action="store_true",
                        help="把本仓库的提交闸钩子装上（git config core.hooksPath .githooks），幂等")
 
-    queue = sub.add_parser("queue", help="排队改同一个文件：拿不到钥匙就把改动提给持有者，由它一次合并")
+    queue = sub.add_parser("queue", help="拿不到钥匙时把要改的事记下来（进只增链，并写入自己的 TODO）")
     queue.add_argument("path", nargs="?", default=None, help="要改的文件（不填＝列全部排队）")
     queue.add_argument("--note", default=None, help="我要改什么（提议内容）")
     queue.add_argument("--patch-file", dest="patch_file", default=None, help="改动补丁（可选，从文件读）")
@@ -1151,7 +1151,8 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 print(f"  没有锁: {path}")
             for item in payload.get("locked_by_others") or []:
                 print(f"  被别人锁着: {item['path']}  ← {item['holder']}")
-            print("  规矩：写文件前先 `ic lock <路径>`；拿不到就停手回信，不要硬写。")
+            print("  规矩：写文件前先 `ic lock <路径>`；拿不到就 `ic queue <路径> --note \"要改什么\"`")
+            print("       （写进你自己的 TODO），然后去做别的。不要发信、不要硬写、不要干等。")
         warn = _hook_warning()
         if warn:
             print(warn)

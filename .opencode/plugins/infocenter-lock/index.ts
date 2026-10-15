@@ -87,7 +87,7 @@ export default Plugin.define({
         // 别人正开着锁 ⇒ 这次写直接失败（这就是"一旦开锁，其他 agent 就不能改"）
         throw new Error(
           `写锁：这些文件正被别人开着锁，现在不能改。\n${result.detail}\n` +
-            `拿到钥匙的规矩：先 ic locks 看谁在锁，等它提交放锁，或让 coordinator 协调（别硬写）。`,
+            `不要干等、不要发信。把要改的事记下来：ic queue <路径> --note "要改什么"（会进你自己的 TODO），然后去做别的。`,
         )
       }
       // 其它状态（400 等）不阻断：插件不该比人更懂
