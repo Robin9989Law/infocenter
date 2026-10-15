@@ -1,7 +1,7 @@
 """独立评审：拿不到钥匙时，人话必须指向 queue / 自己的 TODO，不能再叫人发信。
 
 另外：尚未创建的文件在 macOS 上大小写不同的写法只能有一把钥匙。
-crew.py 的提示词当时被别人拿着钥匙，记在 TODO-grok.md。
+crew 的两段提示词同样改走 queue，不再叫人回信；PLAN 调整那种发信保留。
 """
 
 import io
@@ -15,6 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from infocenter import crew
 from infocenter.cli import _emit
 from infocenter.store import MailError, Store
 
@@ -47,6 +48,31 @@ class OpenCodePluginSaysQueueTest(unittest.TestCase):
         self.assertIn('ic queue <路径> --note "要改什么"', source)
         self.assertNotIn("让 coordinator 协调", source)
         self.assertNotIn("等它提交放锁", source)
+
+
+class PromptSaysQueueNotMailTest(unittest.TestCase):
+    """q436：build_prompt 与成员心跳都含 queue，都不含「回信」。PLAN 那句发信不动。"""
+
+    def test_both_prompts_queue_instead_of_mailing(self):
+        fresh = [{
+            "id": "m1",
+            "from": "kimi",
+            "subject": "干活",
+            "priority": "normal",
+            "workspace": "/tmp/p",
+        }]
+        letter = crew.build_prompt("grok", "/tmp/p", fresh, 1)
+        beat = crew.build_heartbeat_prompt(
+            "grok", "/tmp/p", coordinator=False, coordinator_name="opencode",
+        )
+        for text in (letter, beat):
+            self.assertIn("ic queue <路径> --note", text)
+            self.assertIn("不要发信", text)
+            self.assertIn("不要干等", text)
+            self.assertNotIn("回信", text)
+        self.assertIn("发现 PLAN.md 有空缺", beat)
+        self.assertIn("发信说明", beat)
+        self.assertNotIn("回信", crew.build_heartbeat_prompt("opencode", "/tmp/p", coordinator=True))
 
 
 class MissingCaseVariantsAreOneKeyTest(unittest.TestCase):
