@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **控制台改三层：项目 / WBS / 案卷（M7-3）**：中间栏从「办公室」换成 **WBS 树**（从案卷 `wbs_path` **派生**，不建表；含「未归类」节点，父节点计数含子树）；点 WBS → 右边只看该 WBS（含子路径）的案卷。**「办公室」改称「项目团队会话」并从控制台移出**（WBS 栏右上角按钮进二级页：会话状态 / 设置 / 实时状态）——会话只负责并发隔离与认领，不是业务概念。文案同步：停用会话的二次确认不再说「离场并封卷」（M7-1 之后这句已经不成立，UI 不能骗人）
+- **看板人话 + 「人话过期」（M7-4，不新增字段）**：案卷的**人话 = coordinator 写的最后一行节点**（role=coordinator 或 human，且非自动节点）；若这行之后又有别的节点，`ic cases` / 控制台给它标 **⚠ 人话过期**（看板说法可能已不准，等 coordinator 重写）。agent 写的节点是②线备忘，**不当作给人看的记录**。`_case_view` 新增 `human_note` / `human_by` / `human_at_beijing` / `human_stale`
 - **案卷 = 控制包：WBS 路径 + 里程碑（M7-2）**：`cases` 加两列（在线迁移自愈）——`wbs_path`（**WBS 树路径**，`父/子`，空 = 未归类；**一个案卷唯一归属一个 WBS**）与 `milestones`（**一列 JSON** `[{"name","owner","done"}]`，**不建表**）。命令：`ic case <id> --wbs 父/子`、`--milestone-add "名字" [--milestone-owner X]`、`--milestone-done N`（`!N` 撤回）；`ic cases --wbs 父`（含子路径）。**WBS 与里程碑的写权限一律 coordinator**（agent 提议、coordinator 落），每次改动在案卷上留一行 `milestone` / `wbs` 节点。HTTP：`POST /v1/cases/{id}/milestone|milestone-done|wbs`、`GET /v1/cases?wbs=`、立案可带 `wbs_path`/`milestones`
 - **留痕外锚（`ic audit --anchor`）**：把哈希链链头写进仓库里的 `.infocenter-audit-anchor`，**连同 git 一起提交** ⇒ 锚落在**库外**。`ic audit` 核对"锚点那一行还在不在、哈希是否仍是原来的"：链被改、被截短、**整表删掉重建自洽假链**都会报「外锚对不上」。三家评审（kimi / cursor / grok）一致指出的缺口正是"链整个在库里 ⇒ 改一行再把后面哈希全部重算，`ic audit` 照样绿"。实测（真改库）：偷改一个字段被当场抓住；把哈希"补圆"则只有靠锚才认得出。`ic audit` 另报「锚点之后还有 N 行没被见证」（锚只保护锚点之前的历史 ⇒ **每次提交前打一次锚**）
 - **锁的痕迹**：`lock` / `unlock` / **锁到期自动回收**（`lock_expire`）各追加一行只增痕迹。cursor 指出抢锁/放锁是静默 DELETE、事后看不见；到期回收是死流程里唯一会自动做的事，更要留痕

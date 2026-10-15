@@ -228,7 +228,7 @@ def main(argv=None) -> int:
     lock.add_argument("--note", default=None, help="为什么锁")
     lock.add_argument("--force", action="store_true", help="强制抢占（仅 coordinator）")
     lock.add_argument("--changed", action="store_true",
-                      help="锁住 git 工作区里所有改动文件（与 ic guard 配对；不用手敲路径）")
+                      help="锁住 git 工作区里所有改动文件（可与显式路径并用，取并集）")
 
     unlock = sub.add_parser("unlock", help="放写锁（默认只放自己的）")
     unlock.add_argument("paths", nargs="*", help="要放的路径；不填 = 放掉自己的全部锁")
@@ -480,9 +480,12 @@ def main(argv=None) -> int:
         elif args.cmd == "lock":
             import subprocess
 
-            lock_paths = args.paths
-            if args.changed and not lock_paths:
-                lock_paths = _changed_paths(subprocess)
+            lock_paths = list(args.paths or [])
+            if args.changed:
+                # `--changed` 与显式路径是**并集**（不是二选一）：既要锁住所有改动，
+                # 也要能顺手锁住"马上要写、但还没改"的文件（如外锚文件）。
+                seen = set(lock_paths)
+                lock_paths += [path for path in _changed_paths(subprocess) if path not in seen]
                 if not lock_paths:
                     if not args.quiet:
                         print("工作区没有改动，无需加锁")
@@ -902,6 +905,14 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
         if title:
             print(title)
         print(f"WBS: {payload.get('wbs_path') or '（未归类）'}")
+        if payload.get("human_note"):
+            mark = "  ⚠ 人话过期（这之后又发生了别的事，该重写）" if payload.get("human_stale") else ""
+            print(
+                f"人话（{payload.get('human_by')} · {payload.get('human_at_beijing')}）: "
+                f"{payload['human_note']}{mark}"
+            )
+        else:
+            print("人话: 还没有（看板上的说法只能由 coordinator 用 `ic case <id> --note \"…\"` 写）")
         stones = payload.get("milestones") or []
         if stones:
             print(f"里程碑 {payload.get('milestones_done', 0)}/{len(stones)}：")
@@ -921,9 +932,10 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             wbs = item.get("wbs_path") or "未归类"
             total = item.get("milestones_total") or 0
             reached = f"  里程碑 {item.get('milestones_done', 0)}/{total}" if total else ""
+            stale = "  ⚠人话过期" if item.get("human_stale") else ""
             print(
                 f"{item.get('id')}  {item.get('status_label') or item.get('status')}  {owner}  "
-                f"[{wbs}]  {item.get('title')}{reached}"
+                f"[{wbs}]  {item.get('title')}{reached}{stale}"
             )
         return
     if cmd == "audit" and not as_json:

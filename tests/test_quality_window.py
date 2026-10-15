@@ -467,9 +467,19 @@ class WindowAndCaseQualityTest(unittest.TestCase):
             self.assertNotIn("const last = c.last_node || c.last_note", html)
             # D3-b: 按原始 c.status 判断可暂停状态（open/doing/pending/waiting）
             self.assertIn('"open", "doing", "pending", "waiting"', html)
-            # D3-c: 办公室离场并封卷按钮加 confirm() 二次确认
+            # D3-c: 停用会话前有 confirm() 二次确认；**文案必须与 M7 新口径一致**
+            # （会话离场不再自动封卷，所以不能再写"离场并封卷"这种已经不成立的话）
             self.assertIn("confirm(", html)
-            self.assertIn("离场并封卷", html)
+            self.assertIn("不会被自动封卷", html)
+            self.assertNotIn("离场并自动中止且封卷", html)
+
+            # M7-3: 控制台三层 = 项目 / WBS / 案卷；会话不进控制台
+            self.assertIn('id="wbs"', html)
+            self.assertIn("buildWbsTree", html)
+            self.assertIn("未归类", html)
+            self.assertIn("项目团队会话", html)
+            self.assertNotIn('id="windows"', html, "会话栏必须从控制台移走")
+            self.assertNotIn("f-win-state", html)
 
             # 2) 模拟管理台 API 全链路：设定项目地址 -> 办公室上报 -> 立案（waiting/pending/open）-> 暂停/恢复 -> 停用窗口级联封卷
             ws = str((self.home / "ui_smoke_proj").resolve())

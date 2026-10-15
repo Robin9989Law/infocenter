@@ -160,6 +160,44 @@ class CaseWbsStoreTest(unittest.TestCase):
         )
         self.assertEqual(ok["milestones_done"], 1)
 
+    # ── 看板人话（M7-4）：coordinator 写的最后一行节点；之后又有别的事 ⇒ 标"人话过期" ──
+    def test_human_note_is_the_last_coordinator_node(self):
+        case = self._case(agent="cursor")
+        self.assertTrue(self.store.get_case(case["id"])["human_stale"], "一条人话都没有 ⇒ 算过期")
+        self.assertEqual(self.store.get_case(case["id"])["human_note"], "")
+
+        self.store.append_case_node(case["id"], agent="opencode", note="人话：这件事现在到哪了")
+        got = self.store.get_case(case["id"])
+        self.assertEqual(got["human_note"], "人话：这件事现在到哪了")
+        self.assertEqual(got["human_by"], "opencode")
+        self.assertTrue(got["human_at_beijing"].endswith("+0800"))
+        self.assertFalse(got["human_stale"], "刚写完人话 ⇒ 不过期")
+
+        # agent 又写了进展 ⇒ 看板说法可能已不准（人话那一行**不被顶掉**）
+        self.store.append_case_node(case["id"], agent="cursor", note="agent 的进展备忘")
+        stale = self.store.get_case(case["id"])
+        self.assertTrue(stale["human_stale"])
+        self.assertEqual(stale["human_note"], "人话：这件事现在到哪了")
+
+        # coordinator 重写一行 ⇒ 又不过期
+        self.store.append_case_node(case["id"], agent="opencode", note="人话：已改完，待复测")
+        fresh = self.store.get_case(case["id"])
+        self.assertFalse(fresh["human_stale"])
+        self.assertEqual(fresh["human_note"], "人话：已改完，待复测")
+
+    def test_auto_nodes_never_count_as_human_words(self):
+        case = self._case(agent="cursor", owner_window="w-z", owner_agent="cursor")
+        self.store.leave_window("w-z", agent="cursor")  # 会补一行 [自动] 节点
+        got = self.store.get_case(case["id"])
+        self.assertEqual(got["human_note"], "", "自动节点不能冒充人话")
+        self.assertTrue(got["human_stale"])
+
+    def test_case_list_exposes_human_and_stale(self):
+        case = self._case(agent="cursor")
+        row = next(r for r in self.store.list_cases() if r["id"] == case["id"])
+        self.assertEqual(row["human_note"], "")
+        self.assertTrue(row["human_stale"])
+
     # ── 离场不封卷（M7-1 的行为，一并钉在这里） ──────────────────────────
     def test_window_leave_does_not_seal_case(self):
         case = self._case(owner_window="w-x", owner_agent="cursor")

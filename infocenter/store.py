@@ -4104,6 +4104,18 @@ def _replay_task_state(conn: sqlite3.Connection, task_id: str) -> dict:
     return state
 
 
+def _human_voices(conn: sqlite3.Connection) -> set[str]:
+    """谁有资格代表"人话"：role=coordinator 的身份 + human。
+
+    看板（第 1 条线）上的文字必须由 coordinator 用人话重写；agent 之间的信不直接给人看。
+    """
+    voices = {"human"}
+    voices.update(
+        row["name"] for row in conn.execute("SELECT name FROM agents WHERE role = 'coordinator'")
+    )
+    return voices
+
+
 def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     node_rows = conn.execute(
         "SELECT * FROM case_nodes WHERE case_id = ? ORDER BY id ASC",
@@ -4121,6 +4133,15 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         milestones = _milestones(row["milestones"])
     except (MailError, TypeError, KeyError):
         milestones = []
+    # 「人话」（第 1 条线）：coordinator 写的最后一行节点。**不新增字段**——
+    # 机器只做一件事：看这行之后还有没有别人的节点（有 ⇒ 人话过期，该重写了）。
+    voices = _human_voices(conn)
+    human = None
+    for node in reversed(nodes):
+        if node.get("agent") in voices and not node.get("auto"):
+            human = node
+            break
+    human_stale = bool(human and nodes and nodes[-1].get("id") != human.get("id"))
     header_line = f"状态：{status_display}" + ("（已封卷）" if sealed else "")
     lines = [header_line, *(n["line"] for n in nodes)]
     return {
@@ -4139,6 +4160,12 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         "waiting_for": row["waiting_for"],
         "wbs_path": row["wbs_path"] or "",
         "wbs": row["wbs_path"] or "",  # 别名，给人读
+        "human_note": (human or {}).get("note", ""),
+        "human_by": (human or {}).get("agent", ""),
+        "human_at": (human or {}).get("created_at", ""),
+        "human_at_beijing": (human or {}).get("created_at_beijing", ""),
+        # 人话过期 = 这行之后又发生了别的事 ⇒ 看板上的说法可能已经不准，该由 coordinator 重写
+        "human_stale": human_stale or (human is None and bool(nodes)),
         "milestones": milestones,
         "milestones_total": len(milestones),
         "milestones_done": sum(1 for item in milestones if item["done"]),

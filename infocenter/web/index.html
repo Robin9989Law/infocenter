@@ -174,6 +174,7 @@ h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; line-height: 1.
 .kv { font-size: 13px; margin: 6px 0; line-height: 1.5; }
 .kv b { color: var(--muted); font-weight: 500; margin-right: 8px; }
 .quiet { color: var(--muted); font-size: 12px; }
+.stale { color: #a16207; }
 .settings-actions { margin: 14px 0 4px; }
 .section-title { font-size: 13px; font-weight: 700; margin: 18px 0 8px; color: var(--ink); }
 .section-title:first-child { margin-top: 0; }
@@ -209,7 +210,7 @@ hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
 </head>
 <body>
 <div class="topbar">
-  <div class="brand"><div class="mark" aria-hidden="true">信</div><div class="titles"><h1>信息中心 · 管理台</h1><p class="kicker">项目 · 办公室 · 案件 · 工作痕迹</p></div><button class="refresh" id="btn-refresh" title="刷新全部" aria-label="刷新全部"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button><button class="restart-btn" id="btn-restart" title="一键重启：服务端 + 全部运行中的项目守护">重启</button></div>
+  <div class="brand"><div class="mark" aria-hidden="true">信</div><div class="titles"><h1>信息中心 · 管理台</h1><p class="kicker">项目 · WBS · 案卷 · 工作痕迹（会话在「项目团队会话」里，不进控制台）</p></div><button class="refresh" id="btn-refresh" title="刷新全部" aria-label="刷新全部"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button><button class="restart-btn" id="btn-restart" title="一键重启：服务端 + 全部运行中的项目守护">重启</button></div>
   <div class="agents-wrap"><button class="refresh sm" id="btn-r-agents" title="刷新 agent 状态"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button><div id="agents" class="agents"></div></div>
 </div>
 
@@ -220,23 +221,23 @@ hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
     <div id="projects"></div>
   </div>
   <div class="panel">
-    <div class="panel-head"><h2>办公室</h2><span class="head-tools"><select id="f-win-state" class="mini-select"><option value="">全部状态</option></select><button class="refresh sm" id="btn-r-win" title="刷新"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button></span></div>
-    <div class="hint">点一行选中 → 右边过滤；点 ⚙️ → 办公室设置。状态：在办=在线 / 暂停=已叫停 / 离场=已退出</div>
-    <div id="windows"></div>
+    <div class="panel-head"><h2>WBS</h2><span class="head-tools"><button class="link" id="btn-sessions" title="项目团队会话：等同于人+agent 的会话进程，不进控制台">项目团队会话</button><button class="refresh sm" id="btn-r-wbs" title="刷新"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button></span></div>
+    <div class="hint">点一行选中 → 右边只看这个 WBS（含子路径）。WBS 是树；「未归类」= 还没归到某个 WBS 的案卷</div>
+    <div id="wbs"></div>
   </div>
   <div class="panel">
-    <div class="panel-head"><h2>案件</h2><span class="head-tools"><select id="f-case-status" class="mini-select"><option value="">全部状态</option></select><button class="refresh sm" id="btn-r-case" title="刷新"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button></span></div>
-    <div class="hint">点一行 → 直接打开案件设置（节点 / 操作）</div>
+    <div class="panel-head"><h2>案卷</h2><span class="head-tools"><select id="f-case-status" class="mini-select"><option value="">全部状态</option></select><button class="refresh sm" id="btn-r-case" title="刷新"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button></span></div>
+    <div class="hint">案卷 = 控制包（只显示里程碑，不显示任务细节）。点一行 → 直接打开案卷设置</div>
     <div id="cases"></div>
   </div>
 </div>
 
 <div class="panel wide">
   <div class="panel-head">
-    <h2>工作痕迹 <span class="legend">最近活动：项目 · 办公室 · 案卷 · 节点 · 内容</span></h2>
+    <h2>工作痕迹 <span class="legend">最近活动：项目 · WBS · 案卷 · 会话 · 节点 · 内容</span></h2>
     <div class="filters">
       <select id="f-proj"><option value="">全部项目</option></select>
-      <select id="f-agent"><option value="">全部办公室</option></select>
+      <select id="f-agent"><option value="">全部会话</option></select>
       <select id="f-case"><option value="">全部案卷</option></select>
       <input id="f-q" placeholder="关键词（内容/节点/案卷）">
       <button class="refresh sm" id="btn-r-act" title="刷新"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>
@@ -262,6 +263,7 @@ let state = {
   cases: [],
   agents: [],
   selectedProject: null,
+  selectedWbs: null,
   selectedWindow: null,
   selectedCase: null,
   settingsTarget: null,
@@ -350,7 +352,7 @@ function syncActivityFilters() {
     if (el.value !== (cur || "")) el.value = "";
   };
   mk("f-proj", "全部项目", state.projects.map(p => ({ v: p.workspace, t: p.name || p.workspace })), state.activityFilters.project);
-  mk("f-agent", "全部办公室", state.agents.filter(a => a.roster !== false).map(a => ({ v: a.name, t: a.name })), state.activityFilters.agent);
+  mk("f-agent", "全部会话", state.agents.filter(a => a.roster !== false).map(a => ({ v: a.name, t: a.name })), state.activityFilters.agent);
   mk("f-case", "全部案卷", state.cases.map(c => ({ v: c.id, t: (c.title || c.id).slice(0, 30) })), state.activityFilters.case);
 }
 
@@ -368,9 +370,64 @@ function sameWs(a, b) {
 function selectProject(ws) {
   state.selectedProject = (state.selectedProject === ws) ? null : ws;
   state.selectedWindow = null;
+  state.selectedWbs = null;
   state.selectedCase = null;
   render();
 }
+function wbsKey(path) { return path && path.length ? path : "__none__"; }
+
+function buildWbsTree(cases) {
+  const root = { name: "", path: "", children: [], count: 0, open: 0 };
+  const byPath = new Map();
+  const ensure = path => {
+    if (byPath.has(path)) return byPath.get(path);
+    const parts = path.split("/");
+    const node = { name: parts[parts.length - 1], path, children: [], count: 0, open: 0 };
+    byPath.set(path, node);
+    const parentPath = parts.slice(0, -1).join("/");
+    (parentPath ? ensure(parentPath) : root).children.push(node);
+    return node;
+  };
+  for (const c of cases) {
+    const path = c.wbs_path || "";
+    const node = path ? ensure(path) : root;
+    // 逐级计数，父节点含子树
+    let cursor = path ? node : root;
+    while (cursor) {
+      cursor.count += 1;
+      if (!c.sealed) cursor.open += 1;
+      const parts = (cursor.path || "").split("/").filter(Boolean);
+      cursor = parts.length > 1 ? byPath.get(parts.slice(0, -1).join("/")) : null;
+    }
+    if (!path) root.unassigned = (root.unassigned || 0) + 1;
+  }
+  const sort = node => {
+    node.children.sort((a, b) => a.name.localeCompare(b.name, "zh"));
+    node.children.forEach(sort);
+  };
+  sort(root);
+  return root;
+}
+
+function renderWbsNodes(node, depth) {
+  return node.children.map(child => `
+    <div class="item ${state.selectedWbs === child.path ? 'active' : ''}" data-wbs="${escapeHtml(child.path)}" style="padding-left:${8 + depth * 14}px">
+      <div class="title">${depth ? '<span class="quiet">└ </span>' : ''}${escapeHtml(child.name)}</div>
+      <div class="meta">${child.count} 案卷${child.open ? ' · ' + child.open + " 未封卷" : ""}</div>
+    </div>`).join("") + (depth === 0
+      ? `<div class="item ${state.selectedWbs === "__none__" ? 'active' : ''}" data-wbs="__none__">
+          <div class="title">未归类</div>
+          <div class="meta">${node.unassigned || 0} 案卷（还没归到某个 WBS）</div>
+        </div>`
+      : "") + node.children.map(child => renderWbsNodes(child, depth + 1)).join("");
+}
+
+function selectWbs(path) {
+  state.selectedWbs = (state.selectedWbs === path) ? null : path;
+  state.selectedWindow = null;
+  render();
+}
+
 function selectWindow(wid) {
   state.selectedWindow = (state.selectedWindow === wid) ? null : wid;
   state.selectedCase = null;
@@ -397,42 +454,23 @@ function render() {
         <button class="arch" data-arch-id="${escapeHtml(p.workspace)}" title="${p.archived ? '取消归档' : '归档'}"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg></button>
         <button class="gear" data-gear="project" data-gear-id="${escapeHtml(p.workspace)}" title="项目设置"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
         <div class="title">${escapeHtml(p.name || p.workspace)}${p.archived ? ' <span class="tag">已归档</span>' : ''}</div>
-        <div class="meta"><button class="dmon-btn ${dcount ? 'on' : 'off'}" data-dmon-ws="${escapeHtml(p.workspace)}" title="${dcount ? '点击：停止该项目全部守护（会离场并封卷其未结案卷）' : '点击：启动该项目全部收信守护'}">守护 ${dcount}</button> · ${p.case_count || 0}案 ${(p.active_cases != null ? p.active_cases : (p.counts && p.counts.active) || 0)}在办</div>
+        <div class="meta"><button class="dmon-btn ${dcount ? 'on' : 'off'}" data-dmon-ws="${escapeHtml(p.workspace)}" title="${dcount ? '点击：停止该项目全部守护（会话离场；不再自动封卷案卷）' : '点击：启动该项目全部收信守护'}">守护 ${dcount}</button> · ${p.case_count || 0}案 ${(p.active_cases != null ? p.active_cases : (p.counts && p.counts.active) || 0)}在办</div>
       </div>`;
     }).join("");
     wire(projEl, ".item[data-project-ws]", it => selectProject(it.dataset.projectWs));
   }
 
-  // 办公室
-  const winEl = document.getElementById("windows");
-  const winStateSel = document.getElementById("f-win-state");
-  if (winStateSel) {
-    const labels = [...new Set(state.windows.map(w => w.state_label || w.state).filter(Boolean))];
-    winStateSel.innerHTML = '<option value="">全部状态</option>' + labels.map(l => `<option value="${escapeHtml(l)}">${escapeHtml(l)}</option>`).join("");
-    winStateSel.value = state.winState || "";
-  }
-  let shownWins = state.selectedProject
-    ? state.windows.filter(w => sameWs(w.workspace, state.selectedProject))
-    : state.windows;
-  if (state.winState) shownWins = shownWins.filter(w => (w.state_label || w.state) === state.winState);
-  if (shownWins.length === 0) {
-    winEl.innerHTML = `<div class="empty">${state.selectedProject ? "该项目暂无办公室" : "暂无办公室"}</div>`;
+  // WBS（树：从案卷的 wbs_path 派生；不建表）
+  const wbsEl = document.getElementById("wbs");
+  const scopable = state.selectedProject
+    ? state.cases.filter(c => sameWs(c.workspace, state.selectedProject))
+    : state.cases;
+  const tree = buildWbsTree(scopable);
+  if (tree.children.length === 0) {
+    wbsEl.innerHTML = `<div class="empty">${state.selectedProject ? "该项目暂无 WBS（案卷还没归类）" : "暂无 WBS"}</div>`;
   } else {
-    winEl.innerHTML = shownWins.map(w => {
-      const st = w.state_label || w.state || "";
-      const cls = st.replace(/[^a-zA-Z\u4e00-\u9fa5]/g, "");
-      const wid = escapeHtml(w.window_id || w.id);
-      const proj = w.workspace ? String(w.workspace).split("/").filter(Boolean).pop() : "";
-      return `
-      <div class="item has-stat ${state.selectedWindow === (w.window_id || w.id) ? 'active' : ''}" data-window-id="${wid}">
-        <button class="stat" data-stat-window="${wid}" title="实时状态 / 历史痕迹"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M7 16v-5"/><path d="M12 16V8"/><path d="M17 16v-3"/></svg></button>
-        <button class="gear" data-gear="window" data-gear-id="${wid}" title="办公室设置"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
-        <div class="title">${escapeHtml(w.agent)}${proj ? " · " + escapeHtml(proj) : ""}</div>
-        <div class="meta"><span class="status ${cls}">${escapeHtml(st)}</span> · 窗口 <span class="cid copy" data-copy="${wid}" title="点击复制窗口号">${wid}</span> · 最近 ${escapeHtml(w.last_seen_beijing || "")}</div>
-        <div class="meta">${w.activity ? escapeHtml(w.activity) : (w.case_count || 0) + " 案"}</div>
-      </div>`;
-    }).join("");
-    wire(winEl, ".item[data-window-id]", it => selectWindow(it.dataset.windowId));
+    wbsEl.innerHTML = renderWbsNodes(tree, 0);
+    wire(wbsEl, ".item[data-wbs]", it => selectWbs(it.dataset.wbs));
   }
 
   // 案件
@@ -448,9 +486,15 @@ function render() {
     ? state.cases.filter(c => c.owner_window === state.selectedWindow
         || (!c.owner_window && selWin && c.owner_agent === selWin.agent))
     : (state.selectedProject ? state.cases.filter(c => sameWs(c.workspace, state.selectedProject)) : state.cases);
+  if (state.selectedWbs !== null) {
+    const want = state.selectedWbs;
+    shownCases = shownCases.filter(c => want === "__none__"
+      ? !(c.wbs_path || "")
+      : ((c.wbs_path || "") === want || (c.wbs_path || "").startsWith(want + "/")));
+  }
   if (state.caseStatus) shownCases = shownCases.filter(c => (c.status_label || c.status) === state.caseStatus);
   if (shownCases.length === 0) {
-    caseEl.innerHTML = `<div class="empty">${state.selectedWindow ? "该办公室暂无案件" : (state.selectedProject ? "该项目暂无案件" : "暂无案件")}</div>`;
+    caseEl.innerHTML = `<div class="empty">${state.selectedWindow ? "该会话暂无案卷" : (state.selectedWbs !== null ? "该 WBS 下暂无案卷" : (state.selectedProject ? "该项目暂无案卷" : "暂无案卷"))}</div>`;
   } else {
     caseEl.innerHTML = shownCases.map(c => {
       const raw = c.status || "";
@@ -463,8 +507,10 @@ function render() {
       return `
       <div class="item" data-case-id="${cid}">
         <div class="title">${escapeHtml(c.title)}${runIdx >= 0 ? runBadge(state.runs[runIdx], runIdx) : ''}</div>
-        <div class="meta"><span class="cid copy" data-copy="${cid}" title="点击复制案件编号">${cid}</span> <span class="status ${cls}">${escapeHtml(st)}</span> ${owner ? '主办 ' + escapeHtml(owner) : ''}</div>
-        <div class="meta">${escapeHtml(last)}</div>
+        <div class="meta"><span class="cid copy" data-copy="${cid}" title="点击复制案卷编号">${cid}</span> <span class="status ${cls}">${escapeHtml(st)}</span> ${owner ? '主办 ' + escapeHtml(owner) : ''}</div>
+        <div class="meta">[${escapeHtml(c.wbs_path || "未归类")}]${(c.milestones_total || 0) ? ' · 里程碑 ' + (c.milestones_done || 0) + '/' + c.milestones_total : ''}</div>
+        ${c.human_stale ? '<div class="meta stale">⚠ 人话过期：这之后又发生了别的事，看板说法可能已不准（等 coordinator 重写）</div>' : ''}
+        <div class="meta">${escapeHtml(c.human_note || last)}</div>
       </div>`;
     }).join("");
     wire(caseEl, ".item[data-case-id]", it => openSettings("case", it.dataset.caseId));
@@ -487,7 +533,7 @@ function render() {
     if (acts.length === 0) {
       actEl.innerHTML = '<div class="empty">无匹配活动</div>';
     } else {
-      actEl.innerHTML = `<table class="nodes"><thead><tr><th>时间</th><th>项目</th><th>办公室</th><th>案卷</th><th>节点</th><th>内容</th></tr></thead><tbody>`
+      actEl.innerHTML = `<table class="nodes"><thead><tr><th>时间</th><th>项目</th><th>会话</th><th>案卷</th><th>节点</th><th>内容</th></tr></thead><tbody>`
         + acts.map(a => {
             const p = state.projects.find(x => sameWs(x.workspace, a.workspace));
             const proj = p ? (p.name || p.workspace) : (a.workspace ? String(a.workspace).split("/").filter(Boolean).pop() : "");
@@ -576,7 +622,7 @@ function openSettings(kind, id) {
     bodyEl.innerHTML = `
       <div class="section-title">概览</div>
       <div class="kv"><b>路径</b>${escapeHtml(id)}</div>
-      <div class="kv"><b>统计</b>${p.total_cases || 0} 案 · ${p.active_cases || 0} 在办 · ${p.paused_cases || 0} 暂停 · ${p.closed_cases || 0} 已封卷 · ${p.active_windows || 0} 个活跃办公室</div>
+      <div class="kv"><b>统计</b>${p.total_cases || 0} 案 · ${p.active_cases || 0} 在办 · ${p.paused_cases || 0} 暂停 · ${p.closed_cases || 0} 已封卷 · ${p.active_windows || 0} 个活跃会话（项目团队会话）</div>
       <div class="kv"><b>更新</b>${escapeHtml(String(p.updated_at || "").replace("T", " ").replace("Z", ""))}</div>
 
       <div class="section-title">基本信息</div>
@@ -595,7 +641,7 @@ function openSettings(kind, id) {
       <button class="btn-primary" data-act="create-case">立案</button>
 
       <div class="section-title">② 守护（再让 agent 上线接活）</div>
-      <div class="kv"><b>在跑</b>${wins.filter(w => (w.state_label || w.state) === "在办").length} 间办公室</div>
+      <div class="kv"><b>在跑</b>${wins.filter(w => (w.state_label || w.state) === "在办").length} 个会话</div>
       <div class="settings-actions">
         <button class="btn resume" data-act="crew-up">启动守护</button>
         <button class="btn abort" data-act="crew-down">停止守护</button>
@@ -609,7 +655,7 @@ function openSettings(kind, id) {
           : '<button class="btn abort" data-act="archive-project">归档此项目</button>'}
       </div>
 
-      <div class="section-title">该项目的办公室（${wins.length}）</div>
+      <div class="section-title">该项目的项目团队会话（${wins.length}）</div>
       ${wins.length === 0 ? '<div class="empty">暂无</div>' : wins.map(w => `
         <div class="mini" data-act="goto-window" data-wid="${escapeHtml(w.window_id || w.id)}">
           ${escapeHtml(w.agent)} · ${escapeHtml(w.window_id || w.id)} · ${escapeHtml(w.state_label || w.state || "")}
@@ -624,7 +670,7 @@ function openSettings(kind, id) {
     const canPause = st === "在办";
     const canResume = st && st !== "在办" && st !== "离场" && st !== "离线";
     const winCases = state.cases.filter(c => c.owner_window === id || (!c.owner_window && w.agent && c.owner_agent === w.agent));
-    titleEl.textContent = "办公室设置 · " + (w.agent || "") + " · " + id;
+    titleEl.textContent = "会话设置 · " + (w.agent || "") + " · " + id;
     bodyEl.innerHTML = `
       <div class="section-title">概览</div>
       <div class="kv"><b>身份</b>${escapeHtml(w.agent || "")}</div>
@@ -657,7 +703,7 @@ function openSettings(kind, id) {
     const st = w.state_label || w.state || "";
     const alive = w.pid != null ? Boolean(w.pid_alive) : null;
     const traces = state.activity.filter(a => a.window_id === id || (!a.window_id && w.agent && a.agent === w.agent));
-    titleEl.textContent = "办公室实时状态 · " + (w.agent || "") + " · " + id;
+    titleEl.textContent = "会话实时状态 · " + (w.agent || "") + " · " + id;
     bodyEl.innerHTML = `
       <div class="section-title">实时状态</div>
       <div class="kv"><b>身份 / 窗口</b>${escapeHtml(w.agent || "")} · <span class="cid copy" data-copy="${escapeHtml(id)}" title="点击复制">${escapeHtml(id)}</span></div>
@@ -705,7 +751,7 @@ function openSettings(kind, id) {
       <div class="form-row"><label>正文</label><textarea id="s-msg-body" placeholder="正文（可留空）"></textarea></div>
       <button class="btn-primary" data-act="send-human">发送</button>
 
-      <div class="section-title">② 在跑办公室（${offices.length}）· 可直接干预</div>
+      <div class="section-title">② 在跑会话（${offices.length}）· 可直接干预</div>
       ${offices.length === 0 ? '<div class="empty">无</div>' : offices.map(w => {
         const st = w.state_label || w.state || "";
         const wid = escapeHtml(w.window_id || w.id);
@@ -760,7 +806,7 @@ function openSettings(kind, id) {
       <div class="kv"><b>时间</b>${escapeHtml(m.created_at_beijing || "")}</div>
       <div class="kv"><b>方向</b>${m.direction === "out" ? "发出 → " + escapeHtml((m.to || []).join(", ")) : "← 收到 " + escapeHtml(m.other || "")}</div>
       <div class="kv"><b>项目</b>${escapeHtml(proj)}</div>
-      <div class="kv"><b>办公室</b>${escapeHtml(m.claimed_by || "—")}</div>
+      <div class="kv"><b>会话</b>${escapeHtml(m.claimed_by || "—")}</div>
       <div class="kv"><b>案卷</b>${escapeHtml(m.case_title || m.case_id || "—")}</div>
       <hr>
       <div class="body-text">${escapeHtml(m.body || "（无正文）")}</div>`;
@@ -792,10 +838,14 @@ function openSettings(kind, id) {
     const isSealed = Boolean(c.sealed) || ["aborted", "done"].includes(raw) || st === "中止" || st === "办结";
     const canPause = ["open", "doing", "pending", "waiting"].includes(raw) || (!raw && st === "在办");
     const canResume = raw === "paused" || (!raw && st === "暂停");
-    titleEl.textContent = "案件设置 · " + (c.title || id);
+    titleEl.textContent = "案卷设置 · " + (c.title || id);
     bodyEl.innerHTML = `
-      <div class="kv"><b>案件编号</b><span class="cid copy" data-copy="${escapeHtml(id)}" title="点击复制">${escapeHtml(id)}</span></div>
+      <div class="kv"><b>案卷编号</b><span class="cid copy" data-copy="${escapeHtml(id)}" title="点击复制">${escapeHtml(id)}</span></div>
       <div class="kv"><b>标题</b>${escapeHtml(c.title || "")}</div>
+      <div class="kv"><b>WBS</b>${escapeHtml(c.wbs_path || "（未归类）")}</div>
+      <div class="kv"><b>人话</b>${escapeHtml(c.human_note || "（还没有：看板上的说法只由 coordinator 写）")}${c.human_stale ? ' <span class="stale">⚠ 人话过期</span>' : ''}</div>
+      <div class="kv"><b>里程碑</b>${(c.milestones || []).length === 0 ? "—"
+        : c.milestones.map((m, i) => `<div>${m.done ? "✔" : "·"} ${escapeHtml(m.name)}${m.owner ? "（" + escapeHtml(m.owner) + "）" : ""}</div>`).join("")}</div>
       <div class="kv"><b>状态</b>${escapeHtml(st)}</div>
       <div class="kv"><b>主办</b>${escapeHtml(c.owner_agent || c.owner_window || "—")}</div>
       <div class="kv"><b>项目</b>${escapeHtml(c.workspace || "—")}</div>
@@ -814,6 +864,33 @@ function openSettings(kind, id) {
     loadCaseNodes(id);
     return;
   }
+}
+
+function openSessions() {
+  const overlay = document.getElementById("modal-overlay");
+  const titleEl = document.getElementById("modal-title");
+  const bodyEl = document.getElementById("modal-body");
+  const wins = state.selectedProject
+    ? state.windows.filter(w => sameWs(w.workspace, state.selectedProject))
+    : state.windows;
+  titleEl.textContent = "项目团队会话（" + wins.length + "）";
+  bodyEl.innerHTML = `
+    <div class="kv quiet">会话 = 人和 agent 的一次运行上下文（原「办公室」）。它只负责并发隔离与认领，**不是业务概念**，所以不进控制台三层（项目 / WBS / 案卷）。</div>
+    <hr>
+    ${wins.length === 0 ? '<div class="empty">暂无会话</div>' : wins.map(w => {
+      const wid = escapeHtml(w.window_id || w.id);
+      const st = escapeHtml(w.state_label || w.state || "");
+      return `<div class="mini">
+        <div><b>${escapeHtml(w.agent)}</b> · ${wid} · ${st}</div>
+        <div class="quiet">${escapeHtml(w.workspace || "")}</div>
+        <div class="quiet">${w.activity ? escapeHtml(w.activity) : (w.case_count || 0) + " 案"} · 最近 ${escapeHtml(w.last_seen_beijing || "")}</div>
+        <div class="settings-actions">
+          <button class="btn resume" data-act="open-window-settings" data-wid="${wid}">会话设置</button>
+          <button class="btn" data-act="open-window-status" data-wid="${wid}">实时状态</button>
+        </div>
+      </div>`;
+    }).join("")}`;
+  overlay.classList.add("show");
 }
 
 function closeSettings() {
@@ -912,7 +989,7 @@ async function loadAgentMail(name) {
     const msgs = data.messages || [];
     state.mail = msgs;
     state.mailAgent = name;
-    el.innerHTML = msgs.length === 0 ? '<div class="empty">暂无信件</div>' : `<table class="nodes"><thead><tr><th>时间</th><th>方向</th><th>对方</th><th>项目</th><th>办公室</th><th>案卷</th><th>主题</th><th>状态</th></tr></thead><tbody>`
+    el.innerHTML = msgs.length === 0 ? '<div class="empty">暂无信件</div>' : `<table class="nodes"><thead><tr><th>时间</th><th>方向</th><th>对方</th><th>项目</th><th>会话室</th><th>案卷</th><th>主题</th><th>状态</th></tr></thead><tbody>`
       + msgs.map(m => {
           const p = state.projects.find(x => sameWs(x.workspace, m.workspace));
           const proj = p ? (p.name || p.workspace) : (m.workspace ? String(m.workspace).split("/").filter(Boolean).pop() : "");
@@ -929,7 +1006,7 @@ async function loadAgentMail(name) {
           <td>${dir}</td>
           <td>${escapeHtml(m.other || "")}</td>
           <td>${escapeHtml(proj)}</td>
-          <td title="办公室编号（点击复制）">${m.claimed_by ? '<span class="cid copy" data-copy="' + escapeHtml(m.claimed_by) + '">' + escapeHtml(m.claimed_by) + '</span>' : "—"}</td>
+          <td title="会话编号（点击复制）">${m.claimed_by ? '<span class="cid copy" data-copy="' + escapeHtml(m.claimed_by) + '">' + escapeHtml(m.claimed_by) + '</span>' : "—"}</td>
           <td title="${escapeHtml(m.case_title || "")}">${m.case_id ? '<span class="cid copy" data-copy="' + escapeHtml(m.case_id) + '">' + escapeHtml(m.case_id) + '</span>' : "—"}</td>
           <td><a class="subj" data-msgid="${escapeHtml(m.id)}" title="点击看正文">${escapeHtml(m.subject || "")}</a></td>
           <td>${stCell}</td>
@@ -1019,7 +1096,7 @@ async function doWindow(action, widOpt) {
     if (action === "pause") await api("/v1/windows/" + encodeURIComponent(id) + "/pause", { method: "POST" });
     else if (action === "resume") await api("/v1/windows/" + encodeURIComponent(id) + "/resume", { method: "POST" });
     else if (action === "disable") {
-      if (!confirm("确定停用办公室 " + id + "？会离场并自动中止且封卷其名下全部未封卷案卷。")) return;
+      if (!confirm("确定停用会话 " + id + "？会离场，并释放它名下的写锁与认领。\n（案卷不会被自动封卷——只有「事做完」才封；要收工请显式中止/办结。）")) return;
       await api("/v1/windows/" + encodeURIComponent(id) + "/leave", { method: "POST" });
     }
     await loadWindows(); await loadCases(); await loadActivity();
@@ -1080,6 +1157,8 @@ document.getElementById("modal-body").addEventListener("click", ev => {
     closeSettings(); render();
   }
   else if (act === "goto-case") openSettings("case", el.dataset.cid);
+  else if (act === "open-window-settings") openSettings("window", el.dataset.wid);
+  else if (act === "open-window-status") openSettings("window-status", el.dataset.wid);
 });
 document.getElementById("btn-new-project").addEventListener("click", () => openSettings("new-project", null));
 document.getElementById("btn-toggle-archived").addEventListener("click", () => {
@@ -1093,7 +1172,7 @@ document.getElementById("f-agent").addEventListener("change", e => { state.activ
 document.getElementById("f-case").addEventListener("change", e => { state.activityFilters.case = e.target.value; render(); });
 document.getElementById("f-q").addEventListener("input", e => { state.activityFilters.q = e.target.value.trim(); render(); });
 document.getElementById("f-case-status").addEventListener("change", e => { state.caseStatus = e.target.value; render(); });
-document.getElementById("f-win-state").addEventListener("change", e => { state.winState = e.target.value; render(); });
+document.getElementById("btn-sessions").addEventListener("click", openSessions);
 async function refreshAll() {
   await loadProjects(); await loadWindows(); await loadCases(); await loadAgents(); await loadActivity(); await loadHeadless(); await loadDaemons(); await loadRuns();
 }
@@ -1111,7 +1190,7 @@ function spinRefresh(id, fn) {
     try { await fn(); } finally { setTimeout(() => b.classList.remove("spin"), 700); }
   });
 }
-spinRefresh("btn-r-win", async () => { await loadWindows(); await loadHeadless(); });
+spinRefresh("btn-r-wbs", () => loadCases());
 spinRefresh("btn-r-case", () => loadCases());
 spinRefresh("btn-r-act", () => loadActivity());
 spinRefresh("btn-r-agents", async () => { await loadAgents(); await loadHeadless(); await loadDaemons(); });
