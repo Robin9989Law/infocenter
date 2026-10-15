@@ -209,6 +209,45 @@ class CrewQualityTest(unittest.TestCase):
         self.assertIn("opencode: coordinator；前台（人工驱动）", text)
         self.assertIn("grok: 未配置启动方式", text)
 
+    def test_coordinator_misconfig_detection(self):
+        # 只对「coordinator 且配了 headless/launch」告警；成员配 headless 属正常。
+        self.assertEqual(crew.coordinator_misconfig({"name": "grok", "headless": "x"}), "")
+        self.assertEqual(crew.coordinator_misconfig({"name": "o", "role": "coordinator"}), "")
+        only_headless = crew.coordinator_misconfig(
+            {"name": "o", "role": "coordinator", "headless": "x"}
+        )
+        self.assertIn("headless", only_headless)
+        self.assertNotIn("launch ⇒", only_headless)
+        only_launch = crew.coordinator_misconfig(
+            {"name": "o", "role": "coordinator", "launch": "opencode"}
+        )
+        self.assertIn("launch", only_launch)
+        self.assertNotIn("headless ⇒", only_launch)
+
+    def test_plan_up_and_status_warn_coordinator_misconfig(self):
+        home = self.home / "misconfig"
+        home.mkdir()
+        project = str(Path(tempfile.mkdtemp(dir=str(self.home), prefix="projWarn")).resolve())
+        (home / "config.json").write_text(
+            json.dumps({
+                "agents": [
+                    {"name": "opencode", "role": "coordinator", "headless": "echo ok"},
+                    {"name": "grok", "headless": "echo ok"},
+                ]
+            }),
+            encoding="utf-8",
+        )
+        actions = crew.plan_up(home, self.url, project)
+        warns = [a for a in actions if a["kind"] == "warn"]
+        self.assertEqual([a["agent"] for a in warns], ["opencode"])
+
+        out = crew.up(home, self.url, project, dry_run=True)
+        self.assertTrue(any(line.startswith("[警告] opencode") for line in out["lines"]))
+
+        text = "\n".join(crew.status(home)["lines"])
+        self.assertIn("opencode: coordinator", text)
+        self.assertIn("配了 headless", text)
+
     def test_watch_elif_at_most_one_headless_per_round(self):
         # A6-1：heartbeat_mode=always 且同一轮既有新信又到心跳点时，单轮至多跑一次 headless（elif），
         # 但不重置 last_run，因此下一轮无新信时补跑心跳；而 idle 模式新信会重置 last_run。

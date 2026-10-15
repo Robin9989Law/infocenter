@@ -474,6 +474,28 @@ def _tmux_session_exists(session: str) -> bool:
     return result.returncode == 0
 
 
+_COORDINATOR_FORBIDDEN = ("headless", "launch")
+
+
+def coordinator_misconfig(item: dict) -> str:
+    """role=coordinator 却配了 headless/launch 时的警告文案；合规返回 ""。
+
+    coordinator 的前台由人驱动：配 headless 会让收信守护也去改计划/派单；
+    配 launch 会让 crew up 另起一个会抢活的前台 actor。两者都会造成「两个 coordinator 抢活」。
+    """
+    if str(item.get("role") or "") != "coordinator":
+        return ""
+    bad = [key for key in _COORDINATOR_FORBIDDEN if str(item.get(key) or "").strip()]
+    if not bad:
+        return ""
+    reasons = {
+        "headless": "收信守护会跟着改计划/派单",
+        "launch": "crew up 会另起一个会抢活的前台 actor",
+    }
+    detail = "；".join(f"{key} ⇒ {reasons[key]}" for key in bad)
+    return f"coordinator 不应配 {'/'.join(bad)}（{detail}）；coordinator 的前台由人驱动"
+
+
 def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
     """生成 up 的动作清单。每项：{agent, kind, command(list), note}。"""
     actions: list[dict] = []
@@ -485,6 +507,10 @@ def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
         app = str(item.get("app") or "").strip()
         launch = str(item.get("launch") or "").strip()
         headless = str(item.get("headless") or "").strip()
+        warn = coordinator_misconfig(item)
+        if warn:
+            # 只警告不阻断：纪律写进 README 也要每次起守护当着你面提醒一次。
+            actions.append({"agent": agent, "kind": "warn", "command": [], "note": warn})
         if app:
             actions.append({"agent": agent, "kind": "app", "command": ["open", "-a", app, project]})
         if launch:
@@ -560,6 +586,9 @@ def up(home, url: str, project: str, only: str = "", dry_run: bool = False) -> d
         rendered = shlex.join(action["command"]) if action["command"] else ""
         if action["kind"] == "skip":
             lines.append(f"[跳过] {action['agent']}：{action.get('note', '')}")
+            continue
+        if action["kind"] == "warn":
+            lines.append(f"[警告] {action['agent']}：{action.get('note', '')}")
             continue
         if dry_run:
             lines.append(f"[{action['kind']}] {action['agent']}: {rendered}")
@@ -731,6 +760,10 @@ def status(home, project: str | None = None) -> dict:
                     parts.append("前台（人工驱动）")
                 else:
                     parts.append("未配置启动方式")
+        warn = coordinator_misconfig(item)
+        if warn:
+            bad = "/".join(key for key in _COORDINATOR_FORBIDDEN if str(item.get(key) or "").strip())
+            parts.append(f"\033[31m⚠ 配了 {bad}（会抢活）\033[0m")
         lines.append(f"  {agent}: " + ("；".join(parts) if parts else "空闲"))
     for agent, daemons in by_agent.items():
         if agent not in {item["name"] for item in entries}:
