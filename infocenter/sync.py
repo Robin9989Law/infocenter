@@ -20,6 +20,7 @@ from infocenter import config
 from infocenter.store import (
     MailError,
     Store,
+    _SEGMENT_RE,
     _body,
     _is_wire_name,
     _priority,
@@ -29,7 +30,7 @@ from infocenter.store import (
 )
 
 MAX_ENVELOPE = 1_000_000
-SEGMENT_RE = re.compile(r"^[\w][\w-]{0,31}$", re.UNICODE)
+
 ID_RE = re.compile(r"^m[0-9a-f]{8,40}$")
 MESSAGE_FILE_RE = re.compile(r"^(m[0-9a-f]{8,40})\.json$")
 RECEIPT_FILE_RE = re.compile(
@@ -105,7 +106,7 @@ def _require_node(node) -> str:
     text = node.strip().lower()
     if not text:
         raise MailError("node_not_configured", "没有配置 node，ic sync 不会建目录也不会写库")
-    if not SEGMENT_RE.fullmatch(text):
+    if not _SEGMENT_RE.fullmatch(text):
         raise MailError("invalid_node", "node 不合法：必须是 1–32 位字母、数字、_ 或 -，不能有点")
     return text
 
@@ -122,7 +123,7 @@ def _peer_list(value) -> list[str]:
         name = item.strip().lower()
         if not name:
             continue
-        if not SEGMENT_RE.fullmatch(name):
+        if not _SEGMENT_RE.fullmatch(name):
             raise MailError("invalid_peers", f"peers 里有非法节点段：{item}")
         if name not in names:
             names.append(name)
@@ -757,7 +758,7 @@ def _message_files(peer: Path):
 
 
 def _is_node_dir_name(name: str) -> bool:
-    return name == name.lower() and bool(SEGMENT_RE.fullmatch(name))
+    return name == name.lower() and bool(_SEGMENT_RE.fullmatch(name))
 
 
 def _ignored_name(name: str) -> bool:
