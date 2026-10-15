@@ -477,8 +477,15 @@ function render() {
       : ((c.wbs_path || "") === want || (c.wbs_path || "").startsWith(want + "/")));
   }
   if (state.caseStatus) shownCases = shownCases.filter(c => (c.status_label || c.status) === state.caseStatus);
+  // 看板减噪：任何 thread 都能当案卷 ⇒ 信（派单/回信/报告）也混进来。
+  // 实测 100 条里 92 条是信 ⇒ 案卷栏只列**有实质内容**的；信去「信件往来」看，不在这儿占位。
+  const sealedHidden = shownCases.filter(c => c.sealed).length;
+  shownCases = shownCases.filter(c => !c.sealed);
+  const lettersHint = sealedHidden
+    ? `<div class="empty">另有 ${sealedHidden} 条已封卷（归档）——全量用 <code>ic cases --all</code></div>`
+    : "";
   if (shownCases.length === 0) {
-    caseEl.innerHTML = `<div class="empty">${state.selectedWindow ? "该会话暂无案卷" : (state.selectedWbs !== null ? "该 WBS 下暂无案卷" : (state.selectedProject ? "该项目暂无案卷" : "暂无案卷"))}</div>`;
+    caseEl.innerHTML = lettersHint || `<div class="empty">${state.selectedWindow ? "该会话暂无案卷" : (state.selectedWbs !== null ? "该 WBS 下暂无案卷" : (state.selectedProject ? "该项目暂无案卷" : "暂无案卷"))}</div>`;
   } else {
     caseEl.innerHTML = shownCases.map(c => {
       const raw = c.status || "";
@@ -490,14 +497,14 @@ function render() {
       const runIdx = state.runs.findIndex(r => sameWs(r.dir, c.workspace) && (!c.owner_agent || r.agent === c.owner_agent));
       return `
       <div class="item" data-case-id="${cid}">
-        <div class="title">${escapeHtml(c.title)}${runIdx >= 0 ? runBadge(state.runs[runIdx], runIdx) : ''}</div>
+        <div class="title">${c.substantive ? '' : '<span class="tag">信</span> '}${escapeHtml(c.title)}${runIdx >= 0 ? runBadge(state.runs[runIdx], runIdx) : ''}</div>
         <div class="meta"><span class="cid copy" data-copy="${cid}" title="点击复制案卷编号">${cid}</span> <span class="status ${cls}">${escapeHtml(st)}</span> ${owner ? '主办 ' + escapeHtml(owner) : ''}</div>
         <div class="meta">[${escapeHtml(c.wbs_path || "未归类")}]${(c.milestones_total || 0) ? ' · 里程碑 ' + (c.milestones_done || 0) + '/' + c.milestones_total : ''}</div>
         ${c.acceptance ? `<div class="meta">怎样算完：${escapeHtml(c.acceptance)}</div>` : (c.sealed ? '' : '<div class="meta stale">⚠ 没写「怎样算完」——做成什么算做成，没人说得清</div>')}
         ${(c.human_stale || c.stalled) ? `<div class="meta stale">${[c.human_stale ? '⚠ 人话过期（等 coordinator 重写）' : '', c.stalled ? '⚠ 停滞 ' + c.stalled_hours + 'h（没人动，看看要不要叫人/收工）' : ''].filter(Boolean).join(' · ')}</div>` : ''}
         <div class="meta">${escapeHtml(c.human_note || last)}</div>
       </div>`;
-    }).join("");
+    }).join("") + lettersHint;
     wire(caseEl, ".item[data-case-id]", it => openSettings("case", it.dataset.caseId));
   }
 

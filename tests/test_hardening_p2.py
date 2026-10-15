@@ -423,6 +423,14 @@ class WebP2Test(unittest.TestCase):
         self.assertIn('"/v1/windows/" + encodeURIComponent(id) + "/leave"', self.html)
         self.assertIn('"/v1/windows/" + encodeURIComponent(id) + "/pause"', self.html)
 
+    def test_l3_案卷栏折已封卷_信打标签(self):
+        # 看板减噪（控制台那一半）：折的是**已封卷**（归档），没实质内容的打 `信` 标但**不折**
+        # （实测那堆里有真活）；全量走 `ic cases --all`。
+        self.assertIn("c.sealed", self.html)
+        self.assertIn("条已封卷", self.html)
+        self.assertIn('<span class="tag">信</span>', self.html)   # 没实质内容的打"信"标
+        self.assertIn("c.substantive ?", self.html)                  # 且是条件打的
+
     def test_l3_封卷前把没勾的里程碑摆出来(self):
         # 控制台侧的封卷黄灯：只在 close/abort 那两条路上问一句，且**可取消**（不是硬拦）。
         self.assertIn('action === "close" || action === "abort"', self.html)

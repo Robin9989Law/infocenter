@@ -9,7 +9,7 @@ from infocenter import DEFAULT_HOST, DEFAULT_PORT, __version__, config
 from infocenter.client import ApiError, call, ensure_server, healthy, request, resolve_url
 from infocenter.paths import home_dir
 from infocenter.server import read_meta, serve, stop
-from infocenter.store import MailError, _parse_utc, beijing_stamp, normalize_name
+from infocenter.store import MailError, _parse_utc, _same_file, beijing_stamp, normalize_name
 
 # 各 agent 实际加载的 SKILL 安装位点（交互会话读的是这些副本，不是仓库里那份）。
 # 约定：优先做成软链（安装副本 → 仓库副本，一份真相）；不能软链的，由 `ic status` /
@@ -189,6 +189,8 @@ def main(argv=None) -> int:
     cases.add_argument("--workspace", default=None)
     cases.add_argument("--status", default=None)
     cases.add_argument("--owner", default=None, help="主办身份")
+    cases.add_argument("--all", action="store_true",
+                       help="连「信线程」一起列（默认只列有实质内容的案卷：有人写过验收/里程碑/WBS）")
     cases.add_argument("--wbs", default=None, help="只看这个 WBS（含其子路径）")
     cases.add_argument("--limit", type=int, default=20)
 
@@ -1327,6 +1329,29 @@ def _probe(args, home: Path, agent: str) -> int:
     return 0
 
 
+def _unlocked_dirty(subprocess, url: str, agent: str, home) -> list[str]:
+    """**空钥匙**：盘上有改动，但没有任何未过期写锁覆盖它。
+
+    为什么（2026-10-16 实测两次）：pi 写了文档/测试、放了钥匙、**忘了提交** ⇒ 那几行躺在工作区里，
+    别人又不能替你提交（"不许把别人的未提交改动扫进自己的提交"），收口就卡住。它不是错误（可能只是
+    还没提交），所以**只提示、不拦**——但要摆在 `ic status` 这个日常视角里，而不是等人撞上。
+
+    读不到 git（不是仓库）或读不到锁（服务不在）⇒ 一个字都不说：灯不能挡住看状态。
+    """
+    try:
+        changed = _changed_paths(subprocess)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if not changed:
+        return []
+    try:
+        payload = call(url, agent, "GET", "/v1/locks", home=home)
+    except (ApiError, SystemExit, OSError, ValueError, KeyError):
+        return []
+    held = [row.get("path") for row in (payload or {}).get("locks") or [] if row.get("path")]
+    return [path for path in changed if not any(_same_file(path, h) for h in held)]
+
+
 def _status(args, home: Path, agent: str) -> int:
     url = resolve_url(args.url, home)
     meta = read_meta(home) or {}
@@ -1340,11 +1365,15 @@ def _status(args, home: Path, agent: str) -> int:
         return 1
     unread = {item["name"]: item.get("unread", 0) for item in agents}
     mine = unread.get(agent, 0)
+    import subprocess
+
+    loose = _unlocked_dirty(subprocess, url, agent, home)
     if args.json:
         print(json.dumps({
             "url": url, "pid": meta.get("pid"), "agent": agent,
             "unread": mine, "unread_by_agent": {name: count for name, count in unread.items() if count},
             "skill_drift": skill_drift_lines(),
+            "unlocked_dirty": loose,
         }, ensure_ascii=False))
         return 0
     pid = meta.get("pid")
@@ -1359,6 +1388,10 @@ def _status(args, home: Path, agent: str) -> int:
         print("各家未读: 都清零了")
     for line in skill_drift_lines():
         print(line)
+    if loose:
+        shown = "、".join(Path(p).name for p in loose[:3])
+        more = f"（共 {len(loose)} 个）" if len(loose) > 3 else ""
+        print(f"  ⚠ 盘上有改动没人持钥匙：{shown}{more}——要么提交，要么 `ic lock` 再动。只提示，不拦")
     return 0
 
 
@@ -1511,8 +1544,22 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
         print(payload.get("text") or json.dumps(payload, ensure_ascii=False, indent=2))
         return
     if cmd == "cases" and not as_json:
-        rows = payload.get("cases") or []
-        print(f"案卷 {payload.get('count', len(rows))} 份")
+        all_rows = payload.get("cases") or []
+        # 看板减噪：任何 thread 都能当案卷 ⇒ 信也混在里面（实测 100 条里 92 条是信）。
+        # 默认只列**有实质内容**的（验收/里程碑/WBS），信线程折成一行；`--all` 看全。
+        # 看板减噪（**被真数据修正过的一版**）：任何 thread 都能当案卷 ⇒ 148 条里大半是**已封卷的历史**，
+        # 混在一起才显得吵。默认**只列未封卷**（封卷 = 归档）；没实质内容的（验收/里程碑/WBS 都没有）
+        # 打个 `[信]` 标——那是派单/回信/报告，**不藏**：实测它们里面有真活（派单线程是"在办"、有 5 封信）。
+        # 想区分"真案卷 vs 派单线程"必须靠模型（立案时留显式标记），已登记——不在展示层偷偷拍。
+        if getattr(args, "all", False):
+            rows, sealed_hidden = all_rows, 0
+        else:
+            rows = [c for c in all_rows if not c.get("sealed")]
+            sealed_hidden = len(all_rows) - len(rows)
+        # 数字只说"这批里"——默认只取 `--limit` 条，说成总数又是"看板骗人"。
+        fold = ("（这批 %d 条里另有 %d 条已封卷；`--all` 看全，`--limit` 调大可多取）"
+                % (len(all_rows), sealed_hidden)) if sealed_hidden else ""
+        print("案卷 %d 份%s" % (len(rows), fold))
         for item in rows:
             owner = item.get("owner_agent") or item.get("owner") or "未认领"
             wbs = item.get("wbs_path") or "未归类"
@@ -1526,9 +1573,10 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
             if item.get("stalled"):
                 marks.append(f"停滞 {item.get('stalled_hours')}h")
             stale = ("  ⚠ " + " / ".join(marks)) if marks else ""
+            tag = "" if item.get("substantive") else "[信] "
             print(
                 f"{item.get('id')}  {item.get('status_label') or item.get('status')}  {owner}  "
-                f"[{wbs}]  {item.get('title')}{reached}{stale}"
+                f"[{wbs}]  {tag}{item.get('title')}{reached}{stale}"
             )
         return
     if cmd == "audit" and not as_json:
