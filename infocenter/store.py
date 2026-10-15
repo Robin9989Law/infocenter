@@ -2401,36 +2401,41 @@ class Store:
                     "**谁提谁落**，轮到你时你落自己这一条；或回信给 coordinator",
                     409,
                 )
-            for path in wanted:
-                # 同一个文件的另一种写法若还留着钥匙 ⇒ 清掉那一把（**只清它**，别误伤别人的锁）
-                for stale in [
-                    r["path"] for r in conn.execute("SELECT path FROM locks").fetchall()
-                    if r["path"] != path and _same_file(r["path"], path)
-                ]:
-                    conn.execute("DELETE FROM locks WHERE path = ?", (stale,))
-                conn.execute(
-                    """
-                    INSERT INTO locks(path, agent, window_id, task_id, note, acquired_at, expires_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(path) DO UPDATE SET
-                        agent = excluded.agent, window_id = excluded.window_id,
-                        task_id = excluded.task_id, note = excluded.note,
-                        acquired_at = excluded.acquired_at, expires_at = excluded.expires_at
-                    """,
-                    (path, agent, window_id, task, note_text, now, expires),
-                )
-            for path in wanted:
-                _emit_task_event(
-                    conn, task or "", agent, "lock", "", "",
-                    {"path": path, "ttl": ttl_seconds, "force": bool(force),
-                     "window_id": window_id or "", "expires_at": expires},
-                    now,
-                )
-            rows = conn.execute(
-                "SELECT * FROM locks WHERE path IN (%s)" % ",".join("?" * len(wanted)), wanted
-            ).fetchall()
-            for path in wanted:
-                _chmod_writable(path)  # 钥匙在手 ⇒ 这个文件现在可写；放锁时再变回只读
+            # skip_locked 把要的路径全跳过时 wanted 为空。这时不能拼 `IN ()`
+            # （SQLite 语法错误）——「别人全占着、我一个都不拿」是正常退路，不是 500。
+            if wanted:
+                for path in wanted:
+                    # 同一个文件的另一种写法若还留着钥匙 ⇒ 清掉那一把（**只清它**，别误伤别人的锁）
+                    for stale in [
+                        r["path"] for r in conn.execute("SELECT path FROM locks").fetchall()
+                        if r["path"] != path and _same_file(r["path"], path)
+                    ]:
+                        conn.execute("DELETE FROM locks WHERE path = ?", (stale,))
+                    conn.execute(
+                        """
+                        INSERT INTO locks(path, agent, window_id, task_id, note, acquired_at, expires_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(path) DO UPDATE SET
+                            agent = excluded.agent, window_id = excluded.window_id,
+                            task_id = excluded.task_id, note = excluded.note,
+                            acquired_at = excluded.acquired_at, expires_at = excluded.expires_at
+                        """,
+                        (path, agent, window_id, task, note_text, now, expires),
+                    )
+                for path in wanted:
+                    _emit_task_event(
+                        conn, task or "", agent, "lock", "", "",
+                        {"path": path, "ttl": ttl_seconds, "force": bool(force),
+                         "window_id": window_id or "", "expires_at": expires},
+                        now,
+                    )
+                rows = conn.execute(
+                    "SELECT * FROM locks WHERE path IN (%s)" % ",".join("?" * len(wanted)), wanted
+                ).fetchall()
+                for path in wanted:
+                    _chmod_writable(path)  # 钥匙在手 ⇒ 这个文件现在可写；放锁时再变回只读
+            else:
+                rows = []
             queued = [
                 {
                     "path": path,
@@ -2459,36 +2464,30 @@ class Store:
             _locks_sweep(conn, now)
             if force:
                 _must_coordinator(conn, agent)
-                wanted = (
-                    [r["path"] for r in conn.execute("SELECT path FROM locks").fetchall()]
-                    if paths is None
-                    else _lock_paths(paths)
-                )
-                rows = (
-                    conn.execute(
-                        "SELECT * FROM locks WHERE path IN (%s)" % ",".join("?" * len(wanted)), wanted
-                    ).fetchall()
-                    if wanted
-                    else []
-                )
-                conn.executemany("DELETE FROM locks WHERE path = ?", [(p,) for p in wanted])
+                if paths is None:
+                    rows = conn.execute("SELECT * FROM locks").fetchall()
+                    conn.execute("DELETE FROM locks")
+                else:
+                    # 按文件放，不按写法放：硬链接 / 大小写不同的路径也要能放下那一把
+                    rows = _rows_covering(
+                        conn.execute("SELECT * FROM locks").fetchall(), _lock_paths(paths)
+                    )
+                    for row in rows:
+                        conn.execute("DELETE FROM locks WHERE path = ?", (row["path"],))
             else:
                 if paths is None:
                     rows = conn.execute("SELECT * FROM locks WHERE agent = ?", (agent,)).fetchall()
                     conn.execute("DELETE FROM locks WHERE agent = ?", (agent,))
                 else:
-                    wanted = _lock_paths(paths)
-                    rows = (
-                        conn.execute(
-                            "SELECT * FROM locks WHERE agent = ? AND path IN (%s)"
-                            % ",".join("?" * len(wanted)),
-                            [agent, *wanted],
-                        ).fetchall()
-                        if wanted
-                        else []
+                    rows = _rows_covering(
+                        conn.execute("SELECT * FROM locks WHERE agent = ?", (agent,)).fetchall(),
+                        _lock_paths(paths),
                     )
-                    for path in wanted:
-                        conn.execute("DELETE FROM locks WHERE path = ? AND agent = ?", (path, agent))
+                    for row in rows:
+                        conn.execute(
+                            "DELETE FROM locks WHERE path = ? AND agent = ?",
+                            (row["path"], agent),
+                        )
             targets = [row["path"] for row in rows]
             released = len(rows)
             _restore_readonly(rows)
@@ -2691,14 +2690,15 @@ class Store:
         with self._session(immediate=True) as conn:
             _locks_sweep(conn, now)
             is_coord = _is_coordinator(conn, agent)
-            by_path = {
-                row["path"]: row for row in conn.execute("SELECT * FROM locks").fetchall()
-            }
+            held_rows = conn.execute("SELECT * FROM locks").fetchall()
         unlocked: list[str] = []
         mine: list[dict] = []
         foreign: list[dict] = []
         for path in wanted:
-            row = by_path.get(path)
+            # 跟拿钥匙同一套身份：硬链接 / 大小写不同的写法也算盖住了。
+            # 只比字符串的话，人拿着钥匙、闸门却说「没锁」，就会被推向 --no-verify。
+            covering = _rows_covering(held_rows, [path])
+            row = covering[0] if covering else None
             if row is None:
                 unlocked.append(path)
             elif (not require_mine) or row["agent"] == agent or is_coord:
@@ -4278,6 +4278,25 @@ def _same_file(a: str, b: str) -> bool:
         return True
     left, right = _fingerprint(a), _fingerprint(b)
     return left is not None and left == right
+
+
+def _rows_covering(rows, paths: list[str]) -> list:
+    """锁行里，和 paths 中任一条是同一个文件的那些。
+
+    钥匙按文件发。放钥匙和提交闸若只比路径字符串，换个写法（硬链接、
+    大小写不敏感文件系统上的 `A.py` / `a.py`）就会对不上：闸门说没锁，
+    unlock 也删不掉库里那一行。
+    """
+    out = []
+    seen: set[str] = set()
+    for row in rows:
+        stored = row["path"]
+        if stored in seen:
+            continue
+        if any(_same_file(stored, path) for path in paths):
+            out.append(row)
+            seen.add(stored)
+    return out
 
 
 def _lock_ttl(value) -> int:
