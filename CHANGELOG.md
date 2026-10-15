@@ -8,7 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **排队改同一个文件：由第一个 agent（拿钥匙的）合并后面所有改动**（human 定稿）。新增 `ic queue`：拿不到钥匙的人用 `ic queue <路径> --note "…" [--patch-file f]` 把改动**提**给持有者（**不需要钥匙**）；持有者在 `ic locks` 里看到 **📥 有 N 条排队等你合并**，把内容并进自己这一次改动后 `ic queue <路径> --merge` 收口。权限：**只有拿钥匙的人能合并**（coordinator 例外——钥匙的主人不在时才有人收口；非持有者合并 403，没拿钥匙且非 coordinator 409）。提议与合并**都进只增链**（`propose` / `propose_merged`）⇒ 谁提了什么、谁合并了可查（`ic queue` 默认只列未合并，`--json` 里 `merged` 保留历史）。409 文案同步教人排队。+ `tests/test_lock_queue.py`（13 项：免钥匙提议 / 持有者可见条数 / 权限矩阵 / 按 id 部分合并 / 留痕与 audit / HTTP 往返）
+- **排队改同一个文件：由第一个排队的 agent 接手合并**（human 定稿）：**持有者改完直接放钥匙、不负责合并**；**队列第 1 个拿到钥匙时，把整批排队内容并进自己这一轮** ⇒ 一轮清一批（避免「你改完放锁→我拿钥匙改→放锁→他再来」）。
+  新增 `ic queue`：`ic queue <路径> --note "…" [--patch-file f]` **提议**（**不需要钥匙**）／`ic locks` 显示该文件排队条数／`ic queue <路径> --merge [--id qN]` **合并**（**只有拿钥匙的人**能做；coordinator 例外：钥匙主人不在时收口；非持有者 403、没钥匙且非 coordinator 409）／`ic queue` 看全部未合并（合并过的保留历史）。
+  接力细节：`list_queue` 给出 `position`/`is_first`/`next_up`；**放钥匙时**如实报告「还有 N 条没合并 → 随钥匙交给第一个排队的 X」（只报告、不拦）；**拿钥匙时**若队列非空就告知「有 N 条排队，第一个是 X（就是你／不是你）」，非第一位的人被提醒**只做最小改动或让位**。
+  提议与合并都进**只增链**（`propose`/`propose_merged`）⇒ 谁提了什么、谁合并了可查、可审计。+ `tests/test_lock_queue.py`（16 项：免钥匙提议 / 可见条数 / 权限矩阵 / 按 id 部分合并 / 留痕与 audit / HTTP 往返 / 接力报告）
 - **`ic reply --body-file`**（pi 报、grok 落）：`--body` 的正文进 shell 会被反引号当命令执行 ⇒ 与 `ic send` 对称，正文可从文件读（两个都不给/都给都有明确报错）。+ `tests/test_reply_body_file.py`
 - **一把钥匙 + 用完放回去 + 锁＝只读**（human 定稿的口径，落到机制）：
   - **单钥匙**：锁按路径唯一，但"文件"不只等于"路径字符串"——新增 inode 比对（`_same_file`/`_fingerprint`），`./a`、绝对路径、符号链接、**硬链接**、macOS 大小写不敏感下的 `A.py`/`a.py` 都只算同一个文件（换个写法绕不过去）；同一文件的旧写法残留会把那一把换掉，**且只换那一把**

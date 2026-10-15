@@ -1109,6 +1109,15 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             print(f"  {item['path']}{tail}")
         for item in payload.get("skipped") or []:
             print(f"  ⏭ 跳过（{item['agent']} 锁着）：{item['path']}")
+        for item in payload.get("queued") or []:
+            first = item.get("first") or "?"
+            mine = "（就是你）" if first == payload.get("agent") else ""
+            print(
+                f"  📥 {item['path']} 有 {item['count']} 条排队，第一个是 {first}{mine}"
+                f" → 按规矩由**第一个排队的**接手合并（`ic queue {item['path']} --merge`）"
+            )
+            if first != payload.get("agent"):
+                print("     你不是第一个：只做你自己的最小改动，或把钥匙让给 TA（别顺手吃掉别人的活）")
         return
     if cmd == "unlock" and not as_json:
         count = payload.get("released_count")
@@ -1116,6 +1125,11 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             count = len(payload.get("released") or [])
         suffix = "（强制清场）" if payload.get("force") else ""
         print(f"已放锁 {count} 个{suffix}")
+        for item in payload.get("handover") or []:
+            print(
+                f"  📥 {item['path']} 还有 {item['count']} 条排队没合并"
+                f" → 随钥匙交给第一个排队的 {item.get('next_up') or '?'}（按规矩由 TA 接手合并）"
+            )
         return
     if cmd == "queue" and not as_json:
         if payload.get("path") and "merged" in payload:
@@ -1128,17 +1142,26 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             holder = payload.get("held_by")
             print(f"已排队 {payload['id']}（{payload['path']}）")
             print(f"  内容：{payload.get('note') or '（见补丁）'}")
-            print(f"  {('等 ' + holder + ' 合并（它拿着钥匙）') if holder else '现在没人拿钥匙：你也可以直接 lock 后自己改'}")
+            if holder:
+                print(f"  现在钥匙在 {holder} 手里：它改完**直接放钥匙**（不负责合并）")
+            print("  → 按规矩：**第一个排队的**拿到钥匙后，把这一整批一并合并（你排第几看 `ic queue <路径>`）")
             return
         pending = payload.get("pending") or []
         total = payload.get("count", len(pending))
-        print(f"排队中的改动 {total} 条")
+        next_up = payload.get("next_up") or ""
+        print(f"排队中的改动 {total} 条" + (f"；下一个接手的：{next_up}（第一个排队的）" if next_up else ""))
         for item in pending:
             who = item.get("held_by")
-            print(f"  {item.get('id')}  {item.get('path')}  ← {item.get('agent')}（{item.get('at_beijing','')}）")
+            tag = "①" if item.get("is_first") else f"{item.get('position')}"
+            print(
+                f"  {tag} {item.get('id')}  {item.get('path')}  ← {item.get('agent')}"
+                f"（{item.get('at_beijing','')}）"
+            )
             print(f"      要改：{item.get('note') or '（见补丁）'}")
-            if who:
-                print(f"      → 等 {who} 合并（它拿着钥匙）")
+            if item.get("is_first"):
+                print("      → 按规矩：谁来拿钥匙谁就该把**这一批**一并合并（第一个排队的先拿）")
+            elif who:
+                print(f"      → 钥匙在 {who} 手里；持有者改完直接放，由第一个排队的接手合并")
         if not pending:
             print("  （没有排队；`ic queue <路径> --note \"我要改什么\"` 可以提一条）")
         return
@@ -1153,7 +1176,7 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             print(
                 f"  {item['path']}  ← {item['agent']}{task}  到 "
                 f"{item.get('expires_at_beijing') or item['expires_at']}（剩 {left // 60} 分）{soon}"
-                + (f"  📥 有 {queued} 条排队等你合并（`ic queue {item['path']} --merge`）" if queued else "")
+                + (f"  📥 有 {queued} 条排队（`ic queue {item['path']}` 看；谁拿钥匙谁合并）" if queued else "")
             )
         return
     if cmd == "tasks" and not as_json:

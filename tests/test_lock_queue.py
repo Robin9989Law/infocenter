@@ -92,6 +92,46 @@ class QueueStoreTest(unittest.TestCase):
         listed = self.store.lock_list()
         self.assertEqual(next(r for r in listed["locks"] if r["path"] == str(other.resolve()))["queued"], 0)
 
+    # ── 接力：持有者直接放钥匙（不合并），第一个排队的接手合并 ─────────────
+    def test_holder_releases_without_merging_then_first_in_line_takes_over(self):
+        self.store.lock_acquire("grok", [self.path], ttl=600)          # 持有者
+        self.store.queue_change("cursor", self.path, note="甲（第一个排队）")
+        self.store.queue_change("kimi", self.path, note="乙（第二个排队）")
+        released = self.store.lock_release("grok", [self.path])
+        handover = released["handover"]
+        self.assertEqual(len(handover), 1, "放钥匙时要如实说出还没合并的排队")
+        self.assertEqual(handover[0]["count"], 2)
+        self.assertEqual(handover[0]["next_up"], "cursor", "接手的是第一个排队的")
+        self.assertEqual(self.store.list_queue(self.path)["count"], 2, "持有者不管合并，队列照旧")
+
+        # 第一个排队的拿钥匙 → 被明确告知"你就是第一个，把整批一并合并"
+        got = self.store.lock_acquire("cursor", [self.path], ttl=600)
+        self.assertEqual(got["queued"][0]["first"], "cursor")
+        self.assertEqual(got["queued"][0]["count"], 2)
+        merged = self.store.merge_queue("cursor", self.path)
+        self.assertEqual(len(merged["merged"]), 2, "一轮清一批（把乙的也一并合并）")
+        self.assertEqual(merged["remaining"], 0)
+
+    def test_queue_list_marks_positions_and_next_up(self):
+        self.store.lock_acquire("grok", [self.path], ttl=600)
+        self.store.queue_change("cursor", self.path, note="甲")
+        self.store.queue_change("kimi", self.path, note="乙")
+        listed = self.store.list_queue(self.path)
+        self.assertEqual(listed["next_up"], "cursor")
+        self.assertTrue(listed["pending"][0]["is_first"])
+        self.assertEqual(listed["pending"][0]["position"], 1)
+        self.assertEqual(listed["pending"][1]["position"], 2)
+        self.assertFalse(listed["pending"][1]["is_first"])
+
+    def test_acquire_by_someone_other_than_first_is_still_reported(self):
+        """不是第一个排队的人抢到了钥匙：机器不拦（谁拿钥匙谁能合并），但会如实告诉他第一个是谁。"""
+        self.store.lock_acquire("grok", [self.path], ttl=600)
+        self.store.queue_change("cursor", self.path, note="甲")
+        self.store.lock_release("grok", [self.path])
+        got = self.store.lock_acquire("kimi", [self.path], ttl=600)   # 插队拿到
+        self.assertEqual(got["queued"][0]["first"], "cursor", "要告诉它：第一个排队的是 cursor")
+        self.assertEqual(got["queued"][0]["count"], 1)
+
     # ── 合并只有拿钥匙的人能做 ────────────────────────────────────────────
     def test_only_key_holder_can_merge(self):
         self.store.lock_acquire("grok", [self.path], ttl=600)
@@ -100,7 +140,7 @@ class QueueStoreTest(unittest.TestCase):
             self.store.merge_queue("cursor", self.path)
         self.assertEqual(ctx.exception.code, "not_yours")
         self.assertEqual(ctx.exception.status, 403)
-        got = self.store.merge_queue("grok", self.path)
+        got = self.store.merge_queue("grok", self.path)  # 拿钥匙的人可以合（按规矩应让第一位，但不拦）
         self.assertEqual(len(got["merged"]), 1)
         self.assertEqual(got["remaining"], 0, "合并后排队清零")
 

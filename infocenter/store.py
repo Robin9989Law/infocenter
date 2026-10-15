@@ -2431,9 +2431,18 @@ class Store:
             ).fetchall()
             for path in wanted:
                 _chmod_writable(path)  # 钥匙在手 ⇒ 这个文件现在可写；放锁时再变回只读
+            queued = [
+                {
+                    "path": path,
+                    "count": self._queue_head(path)[0],
+                    "first": self._queue_head(path)[1],
+                }
+                for path in wanted
+            ]
             res = {
                 "agent": agent,
                 "ttl": ttl_seconds,
+                "queued": [row for row in queued if row["count"]],
                 "expires_at": expires,  # 存储口径：UTC
                 "expires_at_beijing": beijing_time(expires),  # 给人看：北京时间
                 "locks": [_lock_view(r) for r in rows],
@@ -2490,12 +2499,31 @@ class Store:
                      "held_since": row["acquired_at"]},
                     now,
                 )
+        handover = []
+        for path in targets:
+            queue = self.list_queue(path)
+            if queue["count"]:
+                handover.append(
+                    {"path": path, "count": queue["count"], "next_up": queue["next_up"]}
+                )
         self._signal()
-        return {"agent": agent, "released": targets, "released_count": released, "force": bool(force)}
+        return {
+            "agent": agent,
+            "released": targets,
+            "released_count": released,
+            "force": bool(force),
+            # 持有者**直接放**即可（不要求它合并）；没合并的排队随钥匙交给**第一个排队的**。
+            "handover": handover,
+        }
 
-    # ── 排队改同一个文件：拿不到钥匙就把改动**提**给持有者，由它一次合并 ──
-    # human 定稿：出现排队改同一个文件时，**由第一个 agent 合并后边所有要改的内容**。
-    # 好处：不用"你改完我改、我改完他改"来回抢钥匙（每一轮都要提交、都要重新拿钥匙）。
+    def _queue_head(self, path: str) -> tuple[int, str]:
+        """这个文件排队几个人、第一个是谁。"""
+        queue = self.list_queue(path)
+        return queue["count"], queue["next_up"]
+
+    # ── 排队改同一个文件：拿不到钥匙就把改动**提**上来，由**第一个排队的**接手合并 ──
+    # human 定稿：出现排队改同一个文件时，**由第一个排队的 agent 接手，把队列里所有人的内容一并合并**。
+    # 持有者**不负责合并**——它改完直接放钥匙；队列里第 1 个拿钥匙时把整批并进自己这一轮（一轮清一批）。
 
     def queue_change(
         self,
@@ -2576,10 +2604,16 @@ class Store:
                 "merged": int(row["seq"]) in merged,
             }
             (done if item["merged"] else pending).append(item)
+        for index, item in enumerate(pending, start=1):
+            item["position"] = index
+            item["is_first"] = index == 1
+        first = pending[0]["agent"] if pending else ""
         return {
             "pending": pending,
             "merged": done if include_done else [],
             "count": len(pending),
+            # 规矩：持有者**直接放钥匙**；由**第一个排队的**接手，把队列里所有人的内容一并合并。
+            "next_up": first,
         }
 
     def merge_queue(
@@ -2589,8 +2623,10 @@ class Store:
         ids=None,
         note: str | None = None,
     ) -> dict:
-        """**合并排队内容**——由**拿钥匙的那个人**（或 coordinator）做，这正是 human 定的规矩：
-        "出现排队改同一个文件时，由第一个 agent 合并后边所有要改的内容"。
+        """**合并排队内容**：由**拿钥匙的人**做——按规矩它应当就是**第一个排队的**那个
+        （持有者直接放钥匙、不负责合并）；coordinator 例外（钥匙主人不在时收口）。
+
+        合并时请把队列里**所有人**的内容一并并进自己这一轮改动（一轮清一批）。
         """
         agent = normalize_name(agent)
         target = _lock_paths([path])[0]
@@ -2601,7 +2637,7 @@ class Store:
             if holder is not None and holder["agent"] != agent and not is_coord:
                 raise MailError(
                     "not_yours",
-                    f"{target} 的钥匙在 {holder['agent']} 手里：合并由**拿钥匙的人**做（你说的「第一个 agent」）",
+                    f"{target} 的钥匙在 {holder['agent']} 手里：合并只能由**拿钥匙的人**做（按规矩它应是队列里第一个）",
                     403,
                 )
             if holder is None and not is_coord:
@@ -2631,7 +2667,7 @@ class Store:
             _locks_sweep(conn, now)
             rows = conn.execute("SELECT * FROM locks ORDER BY acquired_at").fetchall()
         views = [_lock_view(r) for r in rows]
-        # 持有者要一眼看到"有几个在排队等我合并"（human 定稿：由第一个 agent 合并后面所有改动）
+        # 谁拿钥匙谁就能合并；按 human 定的规矩，接手的是**第一个排队的**那个
         pending = self.list_queue()["pending"]
         waiting: dict[str, int] = {}
         for item in pending:
