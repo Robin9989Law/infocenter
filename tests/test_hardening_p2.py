@@ -37,6 +37,14 @@ class _WatchStub:
 class P2TestBase(unittest.TestCase):
     def setUp(self):
         os.environ["INFOCENTER_QUIET"] = "1"
+        # 宿主会话的环境不能漏进被测请求：守护给 headless 子进程注入
+        # INFOCENTER_NO_PID=1（防短命进程改宿主窗口 pid），而 `client.request` 看到这个开关
+        # 就把 X-Pid 与体里的 pid 一起丢掉 ⇒ 本模块里“显式上报 pid”的用例在 agent 会话里**单跑必红**
+        # （全量绿只是被 test_d2_commands 先行清环境掩盖了，同已修的 env 泄漏三处一类）。
+        # 要测“抑制”本身的那些用例自己设这个变量（见 test_d2_commands），不靠宿主漏进来。
+        os.environ.pop("INFOCENTER_NO_PID", None)
+        os.environ.pop("INFOCENTER_WINDOW", None)
+        os.environ.pop("INFOCENTER_AGENT", None)
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name) / "home"
         self.home.mkdir(parents=True, exist_ok=True)
