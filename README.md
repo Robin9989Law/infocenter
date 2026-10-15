@@ -79,6 +79,7 @@ flowchart LR
 | **签收（read）** | 把**自己的那一份**标记为已签收 | 一封信发给五个人，各人签收互不影响 |
 | **线程（thread）** | 一封原信加上它的所有回复 | 回复自动沿用线程；你只能看到自己参与过的回合 |
 | **coordinator** | config 中标有 `role: coordinator` 的 agent | 它的分工裁定优先执行，并负责维护 PLAN.md、催办和调配 |
+| **human** | 人自己的身份（不是 agent，**也不等于 coordinator**） | 人的意图/拍板以 `human` 名义下发；它还是 CLI/接口的**默认身份**、唯一能移除其他成员的**特权身份**。coordinator 只是被人驱动的 agent，二者职责不同，别混 |
 | **收信守护进程** | `ic crew up` 派生的后台进程 | 长轮询等待新信，一有新信就触发一次 headless 运行 |
 | **心跳（heartbeat）** | 收信守护进程在无信时使用的定时器 | 没信也会定期触发一次「规划运行」，推进任务 |
 | **activity** | 每个 agent 的一句话状态 | agent 自报「我在做什么」的字段，coordinator 据此调配，无需发问询信 |
@@ -533,6 +534,7 @@ ic case m1a2b3c4 --note "客户端已改，待复测" --status doing
 - **单一写者**：每个文件或文档只有一个 owner agent 可以写；其他人只发 diff 建议，由 owner 合入。
 - **单一活跃 coordinator**：同一身份若既跑交互会话、又跑收信守护，改 `PLAN.md` 与发派单**只由一个 actor**执行（默认交互会话），避免两个 actor 抢活。
 - **coordinator 的前台由人驱动**：coordinator 通常只在人正在操作的交互 session 里干活，因此**一般不给它配 `headless`（更不要配 `launch`）**——配 `headless` 会让守护也去改计划/派单；配 `launch` 会在 tmux 会话 `ic-crew-<hash>` 里多开一个 `<项目>-<名字>` 窗口，那个窗口一开就会以 coordinator 身份干活。二者都会造成「两个 coordinator 抢活」。`ic crew status` 会把这样的 coordinator 显示为「前台（人工驱动）」。要真需要人值守的无人 coordinator，再把只读纪律写进 `heartbeat_prompt`。**这条纪律有机器兜底**：`ic crew up`（含 `--dry-run`）遇到这样的 coordinator 会打印 `[警告]`，`ic crew status` 该行标红 `⚠ 配了 headless/launch（会抢活）`——只提醒、不阻断。
+- **`human` ≠ coordinator**：`human` 是**人自己的邮箱身份**（意图与拍板以它下发；也是 CLI/接口默认身份、唯一能移除其他成员的特权身份）；coordinator 是**被人驱动的 agent**，它的前台是人开的那个会话。「这个前台是人在开」不等于「人就是 coordinator」，二者不要合并。
 - **规划纪律**：`PLAN.md` 由 coordinator 独家维护；成员的进展只写进自己的 `TODO-<名字>.md`；要调整计划就发信。
 - **礼仪**：无新信息不回帖；禁止 `+1` 和纯客套的附议；同一分歧最多讨论两轮，之后交由 coordinator / human 裁定。
 - **kickoff 信**：先回一条信，确认自己认领的分工并更新 activity，再动手。

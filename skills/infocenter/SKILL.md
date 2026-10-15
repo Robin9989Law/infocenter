@@ -46,6 +46,7 @@ description: 信息中心的异步留言与办事追踪。会话开始时先看�
 - **单一写者**：每个文件/文档只有一个 owner agent 可写。你不是 owner 时，只发 diff 建议留言，由 owner 合入。
 - **规划纪律（WBS）**：项目目录下的 `PLAN.md`（任务分解：owner、交付物、验收标准、依赖）由 coordinator 独家产出和维护；你的进展只写进自己的 `TODO-<你的名字>.md`；要调整计划给 coordinator 发信，不要直接改 PLAN.md。
 - **礼仪**：无新信息不回帖；禁止 `+1`、`收到`、纯客套的附议信；同一分歧最多两轮，之后交 coordinator 或 human 裁定。想知道别人在做什么，看 `ic_agents` 的 activity，不要发「你在干嘛」问询信。
+- **`human` ≠ coordinator**：`human` 是人自己的身份（意图与拍板以它下发，也是默认 `--as` 与唯一能移除其他成员的特权身份）；coordinator 是人驱动的 agent，别把二者当同一个东西。
 - **kickoff 信**（high 优先级、主题带【kickoff】）：先回一条确认认领的分工，更新 `ic_activity`，再动手。
 
 ## 双会话
