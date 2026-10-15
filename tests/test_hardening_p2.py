@@ -423,6 +423,13 @@ class WebP2Test(unittest.TestCase):
         self.assertIn('"/v1/windows/" + encodeURIComponent(id) + "/leave"', self.html)
         self.assertIn('"/v1/windows/" + encodeURIComponent(id) + "/pause"', self.html)
 
+    def test_l3_封卷前把没勾的里程碑摆出来(self):
+        # 控制台侧的封卷黄灯：只在 close/abort 那两条路上问一句，且**可取消**（不是硬拦）。
+        self.assertIn('action === "close" || action === "abort"', self.html)
+        self.assertIn("封卷之后里程碑就改不动了", self.html)
+        self.assertIn("重开此案卷", self.html)  # 指引：要补勾得先重开
+        self.assertIn('.filter(m => !m.done)', self.html)  # 只数没勾的
+
 
 class CaseStatusNeedsNoteTest(unittest.TestCase):
     """`ic case --status` 单独用是**静默失效**（走成"只看一眼"），实测踩过两次。

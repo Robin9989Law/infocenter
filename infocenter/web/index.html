@@ -1074,6 +1074,16 @@ async function doWindow(action, widOpt) {
 }
 async function doCase(action, cidOpt) {
   const id = cidOpt || (state.settingsTarget && state.settingsTarget.id);
+  if (action === "close" || action === "abort") {
+    // 黄灯（只提示不拦）：封卷不可逆，先把没勾的里程碑摆到眼前；点「取消」就不封。
+    const c = (state.cases || []).find(x => x.id === id);
+    const pending = ((c && c.milestones) || []).filter(m => !m.done).map(m => m.name);
+    if (pending.length && !confirm(
+      "这一卷还有 " + pending.length + " 个里程碑没勾：\n· " + pending.join("\n· ")
+      + "\n\n封卷之后里程碑就改不动了（要补勾得先「重开此案卷」）。\n照旧"
+      + (action === "close" ? "办结" : "中止") + "？"
+    )) return;
+  }
   try {
     await api("/v1/cases/" + encodeURIComponent(id) + "/" + action, { method: "POST" });
     await loadCases(); await loadProjects(); await loadActivity();

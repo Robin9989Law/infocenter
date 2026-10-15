@@ -35,7 +35,7 @@ sys.path.insert(0, str(ROOT))
 from infocenter.server import make_handler
 from infocenter.store import Store, _lock_ttl, _task_event_hash
 
-WS = "/Users/robinlaw/Downloads/信息中心"
+WS = "/tmp/infocenter-demo"
 
 
 class PostAnchorForgeTest(unittest.TestCase):

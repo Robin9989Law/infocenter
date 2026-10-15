@@ -18,3 +18,8 @@ packages = ["infocenter"]
 
 [tool.setuptools.dynamic]
 version = { attr = "infocenter.__version__" }
+
+[tool.setuptools.package-data]
+# 控制台单页（`ic serve` 的 /ui）是包的一部分：不显式带上，wheel/sdist 里就没有它，
+# 外人 pip 装完能起服务、但打不开控制台（实测：不带这行时 wheel 18 个文件、无 web/index.html）。
+infocenter = ["web/*"]

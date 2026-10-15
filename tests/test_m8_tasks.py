@@ -21,7 +21,7 @@ from infocenter.client import ApiError, request
 from infocenter.server import make_handler
 from infocenter.store import MailError, Store
 
-WS = "/Users/robinlaw/Downloads/信息中心"
+WS = "/tmp/infocenter-demo"
 OTHER = "/tmp/another-project"
 
 

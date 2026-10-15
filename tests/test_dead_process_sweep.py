@@ -26,8 +26,8 @@ sys.path.insert(0, str(ROOT))
 from infocenter import server
 from infocenter.store import CLAIM_TTL, STALL_HOURS, Store
 
-WS = "/Users/robinlaw/Downloads/信息中心"
-A = "/Users/robinlaw/Downloads/信息中心/infocenter/store.py"
+WS = "/tmp/infocenter-demo"
+A = "/tmp/infocenter-demo/infocenter/store.py"
 
 
 def _age(db: Path, sql: str, params=()) -> None:

@@ -27,8 +27,8 @@ from infocenter import cli
 from infocenter.server import make_handler
 from infocenter.store import MailError, Store, _task_event_hash
 
-WS = "/Users/robinlaw/Downloads/信息中心"
-A = "/Users/robinlaw/Downloads/信息中心/infocenter/store.py"
+WS = "/tmp/infocenter-demo"
+A = "/tmp/infocenter-demo/infocenter/store.py"
 
 
 class TaskReviewFixTest(unittest.TestCase):

@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.4.0-22d3ee?style=flat-square">
+  <img alt="version" src="https://img.shields.io/badge/version-0.5.0-22d3ee?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-%E2%89%A53.10-34d399?style=flat-square">
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS-f59e0b?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-a78bfa?style=flat-square">
@@ -200,7 +200,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 
 | 命令 | 作用 |
 | --- | --- |
-| `ic case <案卷或线程 id> [--note "一行进展"] [--status 状态]` | 查看一份案卷；`--note` 追加一行节点，`--status` 顺手改状态。**`--status` 必须和 `--note` 一起给**：状态变更天生要留一行节点，单独给会直接报 `status_needs_note`（不再"看着像改了"），和 `--milestone-*` / `--acceptance` 同给也一样拒。列表侧 `ic cases --status` 是筛选，不受此限。封卷（`办结` / `中止`）前会**先把没勾的里程碑逐个念出来**（封卷之后里程碑改不动了；**只提示、不拦**） |
+| `ic case <案卷或线程 id> [--note "一行进展"] [--status 状态]` | 查看一份案卷；`--note` 追加一行节点，`--status` 顺手改状态。**`--status` 必须和 `--note` 一起给**：状态变更天生要留一行节点，单独给会直接报 `status_needs_note`（不再"看着像改了"），和 `--milestone-*` / `--acceptance` 同给也一样拒。列表侧 `ic cases --status` 是筛选，不受此限。封卷（`办结` / `中止`）前会**先把没勾的里程碑逐个念出来**（封卷之后里程碑改不动了；**只提示、不拦**）。控制台点「办结 / 中止」也是同一盏灯（弹出确认，可取消） |
 | `ic case <id> --wbs 父/子` | 给案卷打 WBS 路径（`/` 分隔，空=未归类）；**只有 coordinator 能改** |
 | `ic case <id> --milestone-add "名字" [--milestone-owner 身份]` / `--milestone-done N` | 加一条里程碑 / 勾掉第 N 条（下标从 0 起，`!N` 撤回完成）；**只有 coordinator 能改** |
 | `ic cases [--workspace X] [--status 状态] [--owner 身份] [--wbs 前缀] [--limit N]` | 列出案卷；`--wbs` 前缀匹配（给 `防混写` 会带出 `防混写/锁与闸` 下面的） |
@@ -628,7 +628,7 @@ ic probe --watch 3600 &     # 常驻探针：每小时采一次，直到 Ctrl-C
 多个项目可以同时开工，互不干扰。隔离单位是**身份 × 项目**：
 
 - 每个（身份, 项目）组合有自己独立的收信守护进程、pid/游标/日志文件、tmux 会话（`ic-crew-<hash>`）和窗口（`<项目名>-<身份>`）。同一个身份在两个项目里就是两个守护，各管各的。
-- **信件按 workspace 归属**：守护只处理 workspace 等于本项目（全路径、解析后路径或目录名都算命中，例如 `workspace: LLM思维链` 能匹配到同名目录）的信；其他项目的信留给那边的守护。
+- **信件按 workspace 归属**：守护只处理 workspace 等于本项目（全路径、解析后路径或目录名都算命中，例如 `workspace: my-project` 能匹配到同名目录）的信；其他项目的信留给那边的守护。
 - **没有 workspace 的信不自动触发任何守护**——它由交互会话处理（MCP 推送照常）；心跳运行查收件时若发现明确属于本项目的，会顺手处理。这条仲裁规则保证两个守护不会抢同一封信。
 - `ic crew status --dir <项目>` / `ic crew down --dir <项目>` 按项目查看和清理；不带 `--dir` 则是全局视图/全局清理。
 - 多项目各有 coordinator 时，`ic crew kickoff --from <身份>` 指定以谁的名义发启动信（默认取 config 里第一个 coordinator）。
@@ -815,4 +815,4 @@ python3 -W error::ResourceWarning -m unittest discover -s tests   # 全量测试
 
 ---
 
-<p align="center">版本 0.4.0 · MIT · <a href="https://github.com/Robin9989Law/infocenter">GitHub</a></p>
+<p align="center">版本 0.5.0 · MIT · <a href="https://github.com/Robin9989Law/infocenter">GitHub</a></p>

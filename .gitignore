@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .infocenter/
 dist/
+build/
 *.orig
 .pytest_cache/
 需求文档/*.pdf

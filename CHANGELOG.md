@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-16
+
+> **首个公开版。** 这一版把「一台机器上多个 AI agent 互相派活」做成了真能跑的东西：任务队列（工作包）、
+> **一把钥匙的写锁**（锁＝只读，落到文件系统权限位）、**提交闸**（每个改动都得有未过期写锁）、
+> **留痕哈希链 + 外锚**（链头钉进 git，防整表重做）、**案卷 / WBS 看板**、**空转采样**（触发数×产出并排看）、
+> **「怎样算完」的收尾判据**。整条线上还有一个刻意的取舍：**能不沟通就不沟通**——协调尽量走共享状态
+> （库里的台账 + 看板），而不是互相发信。
 
 ### Removed
 - **减法轮（勿增实体）落在别处的部分**（human 2026-10-16 下令：四家各自**独立**审全仓、**只删不加**；coordinator 收口）：`cursor` 删 8 个无调用方的函数/导入（`paths.default_url`、`client.running_meta`、`config._save_agents`、`sync._utcnow` 这类"纯转调的壳"）、看板里 4 个点不到的 JS 函数、`sync.is_wire_name` 的第二份实现（并入 `store._is_wire_name`）；`pi` 删 `EXPERIMENT-独立评审.md`（实验已完成、零引用）、`需求文档/02-服务中心调研报告.md`（416 行、零引用、文件自述"不构成本期排期"）、`cli._SYNC_COUNT_KEYS` 与 `sync.SEGMENT_RE` 两处重复常量；`kimi` 删 `cli._parse_utc` 的本地副本（与 `store._parse_utc` 逐输入等价）；`opencode` 删控制台死 CSS `.dmon` / `.dmon.on` / `.dmon.off`（正文只有 `dmon-btn` 在用）、README 里过期的「当前 158 个」（实测 468）与 `pytest` / `unittest` 两种口径二选一。四家落地部分**净减 597 行**（+23 / −620，14 个文件）；全量 468 项绿，coordinator 另在**仓外**独立复跑两次（`c285821`、`903f5c9`）确认。**可回滚点**：起点 tag `pre-subtraction-round` + 分支 `backup/pre-subtraction-59dcb1e`（均已 push），本机快照 `~/.infocenter/backups/减法轮前-20261016-0301/`。四份**清单**在 `_work/减法-<名字>.md`（不在 git 里），案卷 `m1a140f2e6cc41e95b` 逐条记着"删了什么·凭什么·哪个 commit"。
@@ -53,7 +59,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `add_project` 返回项补齐 `archived` 等字段，与 `list_projects` 同口径
 
 ### Added
-- **封卷前的一盏灯：还有里程碑没勾就念出来**（human 2026-10-16 点头；**只提示、不拦**）：封卷不可逆（要改只能 `reopen`），里程碑封卷后同样改不动。实测踩过——先封卷、后勾最后一个里程碑 ⇒ 被 `case_sealed` 拒，只能 `reopen` → 补勾 → 再封，白折腾三下。现在 `ic case <id> --note "…" --status 办结|中止` 会**先**把没勾的里程碑逐个念出来，再照旧封卷。非封卷状态不多问一句；案卷读不到（不存在 / 服务不在）就闭嘴——黄灯不挡动手。+ `tests/test_hardening_p2.py` 4 项（念出来但照旧封 / 都勾了不吭声 / 非封卷不多问 / 读不到也不挡）。**控制台侧那排封卷按钮还没有这盏灯**（登记）。
+- **封卷前的一盏灯：还有里程碑没勾就念出来**（human 2026-10-16 点头；**只提示、不拦**）：封卷不可逆（要改只能 `reopen`），里程碑封卷后同样改不动。实测踩过——先封卷、后勾最后一个里程碑 ⇒ 被 `case_sealed` 拒，只能 `reopen` → 补勾 → 再封，白折腾三下。现在 `ic case <id> --note "…" --status 办结|中止` 会**先**把没勾的里程碑逐个念出来，再照旧封卷。非封卷状态不多问一句；案卷读不到（不存在 / 服务不在）就闭嘴——黄灯不挡动手。+ `tests/test_hardening_p2.py` 4 项（念出来但照旧封 / 都勾了不吭声 / 非封卷不多问 / 读不到也不挡）。**控制台那排封卷按钮也补上了同一盏灯**（点「办结 / 中止」时把没勾的里程碑列出来，可取消——不是硬拦）。
 - **死信拒收：写给「不存在的身份」直接拒（第 5 道闸）**（kimi 2026-10-15 提、human 2026-10-16 拍「要」）。缺口长这样：`--to` 里写个打错的名字或者已经退役的身份，程序照样报「已送出」、库里也留一封信，但**那份投递谁都读不到**——话说了没人听，而且看起来还是成功的。这是不可逆的损失，所以机器在这里兜底：收件人不在册 ⇒ **422 `no_such_recipient`**，报文里直接写清怎么办（让他 `ic register --as <名字>`，或把人加进 `config.json` 名册），**且不留任何残迹**（不建身份、不落信）。**在册 = 库里注册过的 ∪ 名册里列着的**（后一半必须有：`ic crew kickoff` 是**按名册群发**开工信，名册里的新同事可能一次都还没开口）；带点的跨节点名（`robin.kimi`）不归本机名册管，照发给同步层。+ `tests/test_dead_letter.py`（11 项：打错/退役/名册新人/注册过/给自己/广播/立案始信同受管且整笔回滚/回复不受影响/路由 422/配置坏掉也不误拒）
 - **SKILL 副本漂移检查：`ic status` / `ic guard` 各出一行**（kimi 2026-10-15 追审阻断②：README 写了这句承诺，**代码里没有**——先落码兑现）。交互会话读的是**安装副本**（`~/.agents/skills/infocenter/SKILL.md`），仓库那份改了它看不到；两份真相靠人记一定再犯（实测安装副本停在 10-14）。现在两边内容不一致就出一行（**优先软链**：指向仓库那份的不算漂移）；**只提示不拦**（SKILL 正在修订时本来就该先漂着：判断「该不该现在同步」要靠人）。`ic status --json` 里带 `skill_drift`。+ `tests/test_skill_drift.py`（10 项）
 - **`ic probe`：空转采样（只读）——触发数和产出必须并排看**（human 2026-10-15 定）。空转**只看一个数一定会被骗**：实测 pi 每分钟触发 36 次 headless，而从外面看它的"心跳空转轮"一动不动（4→4）；是"触发数 vs 产出"并排看才抓出来的，`outcome` 分布是同一件事的另一半（那 60 次里 57 次 fail ⇒ 模型/配置坏了，不是"它很忙"）。命令：`ic probe [--minutes 60] [--history N] [--no-log] [--watch 秒]`；每次采样往 `~/.infocenter/crew/probe.jsonl` **只增**一行（看趋势），`--history` 只看不采。**产出** = 信 + 案卷节点 + 语义痕迹；**拿钥匙 / 放钥匙 / 锁到期这类机械动作不算产出**（否则锁 churn 会被当成在出活）。**触发数**从守护运行记录里数（`crew.run_stats`），日志每家只留最近 60 条 ⇒ 它只是**下限**，会自己标 `truncated`。判语 `多半坏了` 优先于 `空转`（触发多、产出零）优先于 `出活太稀`；管理台每个身份的气泡上挂一对 `触发 N/产出 M`（`GET /v1/agents?probe_minutes=60`，不正常的标黄）。+ `tests/test_probe.py`（15 项）
@@ -150,7 +156,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/Robin9989Law/infocenter/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/Robin9989Law/infocenter/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/Robin9989Law/infocenter/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Robin9989Law/infocenter/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Robin9989Law/infocenter/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Robin9989Law/infocenter/compare/v0.1.0...v0.2.0
