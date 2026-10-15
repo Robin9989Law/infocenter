@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **写侧自动拿钥匙：`.opencode/plugins/infocenter-lock`（OpenCode 插件）**。规矩（human 定稿）：**所有文件都锁住；要改就拿钥匙开锁；一旦开锁，别的 agent 就改不了；改完（提交）锁回去**。提交那一刻本来就由 git 钩子兜底，但**写**的那一刻 git 看不见 ⇒ 插件在 `edit` / `write` 落盘**之前**自动 `POST /v1/locks`：拿到就放行（重复拿＝续期），**别人开着锁就直接拒绝这次写**（工具报错，模型看得见），信息中心不可达则放行（离线不阻断）。边界：只罩本会话的 `edit`/`write`（`shell` 绕得过）、只对插件所在项目目录生效；别的 agent 的 CLI 没有这个插件，仍靠自觉 + 提交闸
+- **死流程兜底由机器自己跑（`Store.sweep()` + 服务端后台定时器）**：过期锁、**死进程窗口**、**僵尸认领**三件事原来只在"有人 inbox 时才顺手清"触发 ⇒ 低活跃项目可能很久不回收（pi 报的洞）。现服务端起一个 60s 的守护线程专做这件事，且**只做无争议回收、全部留痕**（`lock_expire` / `claim_release`），**绝不碰语义状态**
+- **认领 TTL（`CLAIM_TTL`，默认 7200s）**：认领原来**没有 TTL** ⇒ 僵尸窗口（pid 活着但不再干活）的未读认领永不回收，那封信对团队长时间不可见。现"`claimed_at` 超时 **且** 那个窗口也超时没跟服务说过话" ⇒ 回收（TTL 故意大于 `headless_timeout`：长任务跑起来时窗口本来就是安静的）
+- **看板「停滞」黄灯**：未封卷、且最后一个节点超过 `STALL_HOURS`（默认 24h）没动 ⇒ `ic cases` / 控制台标 **⚠ 停滞 Nh**。**只提示不拦**，程序不自动处置（kimi/cursor/pi 一致意见："沉默的 doing"只该亮灯）
 - **`ic guard --staged`**：只查**暂存区**（`git diff --cached --name-only -z --diff-filter=ACMR`）。提交钩子用它——闸门要盯的是"这次提交了什么"，而不是整棵工作区（cursor 实测：一个未跟踪的 `junk.tmp` 就能让空提交失败）。手工跑 `ic guard` 默认仍查整棵工作区（更严）
 - **`.githooks/pre-merge-commit`**：非快进 merge 不回落 `pre-commit`（cursor 实测 merge 时钩子根本不跑，改动无锁落地）⇒ 现在多一个同内容的钩子把 merge 也罩住
 - **`ic lock --changed` 与显式路径取并集**：原来给了路径就顶掉 `--changed`（打锚时踩到：锚文件锁上了、9 个源文件反而没锁）

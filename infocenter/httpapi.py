@@ -489,6 +489,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 window_id=window_id,
                 task_id=_opt_str(body, "task_id") or _opt_str(body, "task"),
                 note=_opt_str(body, "note"),
+                skip_locked=bool(body.get("skip_locked")),
                 ttl=body.get("ttl", LOCK_TTL),
                 force=_flag(query.get("force", ["0"])[0]) or bool(body.get("force")),
             )

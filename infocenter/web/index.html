@@ -509,7 +509,7 @@ function render() {
         <div class="title">${escapeHtml(c.title)}${runIdx >= 0 ? runBadge(state.runs[runIdx], runIdx) : ''}</div>
         <div class="meta"><span class="cid copy" data-copy="${cid}" title="点击复制案卷编号">${cid}</span> <span class="status ${cls}">${escapeHtml(st)}</span> ${owner ? '主办 ' + escapeHtml(owner) : ''}</div>
         <div class="meta">[${escapeHtml(c.wbs_path || "未归类")}]${(c.milestones_total || 0) ? ' · 里程碑 ' + (c.milestones_done || 0) + '/' + c.milestones_total : ''}</div>
-        ${c.human_stale ? '<div class="meta stale">⚠ 人话过期：这之后又发生了别的事，看板说法可能已不准（等 coordinator 重写）</div>' : ''}
+        ${(c.human_stale || c.stalled) ? `<div class="meta stale">${[c.human_stale ? '⚠ 人话过期（等 coordinator 重写）' : '', c.stalled ? '⚠ 停滞 ' + c.stalled_hours + 'h（没人动，看看要不要叫人/收工）' : ''].filter(Boolean).join(' · ')}</div>` : ''}
         <div class="meta">${escapeHtml(c.human_note || last)}</div>
       </div>`;
     }).join("");

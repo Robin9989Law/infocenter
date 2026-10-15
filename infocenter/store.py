@@ -38,6 +38,11 @@ _LABEL_TO_CASE_STATUS = {
 SEALED_STATUSES = {"aborted", "done"}
 
 # M9 写锁：单次锁的默认有效秒数与上限（默认参数在 class Store 之前求值，常量必须定义在此处）
+# 认领（claimed_by）的兜底 TTL：窗口**都没在跟服务说话**这么久 ⇒ 它手上那封信的认领算僵尸。
+# 必须大于 headless 单轮上限（默认 1800s）：长任务跑起来时窗口是安静、不轮询的。
+CLAIM_TTL = 7200
+# 看板「停滞」黄灯：未封卷、且最后一个节点超过这么久没动 ⇒ 标黄提示（**只提示，不自动处置**）。
+STALL_HOURS = 24
 LOCK_TTL = 1800
 LOCK_TTL_MAX = 12 * 3600
 
@@ -2339,8 +2344,15 @@ class Store:
         note: str | None = None,
         ttl: int = LOCK_TTL,
         force: bool = False,
+        skip_locked: bool = False,
     ) -> dict:
-        """拿锁（可一次拿多个路径）：全部拿到才算成功，任一被他人占着就整体失败。"""
+        """拿锁（可一次拿多个路径）。
+
+        - 默认（显式给路径）：**全有或全无**——任一被他人占着就整体失败（你要知道"有人正在改"）。
+        - `skip_locked=True`（`ic lock --changed` 用）：别人锁着的**跳过并在 `skipped` 里报告**，
+          其余照拿。理由：`--changed` 的语义是"锁我这批脏文件"，而别人锁着的脏文件**本来就不是我的**
+          （实测撞车成因：`--changed` 把对方的在飞文件、连外锚文件一起抓走 ⇒ 互相死锁）。
+        """
         agent = normalize_name(agent)
         window_id = normalize_window(window_id)
         wanted = _lock_paths(paths)
@@ -2354,10 +2366,20 @@ class Store:
                 _must_coordinator(conn, agent)
             _locks_sweep(conn, now)
             held = []
+            skipped: list[dict] = []
             for path in wanted:
                 row = conn.execute("SELECT * FROM locks WHERE path = ?", (path,)).fetchone()
-                if row is not None and row["agent"] != agent and not force:
-                    held.append({"path": path, "agent": row["agent"], "since": row["acquired_at"]})
+                if row is None or row["agent"] == agent or force:
+                    continue
+                item = {"path": path, "agent": row["agent"], "since": row["acquired_at"]}
+                if skip_locked:
+                    skipped.append(item)
+                else:
+                    held.append(item)
+            if skipped:
+                wanted = [
+                    path for path in wanted if path not in {item["path"] for item in skipped}
+                ]
             if held:
                 raise MailError(
                     "locked",
@@ -2394,6 +2416,7 @@ class Store:
                 "expires_at": expires,  # 存储口径：UTC
                 "expires_at_beijing": beijing_time(expires),  # 给人看：北京时间
                 "locks": [_lock_view(r) for r in rows],
+                "skipped": skipped,  # 别人锁着、这次跳过的（只可能是 --changed 那一类）
             }
         self._signal()
         return res
@@ -2492,6 +2515,22 @@ class Store:
             "unlocked": unlocked,
             "locked_by_others": foreign,
         }
+
+    def sweep(self, now: str | None = None) -> dict:
+        """**死流程回收**（第 3 条线里唯一会自动做的事）：过期锁、死进程窗口、僵尸认领。
+
+        三条都是**无争议回收**（只回收"没人认领的东西"，绝不改任何语义状态），且**全部留痕**。
+        由服务端后台定时器调用 ⇒ 不再依赖"有人 inbox 时才顺手清"（pi 报的洞：
+        低活跃项目里僵尸认领可能一直不触发回收）。
+        """
+        now = now or utcnow()
+        with self._session(immediate=True) as conn:
+            expired = _locks_sweep(conn, now)
+            dead = _mark_dead_windows(conn, now)
+            claims = _release_stale_claims(conn, now)
+        if expired or dead or claims:
+            self._signal()
+        return {"expired_locks": expired, "dead_windows": dead, "released_claims": claims}
 
     def audit_events(self, task_id: str | None = None, anchor: dict | None = None) -> dict:
         """**机器验证留痕**：① 哈希链完整（防篡改/防删行）；② 每个任务「重放痕迹 == 当前行」；
@@ -3227,16 +3266,21 @@ def _auto_claim_allowed(conn: sqlite3.Connection, window_id: str, message_worksp
     return _workspace_compatible(message_workspace, _window_workspace(conn, window_id))
 
 
-def _release_stale_claims(conn: sqlite3.Connection) -> int:
-    """M6-0 修复：释放「认领窗口已离场/已死」或「认领窗口与信的 workspace 不相容」的认领。
+def _release_stale_claims(conn: sqlite3.Connection, now: str | None = None, ttl: int = CLAIM_TTL) -> int:
+    """释放**僵尸认领**（无争议回收），并逐条留痕。三类：
 
-    这两类都是陈旧/错位认领，会把信从正确项目的窗口里隐藏掉。每轮惰性对账时调用，可自愈历史脏数据。
+    ① 认领窗口已离场/已死；② 认领窗口与信的 workspace 不相容；
+    ③ **认领超时**：`claimed_at` 超过 TTL，且那个窗口也超过 TTL 没跟服务说过话
+       （pi 报的洞：认领原来**没有 TTL**，僵尸窗口 pid 活着但不再干活 ⇒ 它的认领永不回收，
+        那封信对团队长时间不可见；而且回收只在"别人 inbox 时顺手"才触发）。
     """
+    now = now or utcnow()
+    cutoff = _lock_expiry(now, -abs(int(ttl)))  # now - ttl
     rows = conn.execute(
         """
-        SELECT d.message_id, d.to_agent, d.claimed_by,
+        SELECT d.message_id, d.to_agent, d.claimed_by, d.claimed_at,
                m.workspace AS message_workspace,
-               w.workspace, w.state, w.left_at, w.pid
+               w.workspace, w.state, w.left_at, w.pid, w.last_seen_at
         FROM deliveries d
         JOIN messages m ON m.id = d.message_id
         JOIN windows w ON w.window_id = d.claimed_by
@@ -3248,6 +3292,12 @@ def _release_stale_claims(conn: sqlite3.Connection) -> int:
         stale = _is_window_gone(row) or not _workspace_compatible(
             row["message_workspace"], row["workspace"]
         )
+        why = "认领窗口已离场/已死或与项目不相容"
+        if not stale:
+            silent_since = row["last_seen_at"] or row["claimed_at"] or ""
+            if (row["claimed_at"] or "") < cutoff and silent_since < cutoff:
+                stale = True
+                why = f"认领超时（窗口 {ttl // 60} 分钟没跟服务说过话）"
         if not stale:
             continue
         conn.execute(
@@ -3257,8 +3307,34 @@ def _release_stale_claims(conn: sqlite3.Connection) -> int:
             """,
             (row["message_id"], row["to_agent"], row["claimed_by"]),
         )
+        _emit_task_event(
+            conn, "", row["to_agent"], "claim_release", "", "",
+            {
+                "message_id": row["message_id"], "window_id": row["claimed_by"],
+                "claimed_at": row["claimed_at"] or "", "why": why,
+            },
+            now,
+        )
         released += 1
     return released
+
+
+def _mark_dead_windows(conn: sqlite3.Connection, now: str) -> int:
+    """把 pid 已死的窗口标成离场，并替它放锁（留痕）。返回处理了几个窗口。"""
+    active_wins = conn.execute(
+        "SELECT * FROM windows WHERE state != 'left' AND pid IS NOT NULL"
+    ).fetchall()
+    marked = 0
+    for w_row in active_wins:
+        if not _pid_dead(w_row["pid"]):
+            continue
+        conn.execute(
+            "UPDATE windows SET state = 'left', left_at = COALESCE(left_at, ?) WHERE window_id = ?",
+            (now, w_row["window_id"]),
+        )
+        _release_window_locks(conn, w_row["window_id"], now, "窗口进程已死")
+        marked += 1
+    return marked
 
 
 def _lazy_reconcile_case(conn: sqlite3.Connection, case_row: sqlite3.Row, now: str | None = None) -> sqlite3.Row:
@@ -3292,19 +3368,9 @@ def _lazy_reconcile_all(conn: sqlite3.Connection, now: str | None = None) -> Non
     ).fetchall()
     for c_row in open_cases:
         _lazy_reconcile_case(conn, c_row, now)
-    active_wins = conn.execute(
-        "SELECT * FROM windows WHERE state != 'left' AND pid IS NOT NULL"
-    ).fetchall()
-    for w_row in active_wins:
-        if _pid_dead(w_row["pid"]):
-            conn.execute(
-                "UPDATE windows SET state = 'left', left_at = COALESCE(left_at, ?) WHERE window_id = ?",
-                (now, w_row["window_id"]),
-            )
-            # 死 pid 的窗口不会再回来放锁 ⇒ 这里替它放掉，并留痕（否则锁会僵死到 TTL）
-            _release_window_locks(conn, w_row["window_id"], now, "窗口进程已死（惰性对账）")
-    # M6-0：对账顺带回收陈旧/错位认领（离场/已死窗口、或跨项目窗口扣住的信），避免来信被静默隐藏。
-    _release_stale_claims(conn)
+    _mark_dead_windows(conn, now)
+    # M6-0：对账顺带回收陈旧/错位/超时认领（否则来信会被静默隐藏）。
+    _release_stale_claims(conn, now)
 
 
 def _orphan_window_cases(
@@ -4195,6 +4261,13 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
             human = node
             break
     human_stale = bool(human and nodes and nodes[-1].get("id") != human.get("id"))
+    # 停滞黄灯：未封卷 + 最后一个节点超过 STALL_HOURS 没动 ⇒ 看板标黄（**只提示**，程序不处置）。
+    stalled_hours = 0.0
+    last_at = (nodes[-1].get("created_at") if nodes else row["created_at"]) or ""
+    moment = _parse_utc(last_at)
+    if moment is not None:
+        stalled_hours = max(0.0, (datetime.now(timezone.utc) - moment).total_seconds() / 3600)
+    stalled = bool(not sealed and moment is not None and stalled_hours >= STALL_HOURS)
     header_line = f"状态：{status_display}" + ("（已封卷）" if sealed else "")
     lines = [header_line, *(n["line"] for n in nodes)]
     return {
@@ -4219,6 +4292,8 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         "human_at_beijing": (human or {}).get("created_at_beijing", ""),
         # 人话过期 = 这行之后又发生了别的事 ⇒ 看板上的说法可能已经不准，该由 coordinator 重写
         "human_stale": human_stale or (human is None and bool(nodes)),
+        "stalled": stalled,
+        "stalled_hours": round(stalled_hours, 1),
         "milestones": milestones,
         "milestones_total": len(milestones),
         "milestones_done": sum(1 for item in milestones if item["done"]),

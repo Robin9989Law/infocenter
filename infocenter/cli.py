@@ -500,6 +500,8 @@ def main(argv=None) -> int:
                     "task_id": args.task_id,
                     "note": args.note,
                     "force": bool(args.force),
+                    # --changed 的语义是"锁我这批脏文件"：别人锁着的脏文件不是我该拿的，跳过并报告
+                    "skip_locked": bool(args.changed),
                 },
                 home=home,
             )
@@ -1015,7 +1017,12 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
             wbs = item.get("wbs_path") or "未归类"
             total = item.get("milestones_total") or 0
             reached = f"  里程碑 {item.get('milestones_done', 0)}/{total}" if total else ""
-            stale = "  ⚠人话过期" if item.get("human_stale") else ""
+            marks = []
+            if item.get("human_stale"):
+                marks.append("人话过期")
+            if item.get("stalled"):
+                marks.append(f"停滞 {item.get('stalled_hours')}h")
+            stale = ("  ⚠ " + " / ".join(marks)) if marks else ""
             print(
                 f"{item.get('id')}  {item.get('status_label') or item.get('status')}  {owner}  "
                 f"[{wbs}]  {item.get('title')}{reached}{stale}"
@@ -1071,6 +1078,8 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
         for item in rows:
             tail = f"（任务 {item['task_id']}）" if item.get("task_id") else ""
             print(f"  {item['path']}{tail}")
+        for item in payload.get("skipped") or []:
+            print(f"  ⏭ 跳过（{item['agent']} 锁着）：{item['path']}")
         return
     if cmd == "unlock" and not as_json:
         count = payload.get("released_count")

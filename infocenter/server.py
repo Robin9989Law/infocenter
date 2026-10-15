@@ -4,6 +4,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -212,6 +213,36 @@ def claim(home):
     return "claimed", url
 
 
+SWEEP_INTERVAL = 60.0
+
+
+def _start_sweeper(store, interval: float = SWEEP_INTERVAL, stop_event=None) -> threading.Thread:
+    """后台定时器：只跑**死流程回收**（过期锁 / 死进程窗口 / 僵尸认领）。
+
+    为什么要有它（pi 2026-10-15 报的洞）：回收原来只在"别人 inbox 时顺手"触发，
+    低活跃项目可能几天都不触发 ⇒ 僵尸认领把信对着团队隐藏很久。死流程该由机器自己兜。
+
+    两个实现细节（都用血的教训换来的）：
+      ① **用 `Event.wait` 而不是 `time.sleep`**：测试里会用 `patch.object(crew.time, "sleep")`
+         打桩全局 `time.sleep`（idle guard 的假时钟就是这么做的）；若本线程调 `time.sleep`，
+         就会被假时钟带着**空转冲刺**，把那条测试的时间轴冲飞（实测：心跳间隔被算成 10568s）。
+      ② 给出 `stop_event`：调用方（测试 / 关服务）能干净地把它停掉。
+    """
+    stop = stop_event or threading.Event()
+
+    def loop() -> None:
+        while not stop.wait(interval):
+            try:
+                store.sweep()
+            except Exception as exc:  # 后台兜底绝不能把服务搞崩
+                sys.stderr.write(f"[sweep] 失败（忽略，下轮再来）：{exc}\n")
+
+    thread = threading.Thread(target=loop, name="ic-sweep", daemon=True)
+    thread.stop_event = stop  # 让调用方能停
+    thread.start()
+    return thread
+
+
 def bind_and_serve(host: str, port: int, home, notify=None) -> int:
     state, url = claim(home)
     if state == "running":
@@ -251,6 +282,7 @@ def bind_and_serve(host: str, port: int, home, notify=None) -> int:
         os.close(notify)
     else:
         print(url, flush=True)
+    _start_sweeper(store)  # 死流程回收：过期锁 / 死进程窗口 / 僵尸认领（不靠人触发）
     httpd.serve_forever()
     return 0
 
