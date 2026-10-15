@@ -29,6 +29,8 @@ class WriteLockStoreTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
         os.environ["INFOCENTER_QUIET"] = "1"
+        # 宿主 agent 会话的窗口号不能漏进被测请求（同 test_lock_queue 的修法）
+        os.environ.pop("INFOCENTER_WINDOW", None)
         self.store = Store(
             self.home / "mailbox.db",
             seeds=[

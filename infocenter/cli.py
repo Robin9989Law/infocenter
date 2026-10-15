@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -238,7 +239,7 @@ def main(argv=None) -> int:
     locks = sub.add_parser("locks", help="看现在谁锁了什么（写锁）")
     lock = sub.add_parser("lock", help="拿写锁：同一时间只有一个 agent 能改同一路径")
     lock.add_argument("paths", nargs="*", help="要锁的路径（相对路径会解析成绝对路径）")
-    lock.add_argument("--ttl", type=int, default=None, help="锁的有效秒数（默认 1800，最长 12h）")
+    lock.add_argument("--ttl", type=int, default=None, help="锁的有效秒数（默认 1800，最短 30，最长 12h）")
     lock.add_argument("--task", dest="task_id", default=None, help="这次改的是哪个任务")
     lock.add_argument("--note", default=None, help="为什么锁")
     lock.add_argument("--force", action="store_true", help="强制抢占（仅 coordinator）")
@@ -665,6 +666,10 @@ def _todo_add(agent: str, line: str) -> str:
 
     写进文件（不是只留库里）才叫"别忘了"：agent 的心跳提示词本来就是"读自己的 TODO-<名字>.md
     → 推进下一件"，所以这一行会被它下一次心跳捡起来 —— 轮到那条时**能拿到钥匙就做**。
+
+    TODO 文件本身可能正被「锁＝只读」管着（任何被锁过又放回的文件都停在只读态）——
+    而 queue 恰恰是没拿到钥匙时的退路，退路不能再被同一道闸挡死：这里临时加 u+w、
+    写完把权限位原样恢复（程序自己的合规写入，与 store 拿/放钥匙时的 chmod 同源）。
     """
     path = _todo_path(agent)
     entry = f"- [ ] {line}"
@@ -675,12 +680,25 @@ def _todo_add(agent: str, line: str) -> str:
                 return str(path)
             if not text.endswith("\n"):
                 text += "\n"
-            path.write_text(text + entry + "\n", encoding="utf-8")
+            _write_through_readonly(path, text + entry + "\n")
         else:
             path.write_text(f"# TODO · {agent}\n\n{entry}\n", encoding="utf-8")
     except OSError as exc:
         raise MailError("todo_unwritable", f"写不进 TODO 文件 {path}：{exc}", 500) from None
     return str(path)
+
+
+def _write_through_readonly(path: Path, text: str) -> None:
+    """写可能停在只读态的文件：临时加 u+w，写完恢复原权限位（只读态不受这一笔影响）。"""
+    mode = path.stat().st_mode & 0o7777
+    if mode & 0o200:
+        path.write_text(text, encoding="utf-8")
+        return
+    os.chmod(path, mode | 0o200)
+    try:
+        path.write_text(text, encoding="utf-8")
+    finally:
+        os.chmod(path, mode)
 
 
 def _anchor_path(value) -> "Path":

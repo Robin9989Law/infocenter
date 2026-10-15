@@ -106,6 +106,10 @@ class McpQualityTest(unittest.TestCase):
         env["INFOCENTER_URL"] = self.url
         env["INFOCENTER_QUIET"] = "1"
         env["PYTHONPATH"] = str(ROOT)
+        # 宿主若是 agent 会话，INFOCENTER_AGENT/WINDOW 会漏进被测子进程
+        # （身份被预绑 ⇒ tools/list 不再要求显式 agent 参数，test_line_json 必红）
+        env.pop("INFOCENTER_AGENT", None)
+        env.pop("INFOCENTER_WINDOW", None)
         return env
 
     def _spawn(self, *args: str) -> subprocess.Popen:

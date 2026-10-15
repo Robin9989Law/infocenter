@@ -165,6 +165,9 @@ class PendingChangeHttpTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
         os.environ["INFOCENTER_QUIET"] = "1"
+        # 宿主若是 agent 会话，INFOCENTER_WINDOW 会经 client.request 漏进被测请求
+        # （窗口先被前一个身份占掉 ⇒ 后一个身份 window_conflict）
+        os.environ.pop("INFOCENTER_WINDOW", None)
         self.store = Store(
             self.home / "mailbox.db",
             seeds=[("opencode", "OpenCode", "coordinator"), ("cursor", "Cursor", ""), ("grok", "Grok", "")],
