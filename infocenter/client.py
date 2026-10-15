@@ -147,12 +147,30 @@ def request(
     return payload
 
 
-def call(explicit, agent: str, method: str, path: str, body=None, query=None, home=None, window: str | None = None, pid: int | None = None):
-    url = ensure_server(explicit, home)
+def request_mail(
+    url: str,
+    method: str,
+    path: str,
+    agent: str,
+    body=None,
+    query=None,
+    timeout: float = 30,
+    window: str | None = None,
+    pid: int | None = None,
+):
+    """在已经确定的 url 上发请求，把 ApiError 译成 MailError。不拉起服务。"""
     try:
-        return request(url, method, path, agent, body, query, window=window, pid=pid)
+        return request(
+            url, method, path, agent, body, query,
+            timeout=timeout, window=window, pid=pid,
+        )
     except ApiError as exc:
         raise MailError(exc.code, str(exc), exc.status) from exc
+
+
+def call(explicit, agent: str, method: str, path: str, body=None, query=None, home=None, window: str | None = None, pid: int | None = None):
+    url = ensure_server(explicit, home)
+    return request_mail(url, method, path, agent, body, query, window=window, pid=pid)
 
 
 def _window_header(window: str | None) -> str:

@@ -28,7 +28,7 @@ import time
 from pathlib import Path
 
 from infocenter import config
-from infocenter.client import NO_PID_ENV, ApiError, request
+from infocenter.client import NO_PID_ENV, ApiError, request, request_mail
 from infocenter.store import (
     MailError,
     _workspace_scope,
@@ -1223,10 +1223,8 @@ def _in_project(item: dict, project: str | None) -> bool:
 
 
 def _api(url: str, method: str, path: str, agent: str, body=None, query=None):
-    try:
-        return request(url, method, path, agent, body, query)
-    except ApiError as exc:
-        raise MailError(exc.code, str(exc), exc.status) from exc
+    # 守护循环已经有 url。只翻译错误，不走 ensure_server，避免顺手把服务拉起来。
+    return request_mail(url, method, path, agent, body, query)
 
 
 def build_prompt(agent: str, project: str, fresh: list[dict], unread_total: int) -> str:
