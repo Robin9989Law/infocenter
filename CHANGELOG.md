@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`ic status` 空钥匙灯**：盘上有改动、却没有任何未过期写锁覆盖它 ⇒ 一行 `⚠ 盘上有改动没人持钥匙：…（要么提交，要么 ic lock 再动。只提示，不拦）`，`--json` 带 `unlocked_dirty`。来源：实测两次——写了文档/测试、放了钥匙、**忘了提交**，那几行躺在工作区里，别人又不能替你提交 ⇒ 收口卡住。读不到 git / 读不到锁就闭嘴（灯不挡看状态）。
 - **看板减噪：默认只列未封卷的，没实质内容的打 `[信]` 标（不藏）**。任何 thread 都能当案卷 ⇒ 每封派单/回信/报告都长成"卷"、还各自挂着「⚠ 没写怎样算完」（实测 148 条里大半是**已封卷的历史**，混在一起才显得吵）。现在：`_case_view` 出一个**派生标记** `substantive`（验收 / 里程碑 / WBS 三选一，**不给信加字段、不建表**）；`ic cases` 默认只列未封卷、把没实质内容的打 `[信]` 标、封卷的折成一行（`--all` 看全；`--json` 不动），控制台的案卷栏同一口径（折已封卷、给信打标签）。**判据被真数据修正过两次**，两次都记在案：①第一版按 `substantive` 过滤——查数据发现【触发 S6】那类**派单线程是活**（在办、5 封信，却啥也没有）⇒ 改成不藏；②"92% 是信"这个数我一开始读错了（里面大半是已封卷的历史，不是活）⇒ 才有"默认只列未封卷"。**已知缺口（登记）**：展示层没法可靠区分"真案卷 vs 派单线程"（三条立案路径的列完全一样）⇒ 要么立案时留显式标记、要么给派单线程一等公民身份，属改数据模型，**单开一笔**。
 
+### Fixed
+- **`pyproject.toml` 的 `license` 改成 SPDX 字符串，清掉打包弃用告警**：原先写 `license = { text = "MIT" }`（表形式），每次构建都刷
+  `SetuptoolsDeprecationWarning: project.license as a TOML table is deprecated`，setuptools 给的期限是 **2027-02-18**；更要紧的是它把 wheel 元数据落成旧的自由文本字段
+  `License: MIT`。现在写 `license = "MIT"`（PEP 639），元数据变成规范字段 `License-Expression: MIT`，`LICENSE` 文件照旧进 `dist-info/licenses/`。
+  这条写法要求 **setuptools>=77**，故 `[build-system] requires` 一并从 `setuptools>=68` 提到 `setuptools>=77`（构建走隔离环境，本地无需装）。
+  改前/改后各构建一次对照验证：改前那次告警两条、改后那次告警为零（`Metadata-Version` 两版都是 2.4，差别只在 license 字段本身）。
+  顺手记一笔**没动的既有告警**：`Package 'infocenter.web' is absent from the packages configuration`——改前就有，wheel 里 `web/index.html` 靠
+  `[tool.setuptools.package-data]` 正常带上，功能不受影响；要清它得碰 `[tool.setuptools]` 的包发现配置，属另一笔，不夹在这里。
+
 ## [0.5.0] - 2026-10-16
 
 > **首个公开版。** 这一版把「一台机器上多个 AI agent 互相派活」做成了真能跑的东西：任务队列（工作包）、

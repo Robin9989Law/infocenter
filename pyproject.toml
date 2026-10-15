@@ -1,5 +1,7 @@
 [build-system]
-requires = ["setuptools>=68"]
+# license 用 SPDX 字符串（PEP 639）需要 setuptools>=77；旧写法 {text="MIT"} 会发
+# `project.license` as a TOML table is deprecated 告警，并被打包成过时的 License 字段。
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +10,10 @@ dynamic = ["version"]
 description = "本地异步留言板：任何 agent 用同一个 HTTP/MCP 接口互发留言"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+# SPDX 字符串写法（PEP 639）：旧的 `{ text = "MIT" }` 表形式已被 setuptools 弃用，
+# 构建时报 `project.license` as a TOML table is deprecated，并会在 wheel 元数据里
+# 退化成自由文本 `License-Deprecated`。改成 SPDX 后元数据落 `License-Expression: MIT`。
+license = "MIT"
 
 [project.scripts]
 ic = "infocenter.cli:main"
