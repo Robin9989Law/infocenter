@@ -161,6 +161,23 @@ def _cooldown_seconds(item: dict, kind: str) -> int:
     return max(0, min(_int_or(item, key, default), 30 * 86400))
 
 
+def _cooldown_failure(outcome: str) -> bool:
+    """这次 headless 的结局算不算「失败」到要点名冷却。
+
+    **「超时」不算**：超时只说明这一轮跑得久（模型慢、活重），不是模型坏了——
+    把超时按失败处理会变成「配置的超时压得比默认短 ⇒ 慢模型必被判死 ⇒ 冷却一小时 ⇒
+    必然空转」的死循环。超时走退避重试（游标留在原地、下一轮原样重投），不计数、不进冷却。
+    """
+    return outcome != "timeout"
+
+
+def _should_cooldown(outcome: str, failure_streak: int, threshold: int) -> bool:
+    """要不要进冷却：额度/鉴权不可用（quota）立刻冷却；其余失败累计到阈值才冷却；超时永不冷却。"""
+    if outcome == "quota":
+        return True
+    return _cooldown_failure(outcome) and failure_streak >= max(1, int(threshold))
+
+
 def _idle_backoff_enabled(item: dict) -> bool:
     val = item.get("idle_backoff")
     if val is None:
@@ -584,6 +601,24 @@ def _headless_timeout_seconds(item: dict) -> int:
     except (TypeError, ValueError):
         secs = HEADLESS_TIMEOUT
     return max(10, min(secs, 7 * 86400))
+
+
+def _urgent_mail_waiting(url: str, agent: str, project: str, cursor: int) -> int:
+    """冷却期内的「新指令」探测：只数**高优先级**的新信，不看普通信。
+
+    冷却不该把新指令一起关在门外（该治的是「模型不可用」，不是「别人找你」）。
+    探测失败一律当 0（探测本身出错不能搅乱冷却状态）；wait=0，只问一句就走，不阻塞。
+    """
+    try:
+        payload = request(
+            url, "GET", "/v1/events", agent,
+            query={"since": str(cursor), "wait": "0", "limit": "20", "workspace": project},
+            timeout=10,
+        )
+    except (SystemExit, ApiError, OSError, ValueError, KeyError):
+        return 0
+    fresh = payload.get("new") or []
+    return sum(1 for msg in fresh if str(msg.get("priority") or "").lower() == "high")
 
 
 def up(home, url: str, project: str, only: str = "", dry_run: bool = False) -> dict:
@@ -1297,6 +1332,24 @@ def watch(
                     )
                     cooldown_logged = True
                     _set_cooldown_meta(home, key, cooldown_kind, left)
+                # 冷却不吞新指令：冷却期内仍看一眼有没有**高优先级**新信。有就提前结束冷却——
+                # 冷却治的是「模型不可用」，不该把别人发来的新指令（要命的活）一起关在门外。
+                urgent = _urgent_mail_waiting(url, agent, project, cursor)
+                if urgent:
+                    print(
+                        f"[{beijing_stamp()}] {agent} 冷却期内收到 {urgent} 封高优先级新信 ⇒ "
+                        f"提前结束冷却，立刻处理新指令",
+                        flush=True,
+                    )
+                    cooldown_until = 0.0
+                    cooldown_logged = False
+                    failure_streak = 0
+                    retry_rounds = 0
+                    idle_rounds = 0
+                    interrupted_noted = False
+                    last_run = time.monotonic()
+                    _set_cooldown_meta(home, key, "", 0)
+                    continue
                 time.sleep(min(60.0, max(1.0, cooldown_until - time.monotonic())))
                 continue
             if cooldown_until:
@@ -1352,13 +1405,15 @@ def watch(
                     _reassert_office_pid(url, agent, window_id, project)
                     if outcome in _HEADLESS_RETRY:
                         retry_rounds += 1
-                        failure_streak += 1
+                        # 超时不算失败：不涨 failure_streak，也就永远不会因此进冷却（见 _cooldown_failure）。
+                        if _cooldown_failure(outcome):
+                            failure_streak += 1
                         idle_rounds = 0
                         # N2：同一批信只补一次 [自动] 中断节点，避免永久失败时刷屏写一堆。
                         if not interrupted_noted:
                             _note_interrupted(url, agent, window_id, fresh)
                             interrupted_noted = True
-                        if outcome == "quota" or failure_streak >= _failure_threshold(entry or {}):
+                        if _should_cooldown(outcome, failure_streak, _failure_threshold(entry or {})):
                             cooldown_until = time.monotonic() + _cooldown_seconds(entry or {}, outcome)
                             cooldown_kind = "额度/鉴权不可用" if outcome == "quota" else "连续失败"
                             cooldown_logged = False
@@ -1369,9 +1424,10 @@ def watch(
                             )
                         else:
                             delay = _retry_delay(retry_rounds)
+                            why = "超时不算失败，只退避重试" if outcome == "timeout" else f"第 {retry_rounds} 次重试"
                             print(
                                 f"[{beijing_stamp()}] headless {outcome}，游标留在 {cursor}，"
-                                f"第 {retry_rounds} 次重试，{delay}s 后",
+                                f"{why}，{delay}s 后",
                                 flush=True,
                             )
                             time.sleep(delay)
@@ -1399,15 +1455,22 @@ def watch(
                     _commit(new_cursor)
                     last_run = time.monotonic()
                     if h_outcome in _HEADLESS_RETRY:
-                        failure_streak += 1
+                        if _cooldown_failure(h_outcome):
+                            failure_streak += 1
                         idle_rounds = 0
-                        if h_outcome == "quota" or failure_streak >= _failure_threshold(entry or {}):
+                        if _should_cooldown(h_outcome, failure_streak, _failure_threshold(entry or {})):
                             cooldown_until = time.monotonic() + _cooldown_seconds(entry or {}, h_outcome)
                             cooldown_kind = "额度/鉴权不可用" if h_outcome == "quota" else "连续失败"
                             cooldown_logged = False
                             print(
                                 f"[{beijing_stamp()}] 心跳 headless {h_outcome}，连续 {failure_streak} 次失败 ⇒ "
                                 f"{cooldown_kind}，进入冷却",
+                                flush=True,
+                            )
+                        elif h_outcome == "timeout":
+                            print(
+                                f"[{beijing_stamp()}] 心跳 headless 超时（{htimeout}s）⇒ 不算失败、不进冷却，"
+                                f"按心跳间隔再来",
                                 flush=True,
                             )
                     else:

@@ -158,10 +158,16 @@ class IdleGuardWatchTest(unittest.TestCase):
             "new": [{"id": "m1", "from": "opencode", "subject": "信", "workspace": project}],
         }]
         polls = []
+        probes = []
         headless_calls = []
         cooldown_calls = []
 
         def fake_request(*_a, **_k):
+            # 冷却期内的「新指令」探测是 wait=0 的轻探：**不算轮询新信**，也不消耗待投递队列。
+            query = _k.get("query") or {}
+            if str(query.get("wait")) == "0":
+                probes.append(clock[0])
+                return {"new": []}
             polls.append(clock[0])
             if events:
                 return events.pop(0)
@@ -187,10 +193,12 @@ class IdleGuardWatchTest(unittest.TestCase):
             with self.assertRaises(StopIteration):
                 crew.watch(self.home, "cursor", project, self.url, poll=5)
 
-        # 只跑了 1 次 headless（命中额度即冷却，不再每轮重试）；冷却期内不轮询，
-        # 冷却结束才恢复（时钟 1000 起、冷却 600s ⇒ 第二次轮询在 1600，随即 StopIteration）。
+        # 只跑了 1 次 headless（命中额度即冷却，不再每轮重试）；冷却期内**不再轮询新信**
+        # （游标留着，冷却后再投递），但仍会每分钟轻探一次「新指令」（wait=0）；探到的是普通信
+        # ⇒ 冷却照旧走完（时钟 1000 起、冷却 600s ⇒ 恢复轮询在 1600，随即 StopIteration）。
         self.assertEqual(len(headless_calls), 1)
         self.assertEqual(polls, [1000.0, 1600.0])
+        self.assertEqual(len(probes), 10)  # 1000,1060,…,1540 每分钟一次
         # 冷却期间隔约等于 permanent_cooldown 之后才恢复
         self.assertGreaterEqual(clock[0] - 1000.0, 600)
         # 进入冷却写了一次「额度/鉴权不可用」，冷却结束清了一次
@@ -198,6 +206,61 @@ class IdleGuardWatchTest(unittest.TestCase):
         self.assertEqual(cooldown_calls[-1][0], "")
         # 游标未推进（冷却期内的新信要留着，冷却后再投递）
         self.assertFalse(crew._cursor_file(self.home, crew._key("cursor", project)).exists())
+
+    def test_high_priority_mail_breaks_cooldown(self):
+        """冷却不吞新指令：冷却期内探到**高优先级**新信 ⇒ 提前结束冷却、立刻处理（human 2026-10-15）。
+
+        反例（旧行为）：冷却期内根本不收信 ⇒ 新指令干等到冷却结束才被看见。
+        """
+        project = str(Path(tempfile.mkdtemp(dir=str(self.home), prefix="projUrgent")).resolve())
+        self._write_config(permanent_cooldown=600)
+        clock = [1000.0]
+        normal = {"cursor": 1, "unread_total": 1,
+                  "new": [{"id": "m1", "from": "opencode", "subject": "普通信", "workspace": project}]}
+        urgent = {"cursor": 2, "unread_total": 1,
+                  "new": [{"id": "m9", "from": "human", "subject": "新指令", "priority": "high",
+                           "workspace": project}]}
+        real_polls = [normal, urgent]
+        probe_state = {"n": 0}
+        headless_calls = []
+        cooldown_calls = []
+
+        def fake_request(*_a, **_k):
+            query = _k.get("query") or {}
+            if str(query.get("wait")) == "0":
+                # 第一次轻探：还没有新指令；第二次轻探：来了一封高优先级新信。
+                probe_state["n"] += 1
+                return {"new": []} if probe_state["n"] < 2 else urgent
+            if real_polls:
+                return real_polls.pop(0)
+            raise StopIteration("done")
+
+        def fake_headless(*_a, **_k):
+            headless_calls.append(clock[0])
+            return "quota" if len(headless_calls) == 1 else "ok"
+
+        def fake_sleep(sec):
+            clock[0] += float(sec)
+
+        def fake_cooldown(_home, _key, kind, seconds):
+            cooldown_calls.append((kind, seconds))
+
+        with (
+            patch.object(crew.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(crew.time, "sleep", side_effect=fake_sleep),
+            patch.object(crew, "request", side_effect=fake_request),
+            patch.object(crew, "_run_headless", side_effect=fake_headless),
+            patch.object(crew, "_set_cooldown_meta", side_effect=fake_cooldown),
+        ):
+            with self.assertRaises(StopIteration):
+                crew.watch(self.home, "cursor", project, self.url, poll=5)
+
+        # 第 1 次 headless 命中额度进冷却；冷却期内轻探到高优先级新信 ⇒ 1060 就再跑一次，
+        # 而不是干等到冷却结束的 1600。
+        self.assertEqual(headless_calls, [1000.0, 1060.0])
+        self.assertLess(clock[0], 1600.0)
+        # 冷却被清掉（写了一次 ""），这样新指令不用等冷却
+        self.assertEqual(cooldown_calls[-1][0], "")
 
     def test_consecutive_failures_enter_cooldown_at_threshold(self):
         project = str(Path(tempfile.mkdtemp(dir=str(self.home), prefix="projFail")).resolve())
