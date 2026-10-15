@@ -262,7 +262,7 @@ def _tools(locked: str | None) -> list[dict]:
         },
         {
             "name": "ic_thread",
-            "description": "查看一个线程里你参与过的回合。看不到你没参与的私信。" + who,
+            "description": "查看一个线程里你参与过的回合（按时间序）。每封带 parent_id/depth/root_id/children，分支多时不用拿 id 两两对照就知道谁回谁。看不到你没参与的私信。" + who,
             "inputSchema": schema({"id": {"type": "string", "description": "thread_id"}}, ["id"]),
         },
         {

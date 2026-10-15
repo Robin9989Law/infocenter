@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`ic_thread` 线程树定位**：线程仍按时间序返回，但每封信多带 `parent_id` / `depth` / `root_id` / `children`（纯派生，存储不变、不嵌套）。agent 不必拿 id 两两对照就能看出谁回谁、某分支在第几层，可只聚焦某个分支。可见集内构树：父信不可见（未参与/跨线程导入）时该封按根处理，但 `parent_id` 仍返回真实 `reply_to`
 - **空转治理（idle guard）**：守护命中模型**额度/鉴权上限**（输出含 `usage limit` / `quota` / `invalid credential` / `401` 等）不再按 `heartbeat` 间隔硬撞，而是进入**永久失败长冷却**（`permanent_cooldown`，缺省 6h）；普通失败连续达 `failure_threshold` 次进入短冷却（`failure_cooldown`，缺省 1h）。冷却期内不触发 headless（**新信也不跑、游标不前进**，冷却结束重新投递），`ic crew status` 标注「额度/鉴权不可用，剩 N 分钟」
 - **心跳空转退避**：心跳「空转」（`progress_files`，默认 `TODO-<名字>.md`，未变）时间隔按 ×2 指数拉长，封顶 `idle_backoff_max`（缺省 2h）；新信或进展出现即复位。可 `idle_backoff: false` 关闭
 - **headless 永久失败分类**：`_run_headless` 非零退出按输出尾部归为 `quota`（永久）或 `fail`（可重试），写入 `*.runs.jsonl`

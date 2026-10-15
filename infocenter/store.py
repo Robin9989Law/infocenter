@@ -1156,6 +1156,38 @@ class Store:
             ).fetchall()
             if not rows:
                 raise MailError("not_found", "没有这封信，或者你不在其中", 404)
+            # 树结构派生（不改存储、不嵌套）。agent 定位用：扁平数组 + 每封自带
+            # parent_id/depth/children/root_id，仍按时间序排列。
+            # 只在可见集内构树：父信不在可见集（未参与/跨线程导入）时该封按根处理，
+            # 但 parent_id 仍返回真实 reply_to，不掩盖事实。
+            ids = {row["id"] for row in rows}
+            children_map: dict[str, list[str]] = {row["id"]: [] for row in rows}
+            parent_of: dict[str, str | None] = {}
+            for row in rows:
+                parent = row["reply_to"]
+                in_thread = parent if parent in ids else None
+                parent_of[row["id"]] = in_thread
+                if in_thread:
+                    children_map[in_thread].append(row["id"])
+            depth_map: dict[str, int] = {}
+            root_map: dict[str, str] = {}
+            for row in rows:
+                if row["id"] in depth_map:
+                    continue
+                chain: list[str] = []
+                cur: str | None = row["id"]
+                # 逐级上溯；cycle 或不可见父信即停（chain 内的节点防御性防环）。
+                while cur is not None and cur not in depth_map and cur not in chain:
+                    chain.append(cur)
+                    cur = parent_of.get(cur)
+                if cur is not None and cur in depth_map:
+                    base, base_root = depth_map[cur] + 1, root_map[cur]
+                else:
+                    base, base_root = 0, chain[-1]
+                for node in reversed(chain):
+                    depth_map[node] = base
+                    root_map[node] = base_root
+                    base += 1
             messages = []
             for row in rows:
                 delivery = conn.execute(
@@ -1172,6 +1204,11 @@ class Store:
                     delivery["claimed_by"] if delivery else None,
                     delivery["claimed_at"] if delivery else None,
                 )
+                # 树结构派生字段：agent 靠它们定位分支，无需拿 id 两两对照。
+                view["parent_id"] = row["reply_to"]
+                view["depth"] = depth_map[row["id"]]
+                view["root_id"] = root_map[row["id"]]
+                view["children"] = children_map[row["id"]]
                 # 只给发件人补收件人回执。delivery_status/read_at 仍是查看者自己的那份，语义不变。
                 if row["from_agent"] == agent:
                     view["recipient_receipts"] = _delivery_receipts(conn, row["id"])

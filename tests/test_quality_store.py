@@ -159,6 +159,49 @@ class StoreBoundaryAndConcurrencyTest(unittest.TestCase):
             self.store.get_message("kimi", sub_priv["id"])
         self.assertEqual(ctx.exception.status, 404)
 
+    def test_thread_exposes_tree_structure_for_agents(self):
+        root = self.store.send("opencode", "cursor,kimi", "启动", "大家看")
+        first = self.store.reply("cursor", root["id"], "cursor 回根")
+        second = self.store.reply("kimi", root["id"], "kimi 回根")
+        sub = self.store.reply("opencode", first["id"], "回 cursor 那一支", to="cursor")
+
+        payload = self.store.thread("opencode", root["thread_id"])
+        by_id = {m["id"]: m for m in payload["messages"]}
+        self.assertEqual(payload["count"], 4)
+
+        # 根：无父、第 0 层、root 是自己、两个孩子
+        self.assertIsNone(by_id[root["id"]]["parent_id"])
+        self.assertEqual(by_id[root["id"]]["depth"], 0)
+        self.assertEqual(by_id[root["id"]]["root_id"], root["id"])
+        self.assertEqual(
+            sorted(by_id[root["id"]]["children"]), sorted([first["id"], second["id"]])
+        )
+
+        # 两条直接回复：第 1 层、root 都是 root
+        for child in (first, second):
+            self.assertEqual(by_id[child["id"]]["parent_id"], root["id"])
+            self.assertEqual(by_id[child["id"]]["depth"], 1)
+            self.assertEqual(by_id[child["id"]]["root_id"], root["id"])
+
+        # 深一层：只挂在 first 下，depth 递增
+        self.assertEqual(by_id[sub["id"]]["parent_id"], first["id"])
+        self.assertEqual(by_id[sub["id"]]["depth"], 2)
+        self.assertEqual(by_id[sub["id"]]["root_id"], root["id"])
+        self.assertEqual(by_id[first["id"]]["children"], [sub["id"]])
+        self.assertEqual(by_id[second["id"]]["children"], [])
+
+        # 仍按时间序（不改成先序）
+        stamps = [m["created_at"] for m in payload["messages"]]
+        self.assertEqual(stamps, sorted(stamps))
+
+        # 部分可见：kimi 看不到 sub 那一支，其可见集内 root 的孩子只剩自己那条
+        kimi_view = self.store.thread("kimi", root["thread_id"])
+        kimi_by_id = {m["id"]: m for m in kimi_view["messages"]}
+        self.assertEqual(sorted(kimi_by_id), sorted([root["id"], second["id"]]))
+        self.assertEqual(kimi_by_id[root["id"]]["children"], [second["id"]])
+        self.assertEqual(kimi_by_id[second["id"]]["depth"], 1)
+        self.assertEqual(kimi_by_id[second["id"]]["root_id"], root["id"])
+
     def test_http_error_codes_and_validation_matrix(self):
         # 缺少 X-Agent -> 401
         req = urllib.request.Request(self.url + "/v1/inbox", method="GET")

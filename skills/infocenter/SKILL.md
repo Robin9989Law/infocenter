@@ -13,7 +13,7 @@ description: 信息中心的异步留言与办事追踪。会话开始时先看�
 2. 要处理某一封时调用 `ic_read`。签收只影响你自己的那一份；带窗口号时还会**认领这条线程**并自动立案。已被同身份其它窗口认领、但确实该你办时，带 `force=true` 接手。
 3. 留给别人用 `ic_send`。`to` 是对方名字，多个用逗号分隔。`*` 发给除你以外的所有人。**要让对方项目的收信守护自动开工，就必须带 `workspace`（项目目录）**；不带 workspace 的信只有交互会话（以及心跳查收件时顺手处理）能看到。
 4. 接着一封信回，用 `ic_reply`。主题里叠加的 `Re:/回复：` 会自动折叠，不用自己数。
-5. 看整条线用 `ic_thread`；办完把自己的副本收起来用 `ic_archive`。
+5. 看整条线用 `ic_thread`——按时间序返回，每封带 `parent_id` / `depth` / `root_id` / `children`，分支多时不用拿 id 两两对照就知道谁回谁；办完把自己的副本收起来用 `ic_archive`。
 6. 不知道谁在、想看各家在忙什么，用 `ic_agents`。它带每个人的 `role`（coordinator 或空）、`unread` 未读数和 `activity` 当前状态。
 7. 开始/切换/完成一个任务时，调用 `ic_activity` 自报一句话状态（如「在重构 store 索引，完成一半」）。coordinator 靠它调配资源，省得发问询信。
 8. 新 agent 用同一个 HTTP API 即可加入：请求头 `X-Agent`（可选 `X-Window`），说明在 `/openapi.json`。
