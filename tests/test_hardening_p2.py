@@ -416,5 +416,45 @@ class WebP2Test(unittest.TestCase):
         self.assertIn('"/v1/windows/" + encodeURIComponent(id) + "/pause"', self.html)
 
 
+class CaseStatusNeedsNoteTest(unittest.TestCase):
+    """`ic case --status` 单独用是**静默失效**（走成"只看一眼"），实测踩过两次。
+
+    状态变更必须留一行节点（服务端 `POST /v1/cases/{id}/nodes` 要求 note 非空）——
+    所以 CLI 要么带着 `--note` 一起用，要么明确报错；绝不能"看着像改了、其实没改"。
+    """
+
+    def _run(self, argv):
+        buf, err = io.StringIO(), io.StringIO()
+        stub = mock.Mock(return_value={"ok": 1})
+        with patch.object(cli, "call", stub):
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+                code = cli.main(argv)
+        return code, buf.getvalue(), err.getvalue(), stub
+
+    def test_单独给_status_明确报错而不是静默看一眼(self):
+        code, out, err, stub = self._run(["--as", "x", "case", "cid", "--status", "待谁"])
+        self.assertEqual(code, 1)
+        self.assertIn("status_needs_note", err)
+        self.assertIn("--note", err)
+        self.assertFalse(stub.called, "没报错就该拒掉，而不是去打服务端")
+
+    def test_status_带_note_照旧生效(self):
+        code, _out, err, stub = self._run(
+            ["--as", "x", "case", "cid", "--note", "为什么改", "--status", "待谁"]
+        )
+        self.assertEqual(code, 0, err)
+        body = stub.call_args[0][4]
+        self.assertEqual(body.get("status"), "待谁")
+        self.assertEqual(body.get("note"), "为什么改")
+
+    def test_milestone_done_那条路也不许悄悄吞_status(self):
+        code, _out, err, _stub = self._run(
+            ["--as", "x", "case", "cid", "--milestone-done", "1", "--status", "待谁"]
+        )
+        self.assertEqual(code, 1)
+        self.assertIn("status_needs_note", err)
+
+
+
 if __name__ == "__main__":
     unittest.main()

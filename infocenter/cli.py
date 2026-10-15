@@ -436,6 +436,20 @@ def main(argv=None) -> int:
         elif args.cmd == "thread":
             payload = call(args.url, agent, "GET", f"/v1/threads/{args.id}", home=home)
         elif args.cmd == "case":
+            # `--status` 只在"写节点"那条路上生效（状态变更必须留一行节点，看板才知道你为什么改）。
+            # 单独给 `--status` 会**静默**走成"只看一眼"（实测连踩两次）⇒ 明确拒，并说清怎么写。
+            if args.status and not (
+                args.note
+                and args.milestone_add is None
+                and args.milestone_done is None
+                and args.acceptance is None
+            ):
+                raise MailError(
+                    "status_needs_note",
+                    "改案卷状态要跟 `--note` 一起用——状态变更必须留一行节点，看板才知道你为什么改："
+                    "`ic case <id> --note \"为什么改\" --status 待谁`。"
+                    "（`--milestone-*` / `--acceptance` 那几条路都不带状态。）",
+                )
             if args.milestone_add:
                 body = {"name": args.milestone_add}
                 if args.milestone_owner:
