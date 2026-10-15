@@ -1,7 +1,7 @@
 """M6-0b：活窗口的 pid 不被短命 touch 改写。
 
 headless 子进程继承宿主窗口号，再以自己的 pid 触达。若覆盖成功，子进程一退出，
-惰性对账就把仍活着的宿主窗口判死：名下未封卷案卷自动中止，未读认领被释放。
+惰性对账就把仍活着的宿主窗口判死（M7 起：**不中止案卷**，只摘指针 + 记一行）。
 
 H1：继承窗口的 ic mcp 退出不得 leave。H2：重申 pid 必须先写入、再对账，且在同一事务内。
 """
@@ -222,7 +222,12 @@ class LivePidGuardTest(unittest.TestCase):
         self.assertEqual(sealed, 0)
         self.assertEqual(status_name, "open")
 
-    def test_reassert_without_pid_still_seals_dead_window(self):
+    def test_reassert_without_pid_does_not_seal_dead_window(self):
+        """M7：主办窗口死了**不封卷**（宪法：案卷只随"事做完"关闭）。
+
+        自动只做无争议的两件：① 窗口标 left ② 摘掉主办窗口指针 + 记一行 [自动] 说明。
+        状态必须还是 open、sealed 必须还是 0——中止/办结要人显式做。
+        """
         case = self._open_case_on_dead_pid("w-dead")
         status, _payload = handle(
             "GET",
@@ -233,9 +238,14 @@ class LivePidGuardTest(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         again = self.store.get_case(case["id"])
-        self.assertTrue(again["sealed"])
-        self.assertEqual(again["status"], "aborted")
-        self.assertIn("主办离场", again["nodes"][-1]["note"])
+        self.assertFalse(again["sealed"], "不许自动封卷")
+        self.assertEqual(again["status"], "open")
+        self.assertIsNone(again["owner_window"], "指针要摘（窗口都没了）")
+        self.assertIn("保持未封卷", again["nodes"][-1]["note"])
+        self.assertTrue(again["nodes"][-1]["auto"])
+        # 案卷没封，就能接着办（M7 的关键：事没做完，案卷就该在）
+        self.store.append_case_node(case["id"], agent="grok", note="接手继续办")
+        self.assertEqual(self.store.get_case(case["id"])["nodes"][-1]["note"], "接手继续办")
 
     def test_http_guard_keeps_live_pid_and_rejects_other_agent(self):
         host = os.getpid()

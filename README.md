@@ -238,7 +238,7 @@ $ git commit -m "锚：留痕链头"          # 锚进了 git，才算落在库�
 
 - 之后 `ic audit` 会核对"锚点那一行还在不在、哈希还是不是原来的"⇒ 链被改、被截短、**整表重做**都会报「外锚对不上」。
 - 锚只保护**锚点之前**的历史；`ic audit` 会另报「锚点之后还有 N 行没被见证」，提示再打一次。
-- **习惯**：每次提交前 `ic audit --anchor`，把它和代码一起提交。
+- **习惯**：每次提交前 `ic audit --anchor`，把它和代码一起提交。**顺序**：`ic lock --changed` → `ic lock .infocenter-audit-anchor`（锚文件本身也要先锁，否则提交闸会拦）→ `ic audit --anchor` → `ic guard` → `git commit`。
 
 `.githooks/pre-commit` 会自动跑这两道（`ic guard --quiet --any-holder` + `ic audit --quiet`）；离线或服务不可达时不阻断，避免被锁死。确需绕过：`git commit --no-verify`。
 
@@ -533,13 +533,19 @@ ic sync once --dir ~/Drive/信息中心
 
 ```bash
 ic cases --workspace ~/projects/demo           # 本项目所有案卷
+ic cases --wbs 防混写                          # 某个 WBS（含子路径）下的案卷
 ic case m1a2b3c4                               # 某条线的案卷与节点
 ic case m1a2b3c4 --note "客户端已改，待复测" --status doing
+ic case m1a2b3c4 --wbs 防混写/锁与闸            # 归入 WBS（只有 coordinator 能改）
+ic case m1a2b3c4 --milestone-add "锁到期不许丢" --milestone-owner cursor
+ic case m1a2b3c4 --milestone-done 0            # 勾掉第 0 条（`!0` = 撤回完成）
 ```
 
 - 状态：**待办 / 在办 / 待谁 / 暂停 / 中止 / 办结**；**封卷后只读**（要改只能重开）。
 - 收局操作走 `ic crew pause|resume|abort|close <身份>`：暂停只打断当前一轮、可恢复；中止 / 办结会封卷。
-- 离场（收信守护进程退出）会**自动中止**该窗口名下未封卷的案卷，并补一行 `[自动]` 节点。
+- **层级**：`项目(workspace) → WBS(树) → 案卷(=控制包) → 任务`。**一个案卷唯一归属一个 WBS**；WBS **不建表**、就是路径（`父/子`），**空 = 未归类**（老案卷只归档不转）。WBS 负责人固定是 coordinator。
+- **里程碑**（案卷"做完没有"的清单）：案卷上的**一列 JSON**，**不建表**。`名字 / 负责人 / 完成没完成` 三格；**一个里程碑可对应若干任务**。**agent 提议、只有 coordinator 能改**；案卷只显示里程碑，任务细节不上看板。
+- **案卷只随"事做完"关闭**：窗口离场 / 进程死**不会**自动中止案卷——程序只做两件无争议的事：摘掉主办窗口指针 + 记一行 `[自动]` 说明（**状态不动、不封卷**）。要收工得显式 `abort` / `close`。
 
 ### 管理台 /ui
 

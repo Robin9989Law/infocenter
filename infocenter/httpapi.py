@@ -582,6 +582,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 owner_window=owner_win,
                 owner_agent=owner_ag,
                 limit=limit,
+                wbs=query.get("wbs", [None])[0],
             )
             return 200, {"cases": cases, "count": len(cases)}
         if method == "POST":
@@ -607,6 +608,8 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 to=body.get("to"),
                 body=_opt_str(body, "body"),
                 pid=req_pid,
+                wbs_path=body.get("wbs_path", body.get("wbs")),
+                milestones=body.get("milestones"),
             )
             return 201, created
 
@@ -648,6 +651,36 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                     window_id=window_id,
                     note=note,
                     pid=req_pid,
+                )
+            if action == "wbs":
+                if "wbs_path" not in body and "wbs" not in body:
+                    raise MailError("invalid_wbs", "需要提供 wbs_path（空串 = 未归类）", 400)
+                return 200, store.case_wbs_set(
+                    case_id,
+                    agent=agent,
+                    wbs_path=body.get("wbs_path", body.get("wbs")),
+                    window_id=window_id,
+                )
+            if action == "milestone":
+                return 200, store.case_milestone_add(
+                    case_id,
+                    agent=agent,
+                    name=_opt_str(body, "name") or _opt_str(body, "milestone") or "",
+                    owner=_opt_str(body, "owner"),
+                    window_id=window_id,
+                )
+            if action == "milestone-done":
+                raw = body.get("index", query.get("index", [None])[0])
+                done = body.get("done", True)
+                if isinstance(done, str):
+                    done = _flag(done)
+                return 200, store.case_milestone_done(
+                    case_id,
+                    agent=agent,
+                    index=raw,
+                    done=bool(done),
+                    window_id=window_id,
+                    note=note,
                 )
             if action in {"nodes", "note"}:
                 if not isinstance(note, str):

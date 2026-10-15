@@ -173,11 +173,18 @@ def main(argv=None) -> int:
     case.add_argument("id", help="案卷编号或线程 id")
     case.add_argument("--note", default=None, help="写回一行节点")
     case.add_argument("--status", default=None, help="顺手改案卷状态")
+    case.add_argument("--wbs", default=None, help="给案卷打 WBS 路径（如 防混写/锁与闸）")
+    case.add_argument("--milestone-add", dest="milestone_add", default=None,
+                      help="加一条里程碑（**只有 coordinator 能改**）")
+    case.add_argument("--milestone-owner", dest="milestone_owner", default=None, help="里程碑负责人")
+    case.add_argument("--milestone-done", dest="milestone_done", default=None,
+                      help="勾掉第 N 条里程碑（下标从 0 起；加 ! 前缀=撤回完成，如 '!0'）")
 
     cases = sub.add_parser("cases", help="列出案卷")
     cases.add_argument("--workspace", default=None)
     cases.add_argument("--status", default=None)
     cases.add_argument("--owner", default=None, help="主办身份")
+    cases.add_argument("--wbs", default=None, help="只看这个 WBS（含其子路径）")
     cases.add_argument("--limit", type=int, default=20)
 
     task = sub.add_parser("task", help="任务队列（工作包）：建 / 看 / 开工 / 改状态 / 调优先级")
@@ -400,11 +407,28 @@ def main(argv=None) -> int:
         elif args.cmd == "thread":
             payload = call(args.url, agent, "GET", f"/v1/threads/{args.id}", home=home)
         elif args.cmd == "case":
-            if args.note:
+            if args.milestone_add:
+                body = {"name": args.milestone_add}
+                if args.milestone_owner:
+                    body["owner"] = args.milestone_owner
+                payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/milestone", body, home=home)
+            elif args.milestone_done is not None:
+                raw = str(args.milestone_done).strip()
+                done = not raw.startswith("!")
+                body = {"index": int(raw.lstrip("!")), "done": done}
+                if args.note:
+                    body["note"] = args.note
+                payload = call(
+                    args.url, agent, "POST", f"/v1/cases/{args.id}/milestone-done", body, home=home
+                )
+            elif args.note:
                 body = {"note": args.note, "action": "note"}
                 if args.status:
                     body["status"] = args.status
                 payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/nodes", body, home=home)
+            elif args.wbs is not None:
+                body = {"wbs_path": args.wbs}
+                payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/wbs", body, home=home)
             else:
                 payload = call(args.url, agent, "GET", f"/v1/cases/{args.id}", home=home)
         elif args.cmd == "cases":
@@ -417,6 +441,7 @@ def main(argv=None) -> int:
                     "workspace": args.workspace,
                     "status": args.status,
                     "owner": args.owner,
+                    "wbs": args.wbs,
                     "limit": str(args.limit),
                 },
                 home=home,
@@ -876,6 +901,16 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
         title = payload.get("title") or payload.get("subject")
         if title:
             print(title)
+        print(f"WBS: {payload.get('wbs_path') or '（未归类）'}")
+        stones = payload.get("milestones") or []
+        if stones:
+            print(f"里程碑 {payload.get('milestones_done', 0)}/{len(stones)}：")
+            for index, item in enumerate(stones):
+                mark = "✔" if item["done"] else "·"
+                who = f"  （{item['owner']}）" if item.get("owner") else ""
+                print(f"  {index}. {mark} {item['name']}{who}")
+        else:
+            print("里程碑：无（`ic case <id> --milestone-add \"名字\"`，只有 coordinator 能改）")
         print(payload.get("text") or json.dumps(payload, ensure_ascii=False, indent=2))
         return
     if cmd == "cases" and not as_json:
@@ -883,7 +918,13 @@ def _emit(as_json: bool, cmd: str, payload) -> None:
         print(f"案卷 {payload.get('count', len(rows))} 份")
         for item in rows:
             owner = item.get("owner_agent") or item.get("owner") or "未认领"
-            print(f"{item.get('id')}  {item.get('status_label') or item.get('status')}  {owner}  {item.get('title')}")
+            wbs = item.get("wbs_path") or "未归类"
+            total = item.get("milestones_total") or 0
+            reached = f"  里程碑 {item.get('milestones_done', 0)}/{total}" if total else ""
+            print(
+                f"{item.get('id')}  {item.get('status_label') or item.get('status')}  {owner}  "
+                f"[{wbs}]  {item.get('title')}{reached}"
+            )
         return
     if cmd == "audit" and not as_json:
         if payload.get("ok"):

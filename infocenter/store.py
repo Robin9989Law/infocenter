@@ -288,6 +288,8 @@ class Store:
                     owner_window TEXT,
                     waiting_for TEXT,
                     sealed INTEGER NOT NULL DEFAULT 0,
+                    wbs_path TEXT NOT NULL DEFAULT '',
+                    milestones TEXT NOT NULL DEFAULT '[]',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     closed_at TEXT
@@ -369,6 +371,12 @@ class Store:
             window_cols = {row[1] for row in conn.execute("PRAGMA table_info(windows)")}
             if "pid" not in window_cols:
                 conn.execute("ALTER TABLE windows ADD COLUMN pid INTEGER")
+
+            case_cols = {row[1] for row in conn.execute("PRAGMA table_info(cases)")}
+            if "wbs_path" not in case_cols:
+                conn.execute("ALTER TABLE cases ADD COLUMN wbs_path TEXT NOT NULL DEFAULT ''")
+            if "milestones" not in case_cols:
+                conn.execute("ALTER TABLE cases ADD COLUMN milestones TEXT NOT NULL DEFAULT '[]'")
 
             project_cols = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
             if "archived" not in project_cols:
@@ -1339,6 +1347,8 @@ class Store:
         to=None,
         body: str | None = None,
         pid: int | None = None,
+        wbs_path: str | None = None,
+        milestones=None,
     ) -> dict:
         agent = normalize_name(agent or "human")
         owner_window = normalize_window(owner_window)
@@ -1376,6 +1386,8 @@ class Store:
         if init_status in SEALED_STATUSES:
             raise MailError("invalid_status", "新建案卷状态不能直接为已封卷状态")
         init_note = _node_note(note or ("认领 → 在办" if owner_window else "立案"))
+        wbs = _wbs_path(wbs_path)
+        stone_json = _milestones_json(milestones)
         now = utcnow()
         with self._session(immediate=True) as conn:
             existing = _find_case(conn, cid)
@@ -1401,10 +1413,13 @@ class Store:
                 """
                 INSERT INTO cases(
                     id, thread_id, title, workspace, status, owner_agent, owner_window,
-                    waiting_for, sealed, created_at, updated_at, closed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, NULL)
+                    waiting_for, sealed, wbs_path, milestones, created_at, updated_at, closed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, NULL)
                 """,
-                (cid, cid, title_text, workspace, init_status, owner_agent, owner_window, now, now),
+                (
+                    cid, cid, title_text, workspace, init_status, owner_agent, owner_window,
+                    wbs, stone_json, now, now,
+                ),
             )
             _insert_node(
                 conn,
@@ -1432,6 +1447,137 @@ class Store:
             row = _lazy_reconcile_case(conn, row, now)
             return _case_view(conn, row)
 
+    def case_wbs_set(
+        self,
+        case_id: str,
+        agent: str,
+        wbs_path: str | None,
+        window_id: str | None = None,
+    ) -> dict:
+        """把案卷归到一个 WBS（路径，空串 = 未归类）。**只有 coordinator 能改**。
+
+        一个案卷**唯一**归属一个 WBS；WBS 是树（`父/子`），不建表、只用路径。
+        """
+        cid = normalize_case_id(case_id)
+        path = _wbs_path(wbs_path)
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            _must_coordinator(conn, agent)
+            row = _find_case(conn, cid)
+            if row is None:
+                raise MailError("not_found", f"没有找到案卷：{cid}", 404)
+            if row["sealed"] or row["status"] in SEALED_STATUSES:
+                raise MailError("case_sealed", f"案卷 {cid} 已封卷，不能再改归属", 409)
+            conn.execute(
+                "UPDATE cases SET wbs_path = ?, updated_at = ? WHERE id = ?", (path, now, cid)
+            )
+            _insert_node(
+                conn,
+                case_id=cid,
+                agent=agent,
+                window_id=window_id,
+                action="wbs",
+                note=_node_note(f"归入 WBS：{path or '（未归类）'}"),
+                status=row["status"],
+                auto=False,
+                now=now,
+            )
+            out = _case_view(conn, _find_case(conn, cid))
+        self._signal()
+        return out
+
+    def case_milestone_add(
+        self,
+        case_id: str,
+        agent: str,
+        name: str,
+        owner: str | None = None,
+        window_id: str | None = None,
+    ) -> dict:
+        """给案卷加一条里程碑。**只有 coordinator 能改**（human 定稿：里程碑由 agent 提议、coordinator 落）。
+
+        里程碑 = 案卷上的**一列 JSON**（不建表）：一个里程碑可对应若干任务，案卷只显示里程碑。
+        """
+        cid = normalize_case_id(case_id)
+        text = str(name or "").strip()[:MILESTONE_MAX]
+        if not text:
+            raise MailError("invalid_milestones", "里程碑要有名字")
+        who = str(owner or "").strip()
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            _must_coordinator(conn, agent)
+            row = _find_case(conn, cid)
+            if row is None:
+                raise MailError("not_found", f"没有找到案卷：{cid}", 404)
+            if row["sealed"] or row["status"] in SEALED_STATUSES:
+                raise MailError("case_sealed", f"案卷 {cid} 已封卷，不能再改里程碑", 409)
+            items = _milestones(row["milestones"])
+            items.append({"name": text, "owner": who, "done": False})
+            conn.execute(
+                "UPDATE cases SET milestones = ?, updated_at = ? WHERE id = ?",
+                (_milestones_json(items), now, cid),
+            )
+            _insert_node(
+                conn,
+                case_id=cid,
+                agent=agent,
+                window_id=window_id,
+                action="milestone",
+                note=f"里程碑 +「{text}」" + (f"（负责人 {who}）" if who else ""),
+                status=row["status"],
+                auto=False,
+                now=now,
+            )
+            out = _case_view(conn, _find_case(conn, cid))
+        self._signal()
+        return out
+
+    def case_milestone_done(
+        self,
+        case_id: str,
+        agent: str,
+        index: int,
+        done: bool = True,
+        window_id: str | None = None,
+        note: str | None = None,
+    ) -> dict:
+        """勾掉 / 撤回一条里程碑（下标从 0 起）。**只有 coordinator 能改**。"""
+        cid = normalize_case_id(case_id)
+        idx = int(index)
+        now = utcnow()
+        with self._session(immediate=True) as conn:
+            _must_coordinator(conn, agent)
+            row = _find_case(conn, cid)
+            if row is None:
+                raise MailError("not_found", f"没有找到案卷：{cid}", 404)
+            if row["sealed"] or row["status"] in SEALED_STATUSES:
+                raise MailError("case_sealed", f"案卷 {cid} 已封卷，不能再改里程碑", 409)
+            items = _milestones(row["milestones"])
+            if idx < 0 or idx >= len(items):
+                raise MailError("invalid_milestones", f"没有第 {idx} 条里程碑（共 {len(items)} 条，下标从 0 起）")
+            items[idx]["done"] = bool(done)
+            conn.execute(
+                "UPDATE cases SET milestones = ?, updated_at = ? WHERE id = ?",
+                (_milestones_json(items), now, cid),
+            )
+            mark = "✔" if done else "↺"
+            _insert_node(
+                conn,
+                case_id=cid,
+                agent=agent,
+                window_id=window_id,
+                action="milestone",
+                note=_node_note(
+                    note or f"里程碑 {mark}「{items[idx]['name']}」（{'完成' if done else '撤回完成'}）"
+                ),
+                status=row["status"],
+                auto=False,
+                now=now,
+            )
+            out = _case_view(conn, _find_case(conn, cid))
+        self._signal()
+        return out
+
     def list_cases(
         self,
         workspace: str | None = None,
@@ -1439,8 +1585,10 @@ class Store:
         owner_window: str | None = None,
         owner_agent: str | None = None,
         limit: int = 100,
+        wbs: str | None = None,
     ) -> list[dict]:
         limit = _limit(limit)
+        wbs_filter = _wbs_path(wbs) if wbs else None
         status_filter = _case_status(status) if status else None
         window_filter = normalize_window(owner_window) if owner_window else None
         agent_filter = normalize_name(owner_agent) if owner_agent else None
@@ -1460,6 +1608,11 @@ class Store:
                     continue
                 if agent_filter is not None and row["owner_agent"] != agent_filter:
                     continue
+                if wbs_filter is not None:
+                    # 前缀匹配：给 `防混写` 就带出 `防混写/锁与闸` 下面的案卷
+                    path = row["wbs_path"] or ""
+                    if path != wbs_filter and not path.startswith(wbs_filter + "/"):
+                        continue
                 matched.append(_case_view(conn, row))
                 if len(matched) >= limit:
                     break
@@ -2587,7 +2740,11 @@ class Store:
         auto: bool = True,
         actor: str | None = None,
     ) -> dict:
-        """办公室正常退出上报：窗口标为 left，名下所有未封卷案卷自动中止并封卷（标 auto）。"""
+        """办公室正常退出上报：窗口标为 left、释放它名下的认领与写锁。
+
+        **不再**自动中止/封卷它名下的案卷——案卷只随"事做完"关闭（宪法）。
+        只摘掉主办窗口指针并记一行 `[自动]` 说明，等接办或显式收工。
+        """
         wid = normalize_window(window_id)
         if not wid:
             raise MailError("window_required", "需要提供窗口号 window_id")
@@ -2622,17 +2779,18 @@ class Store:
             )
             # M9：窗口离场同样释放它拿着的写锁（僵死锁会把别人永远挡在门外）。
             conn.execute("DELETE FROM locks WHERE window_id = ?", (wid,))
-            aborted_ids = _abort_window_cases(
-                conn,
-                window_id=wid,
-                agent=agent_name,
-                note=_node_note(note or "办公室离场 → 自动中止（封卷）"),
-                auto=auto,
-                now=now,
-            )
+            orphaned_ids = _orphan_window_cases(conn, window_id=wid, agent=agent_name, now=now)
+            if note:
+                # 离场的人若写了话，照样记一行（**状态不动**）
+                for cid in orphaned_ids:
+                    _insert_node(
+                        conn, case_id=cid, agent=agent_name, window_id=wid,
+                        action="note", note=note, status="", auto=bool(auto), now=now,
+                    )
             win_row = conn.execute("SELECT * FROM windows WHERE window_id = ?", (wid,)).fetchone()
             view = _window_view(conn, win_row)
-            view["aborted_cases"] = aborted_ids
+            view["orphaned_cases"] = orphaned_ids  # 只是摘了主办窗口指针，**没封卷**
+            view["aborted_cases"] = []  # 保留字段：现在**不再**自动中止任何案卷
         self._signal()
         return view
 
@@ -3076,8 +3234,10 @@ def _release_stale_claims(conn: sqlite3.Connection) -> int:
 
 
 def _lazy_reconcile_case(conn: sqlite3.Connection, case_row: sqlite3.Row, now: str | None = None) -> sqlite3.Row:
-    """崩溃惰性补齐：当未封卷案卷的主办窗口已不在（进程死/窗口被删/状态已离场）时，
-    自动补写 `[自动]` 节点并中止封卷。"""
+    """崩溃惰性补齐：主办窗口已不在（进程死/窗口被删/状态已离场）时**只摘指针 + 记一行**。
+
+    绝不自动中止/封卷（宪法：案卷只随"事做完"关闭，与办公室/agent 在不在无关）。
+    """
     if case_row["sealed"] or case_row["status"] in SEALED_STATUSES:
         return case_row
     owner_window = case_row["owner_window"]
@@ -3092,37 +3252,8 @@ def _lazy_reconcile_case(conn: sqlite3.Connection, case_row: sqlite3.Row, now: s
             "UPDATE windows SET state = 'left', left_at = COALESCE(left_at, ?), last_seen_at = ? WHERE window_id = ?",
             (now, now, owner_window),
         )
-    actor = case_row["owner_agent"] or (win_row["agent"] if win_row else "system")
-    conn.execute(
-        """
-        UPDATE cases
-        SET status = 'aborted', sealed = 1, owner_window = NULL,
-            updated_at = ?, closed_at = COALESCE(closed_at, ?)
-        WHERE id = ?
-        """,
-        (now, now, case_row["id"]),
-    )
-    # D-2：封卷时释放这条线程上**所有**窗口的认领（不再只按 owner_window 匹配），
-    # 以便跨 agent 转办后遗留的源侧僵尸认领也能被清掉。
-    conn.execute(
-        """
-        UPDATE deliveries
-        SET claimed_by = NULL
-        WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ?)
-        """,
-        (case_row["thread_id"],),
-    )
-    _insert_node(
-        conn,
-        case_id=case_row["id"],
-        agent=actor,
-        window_id=owner_window,
-        action="abort",
-        note="主办离场（惰性补齐） → 中止（封卷）",
-        status="aborted",
-        auto=True,
-        now=now,
-    )
+    # 宪法：案卷只随"事做完"关闭。主办窗口死了**不封卷**——只摘指针 + 记一行说明。
+    _orphan_window_cases(conn, window_id=owner_window, agent="system", now=now)
     return conn.execute("SELECT * FROM cases WHERE id = ?", (case_row["id"],)).fetchone()
 
 
@@ -3146,28 +3277,29 @@ def _lazy_reconcile_all(conn: sqlite3.Connection, now: str | None = None) -> Non
     _release_stale_claims(conn)
 
 
-def _abort_window_cases(
+def _orphan_window_cases(
     conn: sqlite3.Connection,
     window_id: str,
     agent: str,
-    note: str,
-    auto: bool,
     now: str,
 ) -> list[str]:
+    """窗口离场：**案卷不因此中止、不封卷**。
+
+    宪法（human 定稿）：案卷 = 一件事的持久记录，**只随"事做完"关闭，与办公室/agent 在不在无关**。
+    所以程序只做两件**无争议**的事：
+      ① 摘掉主办窗口指针（窗口没了，那个指针就是假的）；
+      ② 记一行**只增**的说明节点（**状态不动、不封卷**）——把"主办窗口没了"说出来，别让人猜。
+    要中止/办结，必须由人/coordinator 显式做（`ic case --abort/--close`）。
+    """
     open_cases = conn.execute(
         "SELECT * FROM cases WHERE owner_window = ? AND sealed = 0",
         (window_id,),
     ).fetchall()
-    aborted: list[str] = []
+    orphaned: list[str] = []
     for c_row in open_cases:
         conn.execute(
-            """
-            UPDATE cases
-            SET status = 'aborted', sealed = 1, owner_window = NULL,
-                updated_at = ?, closed_at = COALESCE(closed_at, ?)
-            WHERE id = ?
-            """,
-            (now, now, c_row["id"]),
+            "UPDATE cases SET owner_window = NULL, updated_at = ? WHERE id = ?",
+            (now, c_row["id"]),
         )
         conn.execute(
             """
@@ -3183,14 +3315,17 @@ def _abort_window_cases(
             case_id=c_row["id"],
             agent=c_row["owner_agent"] or agent,
             window_id=window_id,
-            action="abort",
-            note=note,
-            status="aborted",
-            auto=auto,
+            action="note",
+            note=(
+                "主办窗口离场：案卷**保持未封卷**（不自动中止）。"
+                "要继续办就接手（写节点/转办），要收工就显式中止或办结。"
+            ),
+            status=c_row["status"],
+            auto=True,
             now=now,
         )
-        aborted.append(c_row["id"])
-    return aborted
+        orphaned.append(c_row["id"])
+    return orphaned
 
 
 def _find_case(conn: sqlite3.Connection, case_id: str) -> sqlite3.Row | None:
@@ -3982,6 +4117,10 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     else:
         status_display = status_label
     sealed = bool(row["sealed"]) or status in SEALED_STATUSES
+    try:
+        milestones = _milestones(row["milestones"])
+    except (MailError, TypeError, KeyError):
+        milestones = []
     header_line = f"状态：{status_display}" + ("（已封卷）" if sealed else "")
     lines = [header_line, *(n["line"] for n in nodes)]
     return {
@@ -3998,6 +4137,11 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
         "owner_window": row["owner_window"],
         "claimed_by": row["owner_window"],
         "waiting_for": row["waiting_for"],
+        "wbs_path": row["wbs_path"] or "",
+        "wbs": row["wbs_path"] or "",  # 别名，给人读
+        "milestones": milestones,
+        "milestones_total": len(milestones),
+        "milestones_done": sum(1 for item in milestones if item["done"]),
         "created_at": row["created_at"],
         "created_at_beijing": beijing_time(row["created_at"]),
         "updated_at": row["updated_at"],
@@ -4319,6 +4463,60 @@ def _limit(value) -> int:
     if number < 1 or number > 100:
         raise MailError("invalid_limit", "limit 必须在 1 到 100 之间")
     return number
+
+
+WBS_MAX = 200
+MILESTONE_MAX = 200
+MILESTONE_MAX_COUNT = 50
+
+
+def _wbs_path(value) -> str:
+    """WBS 树路径：`/` 分隔（如 `防混写/锁与闸`）。空 = 未归类（老案卷只归档不转）。"""
+    if value is None:
+        return ""
+    text = str(value).strip().strip("/")
+    if not text:
+        return ""
+    parts = [part.strip() for part in text.split("/")]
+    if any(not part for part in parts):
+        raise MailError("invalid_wbs", "WBS 路径不能有空段（如 a//b）")
+    joined = "/".join(parts)
+    if len(joined) > WBS_MAX:
+        raise MailError("invalid_wbs", f"WBS 路径太长（≤ {WBS_MAX}）")
+    return joined
+
+
+def _milestones(value) -> list[dict]:
+    """里程碑：案卷上**一列 JSON**（不建表）。`[{"name","owner","done"}]`，只有 coordinator 能改。"""
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        try:
+            data = json.loads(value)
+        except ValueError:
+            raise MailError("invalid_milestones", "里程碑必须是 JSON 数组")
+    else:
+        data = value
+    if not isinstance(data, (list, tuple)):
+        raise MailError("invalid_milestones", "里程碑必须是 JSON 数组")
+    if len(data) > MILESTONE_MAX_COUNT:
+        raise MailError("invalid_milestones", f"里程碑太多（≤ {MILESTONE_MAX_COUNT} 条）")
+    out: list[dict] = []
+    for item in data:
+        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
+            raise MailError("invalid_milestones", "每个里程碑都必须有名字 name")
+        out.append(
+            {
+                "name": str(item["name"]).strip()[:MILESTONE_MAX],
+                "owner": str(item.get("owner") or "").strip(),
+                "done": bool(item.get("done")),
+            }
+        )
+    return out
+
+
+def _milestones_json(items) -> str:
+    return json.dumps(_milestones(items), ensure_ascii=False, sort_keys=True)
 
 
 def _case_status(value: str) -> str:

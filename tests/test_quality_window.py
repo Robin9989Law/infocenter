@@ -297,8 +297,8 @@ class WindowAndCaseQualityTest(unittest.TestCase):
         msg_view = self.store.get_message("cursor", msg["id"])
         self.assertEqual(msg_view["claimed_by"], "w-2")
 
-    # 8. 中途退出自动中止：模拟窗口正常退出（leave）与进程崩溃（PID 不存在惰性补齐），自动转 aborted 并封卷
-    def test_08_window_exit_and_crash_auto_abort(self):
+    # 8. 中途退出**不中止案卷**（M7 宪法）：窗口正常退出 / 进程崩溃，案卷都保持未封卷，只摘指针 + 记一行
+    def test_08_window_exit_and_crash_does_not_abort_case(self):
         # 8a: 正常退出 leave_window
         self.store.touch("cursor", window_id="w-exit", workspace="/tmp/proj")
         m1 = self.store.send("opencode", ["cursor"], "任务一", "内容", workspace="/tmp/proj")
@@ -306,28 +306,46 @@ class WindowAndCaseQualityTest(unittest.TestCase):
 
         leave_res = self.store.leave_window("w-exit", agent="cursor")
         self.assertEqual(leave_res["state"], "left")
-        self.assertIn(m1["thread_id"], leave_res["aborted_cases"])
+        self.assertEqual(leave_res["aborted_cases"], [], "不再自动中止任何案卷")
+        self.assertIn(m1["thread_id"], leave_res["orphaned_cases"], "只是摘了主办窗口指针")
 
         c1 = self.store.get_case(m1["thread_id"])
-        self.assertEqual(c1["status"], "aborted")
+        self.assertEqual(c1["status"], "open", "案卷不因窗口离场而中止")
+        self.assertFalse(c1["sealed"])
         self.assertIsNone(c1["owner_window"])
-        self.assertIsNotNone(c1["closed_at"])
+        self.assertIsNone(c1["closed_at"])
         self.assertTrue(c1["nodes"][-1]["auto"])
-        self.assertIn("[自动]", c1["nodes"][-1]["note"])
+        self.assertIn("保持未封卷", c1["nodes"][-1]["note"])
 
-        # 8b: 进程崩溃未调离场接口（给一个不存在的死亡 PID），下次读案卷时惰性补齐 [自动] 中止
+        # 窗口没了，案卷照样能继续办（M7 的核心：事没做完，案卷就该在）
+        self.store.append_case_node(m1["thread_id"], agent="cursor", note="接手继续办")
+        self.assertEqual(self.store.get_case(m1["thread_id"])["nodes"][-1]["note"], "接手继续办")
+
+        # 8b: 进程崩溃未调离场接口（死 PID），下次读案卷时惰性对账：同样不封卷
         dead_pid = 99999999
         self.store.touch("cursor", window_id="w-crash", workspace="/tmp/proj", pid=dead_pid)
         m2 = self.store.send("opencode", ["cursor"], "任务二", "内容", workspace="/tmp/proj")
         self.store.mark("cursor", m2["id"], "read", window_id="w-crash")
 
-        # 读取案卷触发 _lazy_reconcile_case
-        c2 = self.store.get_case(m2["thread_id"])
-        self.assertEqual(c2["status"], "aborted")
+        c2 = self.store.get_case(m2["thread_id"])  # 触发 _lazy_reconcile_case
+        self.assertEqual(c2["status"], "open")
+        self.assertFalse(c2["sealed"])
         self.assertIsNone(c2["owner_window"])
         self.assertTrue(c2["nodes"][-1]["auto"])
-        self.assertIn("[自动]", c2["nodes"][-1]["note"])
+        self.assertIn("保持未封卷", c2["nodes"][-1]["note"])
         self.assertEqual(self.store.get_window("w-crash")["state"], "left")
+
+    # 8c: 要中止/办结，必须显式做（程序绝不自动改语义状态）
+    def test_08c_abort_is_explicit_only(self):
+        self.store.touch("cursor", window_id="w-x", workspace="/tmp/proj")
+        m = self.store.send("opencode", ["cursor"], "显式中止", "内容", workspace="/tmp/proj")
+        self.store.mark("cursor", m["id"], "read", window_id="w-x")
+        self.store.leave_window("w-x", agent="cursor")
+        self.assertEqual(self.store.get_case(m["thread_id"])["status"], "open")
+
+        aborted = self.store.abort_case(m["thread_id"], agent="opencode", note="确实不做了")
+        self.assertEqual(aborted["status"], "aborted")
+        self.assertTrue(aborted["sealed"])
 
     # 9. 办结与封卷只读：close 后状态为 done，释放窗口绑定；封卷后（aborted/done）禁止写节点或改状态（重开除外）
     def test_09_close_and_sealed_readonly_enforcement(self):
@@ -485,15 +503,16 @@ class WindowAndCaseQualityTest(unittest.TestCase):
             self.assertEqual(st, 200)
             self.assertEqual(c_resumed["status"], "open")
 
-            # 停用办公室（leave）级联中止并封卷名下未封卷案卷（对应 D3-c confirm 保护的动作）
+            # 停用办公室（leave）：**不**级联中止案卷（M7 宪法）——只摘主办窗口指针
             st, w_left = _http_json(url, "POST", "/v1/windows/w-ui-1/leave", body={})
             self.assertEqual(st, 200)
             self.assertEqual(w_left["state"], "left")
-            self.assertIn(cid, w_left["aborted_cases"])
+            self.assertEqual(w_left["aborted_cases"], [])
+            self.assertIn(cid, w_left["orphaned_cases"])
 
-            _, c_aborted = _http_json(url, "GET", f"/v1/cases/{cid}")
-            self.assertEqual(c_aborted["status"], "aborted")
-            self.assertTrue(c_aborted["sealed"])
+            _, c_still_open = _http_json(url, "GET", f"/v1/cases/{cid}")
+            self.assertEqual(c_still_open["status"], "open")
+            self.assertFalse(c_still_open["sealed"])
         finally:
             httpd.shutdown()
             httpd.server_close()
