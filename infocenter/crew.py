@@ -603,11 +603,17 @@ def _headless_timeout_seconds(item: dict) -> int:
     return max(10, min(secs, 7 * 86400))
 
 
-def _urgent_mail_waiting(url: str, agent: str, project: str, cursor: int) -> int:
-    """冷却期内的「新指令」探测：只数**高优先级**的新信，不看普通信。
+def _urgent_mail_waiting(url: str, agent: str, project: str, cursor: int, not_before: str = "") -> int:
+    """冷却期内的「新指令」探测：只数**高优先级**的**新**信，不看普通信。
 
     冷却不该把新指令一起关在门外（该治的是「模型不可用」，不是「别人找你」）。
     探测失败一律当 0（探测本身出错不能搅乱冷却状态）；wait=0，只问一句就走，不阻塞。
+
+    **`not_before` 是"进入冷却的时刻"**：只有**冷却开始之后才到**的高优先级信才算新指令。
+    为什么必须有这一道：失败时游标不前进（冷却后再投递），那封没投出去的信会一直被当成
+    "新信"——拿它当新指令，冷却刚进就被自己打断，失败一次就变成死循环。
+    实测（2026-10-15 独立评审窗口）：pi 的模型名不合法 ⇒ 每分钟 36 次 headless 失败、
+    564 次进入冷却、279 次"提前结束冷却"，全在这一条上打转。
     """
     try:
         payload = request(
@@ -618,7 +624,14 @@ def _urgent_mail_waiting(url: str, agent: str, project: str, cursor: int) -> int
     except (SystemExit, ApiError, OSError, ValueError, KeyError):
         return 0
     fresh = payload.get("new") or []
-    return sum(1 for msg in fresh if str(msg.get("priority") or "").lower() == "high")
+    found = 0
+    for msg in fresh:
+        if str(msg.get("priority") or "").lower() != "high":
+            continue
+        if not_before and str(msg.get("created_at") or "") <= not_before:
+            continue  # 冷却之前就在那儿的信：已经试过、失败了，不算"新指令"
+        found += 1
+    return found
 
 
 def up(home, url: str, project: str, only: str = "", dry_run: bool = False) -> dict:
@@ -1304,6 +1317,10 @@ def watch(
         failure_streak = 0
         cooldown_until = 0.0
         cooldown_kind = ""
+        # 进入冷却的时刻（UTC ISO）：只有**这之后**新到的高优先级信才算新指令。
+        # 失败时游标不前进，同一封没投出去的信会一直被看见——不设这道，冷却刚进就被它打断，
+        # 失败一次就成死循环（实测 pi 每分钟 36 次）。
+        cooldown_since = ""
         cooldown_logged = False
         idle_rounds = 0
         while True:
@@ -1334,9 +1351,10 @@ def watch(
                     )
                     cooldown_logged = True
                     _set_cooldown_meta(home, key, cooldown_kind, left)
-                # 冷却不吞新指令：冷却期内仍看一眼有没有**高优先级**新信。有就提前结束冷却——
+                # 冷却不吞新指令：冷却期内仍看一眼有没有**高优先级新信**。有就提前结束冷却——
                 # 冷却治的是「模型不可用」，不该把别人发来的新指令（要命的活）一起关在门外。
-                urgent = _urgent_mail_waiting(url, agent, project, cursor)
+                # 只认「进入冷却之后新到」的：冷却前就在的、没投出去的那封不算（否则会死循环）。
+                urgent = _urgent_mail_waiting(url, agent, project, cursor, not_before=cooldown_since)
                 if urgent:
                     print(
                         f"[{beijing_stamp()}] {agent} 冷却期内收到 {urgent} 封高优先级新信 ⇒ "
@@ -1344,6 +1362,7 @@ def watch(
                         flush=True,
                     )
                     cooldown_until = 0.0
+                    cooldown_since = ""
                     cooldown_logged = False
                     failure_streak = 0
                     retry_rounds = 0
@@ -1357,6 +1376,7 @@ def watch(
             if cooldown_until:
                 print(f"[{beijing_stamp()}] {agent} 冷却结束，恢复收信与心跳", flush=True)
                 cooldown_until = 0.0
+                cooldown_since = ""
                 cooldown_logged = False
                 failure_streak = 0
                 retry_rounds = 0
@@ -1418,6 +1438,7 @@ def watch(
                         if _should_cooldown(outcome, failure_streak, _failure_threshold(entry or {})):
                             cooldown_until = time.monotonic() + _cooldown_seconds(entry or {}, outcome)
                             cooldown_kind = "额度/鉴权不可用" if outcome == "quota" else "连续失败"
+                            cooldown_since = utcnow()
                             cooldown_logged = False
                             print(
                                 f"[{beijing_stamp()}] headless {outcome}，连续 {failure_streak} 次失败 ⇒ "
@@ -1463,6 +1484,7 @@ def watch(
                         if _should_cooldown(h_outcome, failure_streak, _failure_threshold(entry or {})):
                             cooldown_until = time.monotonic() + _cooldown_seconds(entry or {}, h_outcome)
                             cooldown_kind = "额度/鉴权不可用" if h_outcome == "quota" else "连续失败"
+                            cooldown_since = utcnow()
                             cooldown_logged = False
                             print(
                                 f"[{beijing_stamp()}] 心跳 headless {h_outcome}，连续 {failure_streak} 次失败 ⇒ "

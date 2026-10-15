@@ -219,7 +219,7 @@ class IdleGuardWatchTest(unittest.TestCase):
                   "new": [{"id": "m1", "from": "opencode", "subject": "普通信", "workspace": project}]}
         urgent = {"cursor": 2, "unread_total": 1,
                   "new": [{"id": "m9", "from": "human", "subject": "新指令", "priority": "high",
-                           "workspace": project}]}
+                           "created_at": "2099-01-01T00:00:00Z", "workspace": project}]}
         real_polls = [normal, urgent]
         probe_state = {"n": 0}
         headless_calls = []
@@ -228,7 +228,7 @@ class IdleGuardWatchTest(unittest.TestCase):
         def fake_request(*_a, **_k):
             query = _k.get("query") or {}
             if str(query.get("wait")) == "0":
-                # 第一次轻探：还没有新指令；第二次轻探：来了一封高优先级新信。
+                # 第一次轻探：还没有新指令；第二次轻探：来了一封高优先级新信（冷却之后才到的）。
                 probe_state["n"] += 1
                 return {"new": []} if probe_state["n"] < 2 else urgent
             if real_polls:
@@ -260,6 +260,65 @@ class IdleGuardWatchTest(unittest.TestCase):
         self.assertEqual(headless_calls, [1000.0, 1060.0])
         self.assertLess(clock[0], 1600.0)
         # 冷却被清掉（写了一次 ""），这样新指令不用等冷却
+        self.assertEqual(cooldown_calls[-1][0], "")
+
+    def test_pending_high_priority_mail_does_not_break_cooldown(self):
+        """死循环的反面：**冷却前就在、还没投出去**的那封高优先级信，不许打断冷却。
+
+        失败时游标不前进，同一封信会被反复探到。若拿它当"新指令"，就是
+        「进冷却 → 立刻被自己打断 → 再失败」的死循环——实测（2026-10-15 独立评审窗口）
+        pi 的模型名不合法时每分钟 36 次 headless、564 次进冷却、279 次提前结束冷却。
+        规矩：只有**进入冷却之后新到**的信才算新指令。
+        """
+        project = str(Path(tempfile.mkdtemp(dir=str(self.home), prefix="projPending")).resolve())
+        self._write_config(permanent_cooldown=600)
+        clock = [1000.0]
+        first = {"cursor": 1, "unread_total": 1,
+                 "new": [{"id": "m1", "from": "opencode", "subject": "信", "workspace": project}]}
+        pending = {"cursor": 2, "unread_total": 1,
+                   "new": [{"id": "m9", "from": "human", "subject": "旧的高优先级信", "priority": "high",
+                            "created_at": "2000-01-01T00:00:00Z", "workspace": project}]}
+        polls = []
+        probes = []
+        headless_calls = []
+        cooldown_calls = []
+        state = {"poll": 0}
+
+        def fake_request(*_a, **_k):
+            query = _k.get("query") or {}
+            if str(query.get("wait")) == "0":
+                probes.append(clock[0])
+                return pending  # 每次轻探都看见同一封「冷却前就在」的高优先级信
+            polls.append(clock[0])
+            state["poll"] += 1
+            if state["poll"] == 1:
+                return first
+            raise StopIteration("done")
+
+        def fake_headless(*_a, **_k):
+            headless_calls.append(clock[0])
+            return "quota"
+
+        def fake_sleep(sec):
+            clock[0] += float(sec)
+
+        def fake_cooldown(_home, _key, kind, seconds):
+            cooldown_calls.append((kind, seconds))
+
+        with (
+            patch.object(crew.time, "monotonic", side_effect=lambda: clock[0]),
+            patch.object(crew.time, "sleep", side_effect=fake_sleep),
+            patch.object(crew, "request", side_effect=fake_request),
+            patch.object(crew, "_run_headless", side_effect=fake_headless),
+            patch.object(crew, "_set_cooldown_meta", side_effect=fake_cooldown),
+        ):
+            with self.assertRaises(StopIteration):
+                crew.watch(self.home, "cursor", project, self.url, poll=5)
+
+        self.assertEqual(len(headless_calls), 1, "不许被那封旧信反复叫起来")
+        self.assertGreaterEqual(clock[0] - 1000.0, 600, "冷却该走完，不是刚进就断")
+        self.assertEqual(polls, [1000.0, 1600.0])
+        self.assertTrue(probes, "冷却期内照旧每分钟轻探一次")
         self.assertEqual(cooldown_calls[-1][0], "")
 
     def test_consecutive_failures_enter_cooldown_at_threshold(self):
