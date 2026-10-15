@@ -12,10 +12,9 @@
    并断言清掉后子进程不再报 window_conflict（test_quality_mcp 的
    _env() 原先没清 ⇒ 在 agent 会话里跑全量必红 1 个；已修为清掉，
    这里钉住失败模式本身防回退）。
-4. **queue 的退路不能被「锁＝只读」挡死**：TODO-<agent>.md 被锁过又放回后
-   停在只读态，`ic queue --note` 的 _todo_add 曾因此 PermissionError
-   （库里的提议已落、TODO 行没写上，半个成功）。修为程序自己临时 u+w、
-   写完恢复原权限位；这里钉住只读 TODO 仍写得进、权限位不变。
+4. **只读 TODO 不许 chmod 硬写**：TODO-<agent>.md 放下钥匙后停在 444。
+   没拿到这把钥匙时 `_todo_add` 必须停（`todo_unwritable`），权限位与正文都不变。
+   拿得到钥匙再写、写完放回的路径在 `tests/test_todo_handoff.py`。
 """
 
 import json
@@ -190,12 +189,10 @@ class HostEnvIsolationTest(unittest.TestCase):
 
 
 class ReadonlyTodoWriteThroughTest(unittest.TestCase):
-    """queue 的退路不能再被「锁＝只读」挡死：TODO 文件只读时 _todo_add 也要写得进。
+    """只读 TODO 不能靠自己 chmod 写穿。
 
-    复现（2026-10-15 实验轮实测）：TODO-kimi.md 被锁过又放回 ⇒ 停在只读态；
-    `ic queue <路径> --note …` 在库里落完提议后，_todo_add 撞 PermissionError
-    ⇒ todo_unwritable ⇒ 命令整体报失败（库里的提议却已落，半个成功）。
-    修为：程序自己临时加 u+w、写完把权限位原样恢复。
+    复现（2026-10-15 实验轮实测）：TODO 被锁过又放回 ⇒ 停在 444。
+    没把这把钥匙交给 `_todo_add` 时，它必须停，权限位和正文都保持原样。
     """
 
     def setUp(self):
@@ -207,18 +204,20 @@ class ReadonlyTodoWriteThroughTest(unittest.TestCase):
         os.chdir(self.old_cwd)
         self.tmp.cleanup()
 
-    def test_readonly_todo_still_gets_the_line(self):
+    def test_readonly_todo_without_lock_does_not_chmod(self):
         from infocenter.cli import _todo_add
+        from infocenter.store import MailError
         path = Path(self.tmp.name) / "TODO-kimi.md"
         path.write_text("# TODO · kimi\n\n- [ ] 旧的一条\n", encoding="utf-8")
         os.chmod(path, 0o444)  # 「锁＝只读」的静置态
-        _todo_add("kimi", "改 foo.py：换实现（提议 q999）")
-        self.assertEqual(path.stat().st_mode & 0o7777, 0o444)  # 权限位原样恢复
+        with self.assertRaises(MailError) as ctx:
+            _todo_add("kimi", "改 foo.py：换实现（提议 q999）")
+        self.assertEqual(ctx.exception.code, "todo_unwritable")
+        self.assertIn("没有改权限", ctx.exception.message)
+        self.assertEqual(path.stat().st_mode & 0o7777, 0o444)
         text = path.read_text(encoding="utf-8")
         self.assertIn("- [ ] 旧的一条", text)
-        self.assertIn("- [ ] 改 foo.py：换实现（提议 q999）", text)
-        _todo_add("kimi", "改 foo.py：换实现（提议 q999）")  # 幂等：不重复入行
-        self.assertEqual(path.read_text(encoding="utf-8").count("改 foo.py"), 1)
+        self.assertNotIn("q999", text)
 
     def test_writable_todo_path_unchanged(self):
         from infocenter.cli import _todo_add

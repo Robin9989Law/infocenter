@@ -544,11 +544,16 @@ def main(argv=None) -> int:
                     if len(note) > 80:
                         note = note[:80] + "…"
                     where = f"（钥匙在 {holder} 手里）" if holder else "（现在没人拿钥匙，直接 lock 就能做）"
-                    payload["todo_file"] = _todo_add(
-                        agent,
+                    line = (
                         f"改 {payload.get('path')}：{note[:80]}{where}"
-                        f" —— 提议 {payload.get('id')}；轮到这条时 `ic lock <路径>` **能拿到钥匙就做**",
+                        f" —— 提议 {payload.get('id')}；轮到这条时 `ic lock <路径>` **能拿到钥匙就做**"
                     )
+                    # 只读 TODO 才去拿自己这份文件的钥匙；可写路径不碰锁，避免改现有测试的行为。
+                    todo_url = args.url
+                    todo_path = _todo_path(agent)
+                    if todo_path.exists() and not (todo_path.stat().st_mode & 0o200):
+                        todo_url = ensure_server(args.url, home)
+                    payload["todo_file"] = _todo_add(agent, line, url=todo_url, home=home)
             else:
                 payload = call(
                     args.url, agent, "GET", "/v1/locks/queue",
@@ -661,15 +666,15 @@ def _todo_path(agent: str) -> Path:
     return Path.cwd() / f"TODO-{agent}.md"
 
 
-def _todo_add(agent: str, line: str) -> str:
+def _todo_add(agent: str, line: str, *, url=None, home=None) -> str:
     """**把"拿不到钥匙、先别忘"的事写进自己的 TODO**（human 定稿：等的 agent 的 todo 得有这个事）。
 
     写进文件（不是只留库里）才叫"别忘了"：agent 的心跳提示词本来就是"读自己的 TODO-<名字>.md
     → 推进下一件"，所以这一行会被它下一次心跳捡起来 —— 轮到那条时**能拿到钥匙就做**。
 
-    TODO 文件本身可能正被「锁＝只读」管着（任何被锁过又放回的文件都停在只读态）——
-    而 queue 恰恰是没拿到钥匙时的退路，退路不能再被同一道闸挡死：这里临时加 u+w、
-    写完把权限位原样恢复（程序自己的合规写入，与 store 拿/放钥匙时的 chmod 同源）。
+    文件还不存在、或本来就可写：直接写，不拿锁（现有可写路径的测试保持原行为）。
+    文件已是只读（放下钥匙后停在 444）：先 `lock` 自己的 `TODO-<名字>.md`，拿得到钥匙
+    服务端才会把它 chmod 成可写，写完 `unlock` 放回只读。拿不到就停，**不要自己 chmod 硬写**。
     """
     path = _todo_path(agent)
     entry = f"- [ ] {line}"
@@ -680,25 +685,54 @@ def _todo_add(agent: str, line: str) -> str:
                 return str(path)
             if not text.endswith("\n"):
                 text += "\n"
-            _write_through_readonly(path, text + entry + "\n")
+            body = text + entry + "\n"
+            if path.stat().st_mode & 0o200:
+                path.write_text(body, encoding="utf-8")
+            else:
+                _write_readonly_todo(agent, path, body, url=url, home=home)
         else:
             path.write_text(f"# TODO · {agent}\n\n{entry}\n", encoding="utf-8")
+    except MailError:
+        raise
     except OSError as exc:
         raise MailError("todo_unwritable", f"写不进 TODO 文件 {path}：{exc}", 500) from None
     return str(path)
 
 
-def _write_through_readonly(path: Path, text: str) -> None:
-    """写可能停在只读态的文件：临时加 u+w，写完恢复原权限位（只读态不受这一笔影响）。"""
-    mode = path.stat().st_mode & 0o7777
-    if mode & 0o200:
-        path.write_text(text, encoding="utf-8")
-        return
-    os.chmod(path, mode | 0o200)
+def _write_readonly_todo(agent: str, path: Path, text: str, *, url=None, home=None) -> None:
+    """只读 TODO：先拿这把钥匙，拿到才写，写完放回。拿不到就停，自己不 chmod。"""
+    if not url:
+        raise MailError(
+            "todo_unwritable",
+            f"写不进 TODO 文件 {path}：文件只读，没有可用的信息中心地址去拿钥匙，已停，没有改权限",
+            409,
+        )
+    target = str(path.resolve())
     try:
+        call(
+            url, agent, "POST", "/v1/locks",
+            {"paths": [target], "note": "写入自己的 TODO"},
+            home=home,
+        )
+    except MailError as exc:
+        raise MailError(
+            "todo_unwritable",
+            f"写不进 TODO 文件 {path}：拿不到钥匙（{exc.code}），已停，没有改权限",
+            exc.status or 409,
+        ) from None
+    try:
+        if not (path.stat().st_mode & 0o200):
+            raise MailError(
+                "todo_unwritable",
+                f"写不进 TODO 文件 {path}：拿到钥匙后仍不可写，已停，没有再改权限",
+                500,
+            )
         path.write_text(text, encoding="utf-8")
     finally:
-        os.chmod(path, mode)
+        try:
+            call(url, agent, "POST", "/v1/locks/release", {"paths": [target]}, home=home)
+        except MailError:
+            pass
 
 
 def _anchor_path(value) -> "Path":

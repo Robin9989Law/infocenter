@@ -12,8 +12,10 @@ import io
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from contextlib import redirect_stdout
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -21,6 +23,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from infocenter.cli import _todo_add, _todo_path, main
+from infocenter.server import make_handler
+from infocenter.store import MailError, Store
 
 
 class TodoWriterTest(unittest.TestCase):
@@ -130,6 +134,70 @@ class QueueWritesTodoTest(unittest.TestCase):
             main(["--as", "opencode", "unlock", "/proj/store.py"])
         self.assertFalse([c for c in calls if "messages" in str(c[1])], "放钥匙不发通知")
         self.assertIn("待改", out.getvalue())
+
+
+class ReadonlyTodoLockTest(unittest.TestCase):
+    """444 的 TODO：先拿自己这份文件的钥匙，写完放回。拿不到就停，不 chmod。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.cwd = os.getcwd()
+        os.chdir(self.tmp.name)
+        os.environ["INFOCENTER_QUIET"] = "1"
+        self._window = os.environ.pop("INFOCENTER_WINDOW", None)
+        self._agent_env = os.environ.pop("INFOCENTER_AGENT", None)
+        self.home = Path(self.tmp.name) / "home"
+        self.home.mkdir()
+        self.store = Store(
+            self.home / "mailbox.db",
+            seeds=[("cursor", "Cursor", ""), ("kimi", "Kimi", "")],
+        )
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.store))
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        os.chdir(self.cwd)
+        if self._window is not None:
+            os.environ["INFOCENTER_WINDOW"] = self._window
+        if self._agent_env is not None:
+            os.environ["INFOCENTER_AGENT"] = self._agent_env
+        todo = Path(self.tmp.name) / "TODO-cursor.md"
+        if todo.exists():
+            os.chmod(todo, 0o644)
+        self.tmp.cleanup()
+
+    def test_readonly_with_lock_writes_then_restores(self):
+        path = Path("TODO-cursor.md")
+        path.write_text("# TODO · cursor\n\n- [ ] 旧的\n", encoding="utf-8")
+        os.chmod(path, 0o444)
+        got = _todo_add("cursor", "改 foo.py：换实现", url=self.url, home=self.home)
+        self.assertEqual(Path(got), path.resolve())
+        text = path.read_text(encoding="utf-8")
+        self.assertIn("- [ ] 旧的", text)
+        self.assertIn("- [ ] 改 foo.py：换实现", text)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o444, "写完放钥匙，回到只读")
+        self.assertEqual(self.store.lock_list()["count"], 0, "钥匙已放回")
+        _todo_add("cursor", "改 foo.py：换实现", url=self.url, home=self.home)
+        self.assertEqual(path.read_text(encoding="utf-8").count("换实现"), 1, "同一条不写两遍")
+
+    def test_readonly_when_key_held_stops_without_chmod(self):
+        path = Path("TODO-cursor.md")
+        path.write_text("# TODO · cursor\n\n- [ ] 旧的\n", encoding="utf-8")
+        target = str(path.resolve())
+        self.store.lock_acquire("kimi", [target], ttl=600)
+        os.chmod(path, 0o444)
+        with self.assertRaises(MailError) as ctx:
+            _todo_add("cursor", "不该写上", url=self.url, home=self.home)
+        self.assertEqual(ctx.exception.code, "todo_unwritable")
+        self.assertIn("没有改权限", ctx.exception.message)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o444)
+        self.assertNotIn("不该写上", path.read_text(encoding="utf-8"))
+        holders = [row["agent"] for row in self.store.lock_list()["locks"]]
+        self.assertEqual(holders, ["kimi"])
 
 
 if __name__ == "__main__":
