@@ -66,6 +66,37 @@ class ReplyBodyFileTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(call.call_args.args[4]["body"], "一行")
 
+    def test_to_is_repeatable_like_send(self):
+        """pi 2026-10-15：`reply --to` 曾是单值 ⇒ `--to A --to B` **静默只留最后一个**。
+
+        收件人被悄悄缩窄，和我们在灭的那批「静默」同类；这里钉死与 `send` 对称。
+        """
+        with patch("infocenter.cli.call", return_value={"id": "m1"}) as call, redirect_stdout(io.StringIO()):
+            rc = main(
+                ["--as", "grok", "--url", "http://127.0.0.1:9", "--json",
+                 "reply", "mabc", "-b", "x", "--to", "kimi", "--to", "cursor"]
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(call.call_args.args[4]["to"], "kimi,cursor")
+
+    def test_to_takes_a_comma_list_too(self):
+        with patch("infocenter.cli.call", return_value={"id": "m1"}) as call, redirect_stdout(io.StringIO()):
+            rc = main(
+                ["--as", "grok", "--url", "http://127.0.0.1:9", "--json",
+                 "reply", "mabc", "-b", "x", "--to", "kimi,cursor"]
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(call.call_args.args[4]["to"], "kimi,cursor")
+
+    def test_single_to_still_works(self):
+        with patch("infocenter.cli.call", return_value={"id": "m1"}) as call, redirect_stdout(io.StringIO()):
+            rc = main(
+                ["--as", "grok", "--url", "http://127.0.0.1:9", "--json",
+                 "reply", "mabc", "-b", "x", "--to", "kimi"]
+            )
+        self.assertEqual(rc, 0)
+        self.assertEqual(call.call_args.args[4]["to"], "kimi")
+
     def test_both_and_neither_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "body.txt"

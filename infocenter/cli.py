@@ -167,7 +167,9 @@ def main(argv=None) -> int:
     reply.add_argument("--body", "-b")
     reply.add_argument("--body-file")
     reply.add_argument("--subject", "-s")
-    reply.add_argument("--to")
+    # pi 2026-10-15：`--to A --to B` 曾**静默只留最后一个**（收件人被悄悄缩窄）。
+    # 与 send 对称：可重复，逗号也吃。
+    reply.add_argument("--to", action="append", help="收件人。可重复，逗号分隔也行；默认回给发信人")
 
     thread = sub.add_parser("thread", help="查看自己参与过的回合")
     thread.add_argument("id")
@@ -441,7 +443,7 @@ def main(argv=None) -> int:
             if args.subject:
                 body["subject"] = args.subject
             if args.to:
-                body["to"] = args.to
+                body["to"] = ",".join(args.to)
             payload = call(args.url, agent, "POST", f"/v1/messages/{args.id}/reply", body, home=home)
         elif args.cmd == "thread":
             payload = call(args.url, agent, "GET", f"/v1/threads/{args.id}", home=home)
