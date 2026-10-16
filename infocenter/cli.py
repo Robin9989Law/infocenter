@@ -522,17 +522,14 @@ def main(argv=None) -> int:
         elif args.cmd == "audit":
             if args.anchor:
                 return _write_audit_anchor(args, agent, home)
-            query = {"task": args.task}
             anchor = _read_audit_anchor(_anchor_path(args.anchor_file))
-            if anchor:
-                query.update(
-                    {
-                        "anchor_seq": anchor["seq"],
-                        "anchor_hash": anchor["hash"],
-                        "anchor_at": anchor.get("at", ""),
-                    }
-                )
-            payload = call(args.url, agent, "GET", "/v1/audit", query=query, home=home)
+            payload = call(
+                args.url, agent, "GET", "/v1/audit",
+                query=_audit_query(args.task, anchor), home=home,
+            )
+            # 本地锚能和库一起重写（就地重新盖章）。git HEAD 里那一份是链外见证，
+            # 取得到就当第二个锚再验一次：两个都过才算绿。
+            payload = _attach_git_anchor(args, agent, home, payload, anchor)
         elif args.cmd == "guard":
             import subprocess
 
@@ -842,12 +839,8 @@ def _anchor_path(value) -> "Path":
     return (Path(top) / path) if top else path
 
 
-def _read_audit_anchor(path) -> dict | None:
-    """读外锚文件（没有/读不懂都当没有，不拦人）。"""
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except OSError:
-        return None
+def _parse_audit_anchor_text(text: str) -> dict | None:
+    """从锚正文里取出第一行 `seq hash [时间]`。注释和空行跳过。"""
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -856,6 +849,122 @@ def _read_audit_anchor(path) -> dict | None:
         if len(parts) >= 2 and parts[0].isdigit() and len(parts[1]) == 64:
             return {"seq": int(parts[0]), "hash": parts[1], "at": " ".join(parts[2:])}
     return None
+
+
+def _read_audit_anchor(path) -> dict | None:
+    """读外锚文件（没有/读不懂都当没有，不拦人）。"""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return _parse_audit_anchor_text(text)
+
+
+def _audit_query(task, anchor: dict | None) -> dict:
+    query = {"task": task}
+    if anchor:
+        query.update(
+            {
+                "anchor_seq": anchor["seq"],
+                "anchor_hash": anchor["hash"],
+                "anchor_at": anchor.get("at", ""),
+            }
+        )
+    return query
+
+
+def _same_anchor(left, right) -> bool:
+    if not left or not right:
+        return False
+    try:
+        return (
+            int(left.get("seq") or 0) == int(right.get("seq") or 0)
+            and str(left.get("hash") or "") == str(right.get("hash") or "")
+        )
+    except (TypeError, ValueError):
+        return False
+
+
+def _read_git_head_anchor(anchor_file) -> tuple[str, dict | None]:
+    """读 `git show HEAD:<锚的相对路径>` 里的那一份。
+
+    相对路径从 `_anchor_path()`（仓库根）换算，不按 cwd。
+    返回：
+      ("skip", None)     非 git / 还没有提交 / HEAD 里没有这个文件 / git 跑不起来
+      ("bad", None)      文件在 HEAD 里，但读不出锚行
+      ("anchor", dict)   读到了 (seq, hash)
+    """
+    import subprocess
+
+    top = _git_toplevel(subprocess)
+    if not top:
+        return "skip", None
+    path = _anchor_path(anchor_file)
+    try:
+        rel = Path(path).resolve().relative_to(Path(top).resolve()).as_posix()
+    except ValueError:
+        return "skip", None
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "--verify", "--quiet", "HEAD"],
+            cwd=top, capture_output=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "skip", None
+    if head.returncode != 0:
+        return "skip", None  # 还没有任何提交（首次提交之前）
+    try:
+        shown = subprocess.run(
+            ["git", "show", f"HEAD:{rel}"],
+            cwd=top, capture_output=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "skip", None
+    if shown.returncode != 0:
+        return "skip", None  # HEAD 里没有这个文件
+    anchor = _parse_audit_anchor_text(shown.stdout.decode("utf-8", "replace"))
+    if not anchor:
+        return "bad", None
+    return "anchor", anchor
+
+
+def _attach_git_anchor(args, agent: str, home, payload: dict, local) -> dict:
+    """把 git HEAD 里的锚当**第二个**锚点喂给 `audit`。两个都过才算绿。
+
+    取不到（非 git / 无提交 / HEAD 里没这文件）⇒ 跳过，不把这次变成红。
+    """
+    kind, git_anchor = _read_git_head_anchor(args.anchor_file)
+    if kind == "skip":
+        payload["git_anchor"] = {"skipped": True}
+        return payload
+    if kind == "bad" or not git_anchor:
+        payload["git_anchor"] = {"ok": False, "why": "HEAD 里的锚文件读不懂"}
+        payload["ok"] = False
+        return payload
+    if _same_anchor(local, git_anchor) and isinstance(payload.get("anchor"), dict):
+        checked_payload = payload
+        checked = payload["anchor"]
+    else:
+        checked_payload = call(
+            args.url, agent, "GET", "/v1/audit",
+            query=_audit_query(args.task, git_anchor), home=home,
+        )
+        checked = checked_payload.get("anchor") or {
+            "ok": False,
+            "why": "没有验到 git 锚",
+            "seq": git_anchor["seq"],
+            "hash": git_anchor["hash"],
+        }
+    payload["git_anchor"] = {
+        "ok": bool(checked.get("ok")),
+        "seq": checked.get("seq", git_anchor["seq"]),
+        "hash": checked.get("hash", git_anchor["hash"]),
+        "why": checked.get("why") or "",
+        "at": checked.get("at") or git_anchor.get("at") or "",
+    }
+    if not checked.get("ok") or not checked_payload.get("ok"):
+        payload["ok"] = False
+    return payload
 
 
 def _write_audit_anchor(args, agent: str, home=None) -> int:
@@ -1675,6 +1784,14 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 print(f"  外锚: **对不上** —— {anchor.get('why')}")
         else:
             print("  外锚: 无（`ic audit --anchor` 打一个，并把它提交进 git，才挡得住整表重做）")
+        git_anchor = payload.get("git_anchor")
+        if isinstance(git_anchor, dict) and git_anchor.get("skipped"):
+            print("  git 锚：无（跳过）")
+        elif isinstance(git_anchor, dict):
+            if git_anchor.get("ok"):
+                print(f"  git 锚：对上（seq {git_anchor.get('seq')}）")
+            else:
+                print(f"  git 锚：**对不上** —— {git_anchor.get('why') or '未知'}")
         return
     if cmd == "guard" and not as_json:
         if payload.get("ok"):
