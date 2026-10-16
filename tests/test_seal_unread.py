@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from infocenter.httpapi import handle
-from infocenter.store import MailError, Store
+from infocenter.store import MailError, Store, beijing_time
 
 ACCEPTANCE = "pytest tests/test_seal_unread.py"
 
@@ -387,6 +387,69 @@ class SealUnreadAliasTest(unittest.TestCase):
         closed = self.store.close_case(case["id"], agent="manager", note="办结")
         self.assertEqual(closed["status"], "done")
         self.assertEqual(self._delivery(root["id"], "kimi")["status"], "unread")
+
+    def test_看板下发最早时间和来自谁_零封则为空_不增列(self):
+        case, root = self._open_alias_only("human")
+        seen = self.store.get_case(case["id"], viewer="manager")
+        self.assertEqual(seen["unread_replies"], 1)
+        self.assertEqual(seen["unread_replies_from"], "opencode")
+        self.assertEqual(seen["unread_replies_earliest"], root["created_at"])
+        self.assertEqual(seen["unread_replies_earliest_beijing"], beijing_time(root["created_at"]))
+        self.assertTrue(seen["unread_replies_earliest_beijing"].endswith("+0800"))
+
+        first = self.store.send("opencode", ["manager", "kimi"], "开工", "先说")
+        second = self.store.reply("kimi", first["id"], "后说", to="manager")
+        threaded = self.store.create_case(
+            agent="opencode",
+            title="开工",
+            thread_id=first["thread_id"],
+            acceptance=ACCEPTANCE,
+        )
+        conn = sqlite3.connect(self.store.path)
+        try:
+            conn.execute(
+                "UPDATE messages SET created_at = ? WHERE id = ?",
+                ("2026-10-16T01:00:00Z", first["id"]),
+            )
+            conn.execute(
+                "UPDATE messages SET created_at = ? WHERE id = ?",
+                ("2026-10-16T02:00:00Z", second["id"]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        seen = self.store.get_case(threaded["id"], viewer="manager")
+        self.assertEqual(seen["unread_replies"], 2)
+        self.assertEqual(seen["unread_replies_from"], "opencode")
+        self.assertEqual(seen["unread_replies_earliest"], "2026-10-16T01:00:00Z")
+        self.assertEqual(seen["unread_replies_earliest_beijing"], "2026-10-16 09:00:00 +0800")
+        listed = next(row for row in self.store.list_cases(viewer="manager") if row["id"] == threaded["id"])
+        self.assertEqual(listed["unread_replies_from"], "opencode")
+        self.assertEqual(listed["unread_replies_earliest_beijing"], "2026-10-16 09:00:00 +0800")
+        status, detail = handle(
+            "GET", f"/v1/cases/{threaded['id']}", {"X-Agent": "manager"}, b"", self.store
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(detail["unread_replies_from"], "opencode")
+        self.assertEqual(detail["unread_replies_earliest"], "2026-10-16T01:00:00Z")
+
+        self.store.mark("manager", first["id"], "read")
+        self.store.mark("manager", second["id"], "read")
+        done = self.store.get_case(threaded["id"], viewer="manager")
+        self.assertEqual(done["unread_replies"], 0)
+        self.assertEqual(done["unread_replies_earliest"], "")
+        self.assertEqual(done["unread_replies_earliest_beijing"], "")
+        self.assertEqual(done["unread_replies_from"], "")
+
+        conn = sqlite3.connect(self.store.path)
+        try:
+            cols = {row[1] for row in conn.execute("PRAGMA table_info(cases)")}
+        finally:
+            conn.close()
+        self.assertNotIn("unread_replies", cols)
+        self.assertNotIn("unread_replies_earliest", cols)
+        self.assertNotIn("unread_replies_earliest_beijing", cols)
+        self.assertNotIn("unread_replies_from", cols)
 
 
 if __name__ == "__main__":

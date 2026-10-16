@@ -5538,11 +5538,18 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row, viewer: str | None = 
     # **不是过滤条件**——实测那堆里有真活（派单线程可以是"在办"、有 5 封信、三样全无）；
     # 看板默认折的是**已封卷**（归档；实测 100 条里 52 条是它）。
     substantive = bool((row["acceptance"] or "").strip() or milestones or (row["wbs_path"] or "").strip())
-    # 发给请求者自己、还没签收的信。别人那份不算（他签不了，拿它卡人＝死锁）。零新列，现查。
-    unread_replies = len(_own_unread_replies(conn, row["thread_id"], viewer or ""))
+    # 发给请求者自己、还没签收的信。别人那份不算（他签不了，拿它卡人＝死锁）。
+    # 最早一封的时间与来信人一并带上，CLI 黄灯才能印「最早 / 来自」。零新列，现查。
+    unread_hits = _own_unread_replies(conn, row["thread_id"], viewer or "")
+    earliest = unread_hits[0] if unread_hits else None
+    earliest_at = str(earliest["created_at"] or "") if earliest is not None else ""
+    earliest_from = str(earliest["from_agent"] or "") if earliest is not None else ""
     return {
         "substantive": substantive,
-        "unread_replies": unread_replies,
+        "unread_replies": len(unread_hits),
+        "unread_replies_earliest": earliest_at,
+        "unread_replies_earliest_beijing": beijing_time(earliest_at) if earliest_at else "",
+        "unread_replies_from": earliest_from,
         "id": row["id"],
         "thread_id": row["thread_id"],
         "title": row["title"],
