@@ -219,5 +219,175 @@ class SealUnreadTest(unittest.TestCase):
         self._assert_t1_rejects(fresh["id"])
 
 
+class SealUnreadAliasTest(unittest.TestCase):
+    """办结门槛与签收同一口径：先本名，没有才认另一个别名。
+
+    口径（派单 m1a145812bb5a68ea6）：
+    - 只有别名那一行未读 ⇒ 请求者 unread_replies=1，未签收办结 409；签收落在那一行之后可办结。
+    - 把别名回退短路成空 ⇒ 上面这条必须红，且办结会放行。
+    - 同一封信两行都在：签收只动本名，之后能办结（另一行仍未读也不 409）。
+    - 别人的未读仍不卡人。
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.home = Path(self.tmp.name)
+        os.environ["INFOCENTER_QUIET"] = "1"
+        self.store = Store(
+            self.home / "mailbox.db",
+            seeds=[
+                ("cursor", "Cursor", ""),
+                ("kimi", "Kimi", ""),
+                ("opencode", "OpenCode", "coordinator"),
+                ("manager", "人", "manager"),
+                ("human", "人", ""),
+            ],
+        )
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _delivery(self, message_id: str, agent: str) -> sqlite3.Row:
+        conn = sqlite3.connect(self.store.path)
+        conn.row_factory = sqlite3.Row
+        try:
+            return conn.execute(
+                "SELECT status, read_at, claimed_by, to_agent FROM deliveries WHERE message_id = ? AND to_agent = ?",
+                (message_id, agent),
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def _open_alias_only(self, to_agent: str = "human") -> tuple[dict, dict]:
+        """寄给一个名字、另一个名字名下没有行。立案人是发信人（线程当事人）。"""
+        root = self.store.send("opencode", to_agent, "探针", f"寄给 {to_agent}")
+        case = self.store.create_case(
+            agent="opencode",
+            title="探针",
+            thread_id=root["thread_id"],
+            acceptance=ACCEPTANCE,
+        )
+        return case, root
+
+    def _assert_alias_blocks(self, case_id: str, agent: str = "manager") -> None:
+        seen = self.store.get_case(case_id, viewer=agent)
+        self.assertEqual(seen["unread_replies"], 1)
+        with self.assertRaises(MailError) as ctx:
+            self.store.close_case(case_id, agent=agent, note="办结")
+        self.assertEqual(ctx.exception.code, "unread_replies")
+        self.assertEqual(ctx.exception.status, 409)
+        left = self.store.get_case(case_id, viewer=agent)
+        self.assertNotEqual(left["status"], "done")
+        self.assertFalse(left["sealed"])
+
+    def test_只有别名那一行未读则拒_签收落在那一行后可办结(self):
+        case, root = self._open_alias_only("human")
+        self.assertIsNone(self._delivery(root["id"], "manager"))
+        self.assertEqual(self._delivery(root["id"], "human")["status"], "unread")
+        seen = self.store.get_case(case["id"], viewer="manager")
+        self.assertEqual(seen["unread_replies"], 1)
+        listed = next(row for row in self.store.list_cases(viewer="manager") if row["id"] == case["id"])
+        self.assertEqual(listed["unread_replies"], 1)
+        status, detail = handle(
+            "GET", f"/v1/cases/{case['id']}", {"X-Agent": "manager"}, b"", self.store
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(detail["unread_replies"], 1)
+
+        with self.assertRaises(MailError) as ctx:
+            self.store.close_case(case["id"], agent="manager", note="办结")
+        self.assertEqual(ctx.exception.code, "unread_replies")
+        self.assertEqual(ctx.exception.status, 409)
+        self.assertIn("1 封没收", ctx.exception.message)
+        self.assertIn("来自 opencode", ctx.exception.message)
+        body = json.dumps({"note": "办结"}).encode()
+        with self.assertRaises(MailError) as ctx:
+            handle("POST", f"/v1/cases/{case['id']}/close", {"X-Agent": "manager"}, body, self.store)
+        self.assertEqual(ctx.exception.code, "unread_replies")
+
+        marked = self.store.mark("manager", root["id"], "read")
+        self.assertEqual(marked["delivery_status"], "read")
+        self.assertEqual(marked["delivered_to"], "human")
+        self.assertEqual(self._delivery(root["id"], "human")["status"], "read")
+        self.assertIsNone(self._delivery(root["id"], "manager"))
+        closed = self.store.close_case(case["id"], agent="manager", note="办结")
+        self.assertEqual(closed["status"], "done")
+        self.assertTrue(closed["sealed"])
+        self.assertEqual(closed["unread_replies"], 0)
+
+    def test_反向_只有现名那一行时旧名同样被拦(self):
+        case, root = self._open_alias_only("manager")
+        self._assert_alias_blocks(case["id"], agent="human")
+        marked = self.store.mark("human", root["id"], "read")
+        self.assertEqual(marked["delivered_to"], "manager")
+        self.assertEqual(self._delivery(root["id"], "manager")["status"], "read")
+        self.assertIsNone(self._delivery(root["id"], "human"))
+        closed = self.store.close_case(case["id"], agent="human", note="办结")
+        self.assertEqual(closed["status"], "done")
+        self.assertEqual(closed["unread_replies"], 0)
+
+    def test_反例_别名回退短路则判据变红且办结放行(self):
+        """把别名回退短路成空：别名那一行不再算未签收，办结放行，判据变红。恢复后新案卷仍被拦。"""
+        import infocenter.store as store_mod
+
+        case, root = self._open_alias_only("human")
+        real = store_mod._own_delivery_fallback_names
+        store_mod._own_delivery_fallback_names = lambda _agent: ()
+        try:
+            seen = self.store.get_case(case["id"], viewer="manager")
+            self.assertEqual(seen["unread_replies"], 0)
+            closed = self.store.close_case(case["id"], agent="manager", note="办结")
+            self.assertEqual(closed["status"], "done")
+            with self.assertRaises(AssertionError):
+                self._assert_alias_blocks(case["id"])
+        finally:
+            store_mod._own_delivery_fallback_names = real
+        self.assertEqual(self.store.get_case(case["id"])["status"], "done")
+        self.assertEqual(self._delivery(root["id"], "human")["status"], "unread")
+        fresh, _root = self._open_alias_only("human")
+        self._assert_alias_blocks(fresh["id"])
+
+    def test_两行都在时签收本名后可办结_另一行未读不卡(self):
+        both = self.store.send("opencode", "human,manager", "两份", "各一份")
+        case = self.store.create_case(
+            agent="opencode",
+            title="两份",
+            thread_id=both["thread_id"],
+            acceptance=ACCEPTANCE,
+        )
+        self.assertEqual(self.store.get_case(case["id"], viewer="manager")["unread_replies"], 1)
+        with self.assertRaises(MailError) as ctx:
+            self.store.close_case(case["id"], agent="manager", note="办结")
+        self.assertEqual(ctx.exception.code, "unread_replies")
+
+        self.store.mark("manager", both["id"], "read")
+        self.assertEqual(self._delivery(both["id"], "manager")["status"], "read")
+        self.assertEqual(self._delivery(both["id"], "human")["status"], "unread")
+        self.assertEqual(self.store.get_case(case["id"], viewer="manager")["unread_replies"], 0)
+        self.assertEqual(self.store.get_case(case["id"], viewer="human")["unread_replies"], 1)
+        with self.assertRaises(MailError) as ctx:
+            self.store.close_case(case["id"], agent="human", note="办结")
+        self.assertEqual(ctx.exception.code, "unread_replies")
+
+        closed = self.store.close_case(case["id"], agent="manager", note="办结")
+        self.assertEqual(closed["status"], "done")
+        self.assertTrue(closed["sealed"])
+        self.assertEqual(self._delivery(both["id"], "human")["status"], "unread")
+
+    def test_别人的未读仍不卡人(self):
+        root = self.store.send("manager", "kimi", "给你看", "别人还没签收")
+        case = self.store.create_case(
+            agent="manager",
+            title="给你看",
+            thread_id=root["thread_id"],
+            acceptance=ACCEPTANCE,
+        )
+        self.assertEqual(self._delivery(root["id"], "kimi")["status"], "unread")
+        self.assertEqual(self.store.get_case(case["id"], viewer="manager")["unread_replies"], 0)
+        closed = self.store.close_case(case["id"], agent="manager", note="办结")
+        self.assertEqual(closed["status"], "done")
+        self.assertEqual(self._delivery(root["id"], "kimi")["status"], "unread")
+
+
 if __name__ == "__main__":
     unittest.main()

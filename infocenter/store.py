@@ -170,10 +170,23 @@ def _recipient_names(agent: str) -> tuple[str, ...]:
     return tuple(sorted(HUMAN_NAMES, key=lambda name: (name != HUMAN, name)))
 
 
+def _own_delivery_fallback_names(agent: str) -> tuple[str, ...]:
+    """本名那一行不在时才看的别名。人只有另一个名字；别人没有。
+
+    签收（`_resolve_own_delivery`）和办结门槛（`_own_unread_replies`）共用这一处，
+    免得一边认别名、一边仍按本名精确匹配。
+    反例测试把它短路成空元组：别名那一行就不算「我的那一份」。
+    """
+    agent = normalize_name(agent)
+    if not is_person(agent):
+        return ()
+    return tuple(name for name in _recipient_names(agent) if name != agent)
+
+
 def _resolve_own_delivery(conn: sqlite3.Connection, message_id: str, agent: str) -> sqlite3.Row | None:
     """先找收件人正好是这个名字的那一份，没有再找另一个人的别名。
 
-    只读：不插入、不改 to_agent。
+    只读：不插入、不改 to_agent。两行都在时只返回本名那一行。
     """
     agent = normalize_name(agent)
     row = conn.execute(
@@ -184,11 +197,9 @@ def _resolve_own_delivery(conn: sqlite3.Connection, message_id: str, agent: str)
         """,
         (message_id, agent),
     ).fetchone()
-    if row is not None or not is_person(agent):
+    if row is not None:
         return row
-    for other in _recipient_names(agent):
-        if other == agent:
-            continue
+    for other in _own_delivery_fallback_names(agent):
         row = conn.execute(
             """
             SELECT message_id, to_agent, status, read_at, claimed_by, claimed_at
@@ -4342,24 +4353,33 @@ def _must_unsealed(row: sqlite3.Row) -> None:
 
 
 def _own_unread_replies(conn: sqlite3.Connection, thread_id: str, agent: str) -> list[sqlite3.Row]:
-    """这条线程上发给 agent 自己、还没签收的投递（按时间从早到晚）。
+    """这条线程上「我的那一份」还没签收的信（按时间从早到晚）。
 
-    只算这一份：别人未签收的副本他签不了，拿它卡人＝死锁。
+    与签收同一口径：先找本名那一行；本名没有，才找另一个别名那一行。
+    两行都在时只认本名——签收不会动另一行，两行都算会把人卡死。
+    别人的未读不算（他签不了，拿它卡人＝死锁）。
     """
     if not thread_id or not agent:
         return []
-    return conn.execute(
+    try:
+        agent = normalize_name(agent)
+    except MailError:
+        return []
+    messages = conn.execute(
         """
-        SELECT m.id, m.from_agent, m.created_at
-        FROM deliveries d
-        JOIN messages m ON m.id = d.message_id
-        WHERE m.thread_id = ?
-          AND d.to_agent = ?
-          AND d.status = 'unread'
-        ORDER BY m.created_at ASC, m.id ASC
+        SELECT id, from_agent, created_at
+        FROM messages
+        WHERE thread_id = ?
+        ORDER BY created_at ASC, id ASC
         """,
-        (thread_id, agent),
+        (thread_id,),
     ).fetchall()
+    hits: list[sqlite3.Row] = []
+    for msg in messages:
+        delivery = _resolve_own_delivery(conn, msg["id"], agent)
+        if delivery is not None and delivery["status"] == "unread":
+            hits.append(msg)
+    return hits
 
 
 def _block_unread_replies(conn: sqlite3.Connection, row: sqlite3.Row, agent: str) -> None:
