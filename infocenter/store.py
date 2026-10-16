@@ -18,6 +18,11 @@ WINDOW_RE = re.compile(r"^[\w][\w.:-]{0,63}$", re.UNICODE)
 CASE_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,63}$")
 _SEGMENT_RE = re.compile(r"^[\w][\w-]{0,31}$", re.UNICODE)
 
+# 人的身份只有这一份：现名 manager，旧名 human 永久只认。
+# 不做写时归一、不做数据迁移（哈希链里的 human 留着）。grok 从这里 import，别改这三个名字。
+HUMAN = "manager"
+HUMAN_NAMES = frozenset({"manager", "human"})
+
 CASE_STATUS_LABELS = {
     "pending": "待办",
     "open": "在办",
@@ -128,6 +133,29 @@ def normalize_name(value: str) -> str:
     if name in BROADCAST or not NAME_RE.fullmatch(name) or ".." in name:
         raise MailError("invalid_name", "agent 名字需为 1–64 位字母、数字、_、- 或 .，且不能是 *、all、everyone")
     return name
+
+
+def is_person(name: str) -> bool:
+    """manager 与 human 是同一个人。非法名字当不是。"""
+    try:
+        return normalize_name(name) in HUMAN_NAMES
+    except MailError:
+        return False
+
+
+def _same_agent(left: str, right: str) -> bool:
+    """持有者比较：逐字相同，或两边都是人。不改落库的名字。"""
+    if left == right:
+        return True
+    return is_person(left) and is_person(right)
+
+
+def _holder_names(agent: str) -> tuple[str, ...]:
+    """放「自己的」锁时要覆盖的落库名字。人的两个别名都算；其它名字只有自己。"""
+    agent = normalize_name(agent)
+    if agent in HUMAN_NAMES:
+        return tuple(HUMAN_NAMES)
+    return (agent,)
 
 
 def normalize_case_id(value: str) -> str:
@@ -866,7 +894,7 @@ class Store:
             if thread_id:
                 case_row = _find_case(conn, final_thread_id)
                 if case_row is not None and not case_row["sealed"] and case_row["status"] not in SEALED_STATUSES:
-                    if case_row["status"] == "waiting" and case_row["owner_agent"] in recipients and sender != case_row["owner_agent"]:
+                    if case_row["status"] == "waiting" and case_row["owner_agent"] in recipients and not _same_agent(sender, case_row["owner_agent"] or ""):
                         conn.execute(
                             "UPDATE cases SET status = 'open', waiting_for = NULL, updated_at = ? WHERE id = ?",
                             (created, case_row["id"]),
@@ -882,7 +910,7 @@ class Store:
                             auto=False,
                             now=created,
                         )
-                    elif case_row["status"] == "open" and sender == case_row["owner_agent"]:
+                    elif case_row["status"] == "open" and _same_agent(sender, case_row["owner_agent"] or ""):
                         wait_for = next((r for r in recipients if r != sender), None)
                         conn.execute(
                             "UPDATE cases SET status = 'waiting', waiting_for = ?, updated_at = ? WHERE id = ?",
@@ -1401,7 +1429,7 @@ class Store:
 
     def create_case(
         self,
-        agent: str = "human",
+        agent: str = HUMAN,
         title: str | None = None,
         workspace: str | None = None,
         owner_agent: str | None = None,
@@ -1416,7 +1444,7 @@ class Store:
         milestones=None,
         acceptance: str | None = None,
     ) -> dict:
-        agent = normalize_name(agent or "human")
+        agent = normalize_name(agent or HUMAN)
         owner_window = normalize_window(owner_window)
         owner_agent = normalize_name(owner_agent) if owner_agent else (agent if owner_window else None)
         workspace = _workspace(workspace)
@@ -1442,7 +1470,7 @@ class Store:
                 subject=title_text,
                 body=body,
                 workspace=workspace,
-                window_id=owner_window if owner_agent == agent else None,
+                window_id=owner_window if _same_agent(owner_agent or "", agent) else None,
                 pid=pid,
             )
             thread_id = sent["thread_id"]
@@ -1582,7 +1610,7 @@ class Store:
                 raise MailError("not_found", f"没有找到案卷：{cid}", 404)
             if row["sealed"] or row["status"] in SEALED_STATUSES:
                 raise MailError("case_sealed", f"案卷 {cid} 已封卷，不能再改「怎样算完」", 409)
-            if agent != (row["owner_agent"] or "") and not _is_coordinator(conn, agent, row["workspace"]):
+            if not _same_agent(agent, row["owner_agent"] or "") and not _is_coordinator(conn, agent, row["workspace"]):
                 owner = row["owner_agent"] or "（还没人）"
                 raise MailError(
                     "not_yours",
@@ -1730,7 +1758,7 @@ class Store:
                     continue
                 if window_filter is not None and row["owner_window"] != window_filter:
                     continue
-                if agent_filter is not None and row["owner_agent"] != agent_filter:
+                if agent_filter is not None and not _same_agent(row["owner_agent"] or "", agent_filter):
                     continue
                 if wait_filter is not None and (row["waiting_for"] or "") != wait_filter:
                     continue
@@ -1756,7 +1784,7 @@ class Store:
         auto: bool = False,
         pid: int | None = None,
     ) -> dict:
-        agent = normalize_name(agent or "human")
+        agent = normalize_name(agent or HUMAN)
         case_id = normalize_case_id(case_id)
         window_id = normalize_window(window_id)
         note_text = _node_note(note)
@@ -1832,8 +1860,8 @@ class Store:
                 ).fetchone()
                 if (
                     has_msg is not None
-                    and agent != "human"
-                    and row["owner_agent"] != agent
+                    and not is_person(agent)
+                    and not _same_agent(row["owner_agent"] or "", agent)
                     and not _is_thread_party(conn, row["thread_id"], agent)
                 ):
                     raise MailError("not_found", f"没有找到案卷：{case_id}", 404)
@@ -1915,7 +1943,7 @@ class Store:
         note: str | None = None,
         pid: int | None = None,
     ) -> dict:
-        agent = normalize_name(agent or "human")
+        agent = normalize_name(agent or HUMAN)
         case_id = normalize_case_id(case_id)
         target_window = normalize_window(to_window)
         if not target_window:
@@ -1933,14 +1961,14 @@ class Store:
                 agent=target_agent,
                 workspace=row["workspace"],
                 activity=None,
-                pid=pid if target_agent == agent else None,
+                pid=pid if _same_agent(target_agent, agent) else None,
                 now=now,
             )
             note_text = _node_note(note or f"转办 → 交接给 {target_window}")
             # D-2：跨 agent 转办时，先释放源 owner 名下这条线程的投递认领，
             # 避免旧窗口仍被当成主办、新信继续继承僵尸认领（双归属）。
             source_owner_agent = row["owner_agent"]
-            if source_owner_agent and source_owner_agent != target_agent:
+            if source_owner_agent and not _same_agent(source_owner_agent, target_agent):
                 conn.execute(
                     """
                     UPDATE deliveries
@@ -1984,13 +2012,13 @@ class Store:
     def pause_case(
         self,
         case_id: str,
-        agent: str = "human",
+        agent: str = HUMAN,
         window_id: str | None = None,
         note: str | None = None,
         interrupted: bool = False,
         actor: str | None = None,
     ) -> dict:
-        agent = normalize_name(actor or agent or "human")
+        agent = normalize_name(actor or agent or HUMAN)
         case_id = normalize_case_id(case_id)
         window_id = normalize_window(window_id)
         default_note = "暂停（当前轮被中断）" if interrupted else "暂停"
@@ -2013,11 +2041,11 @@ class Store:
     def resume_case(
         self,
         case_id: str,
-        agent: str = "human",
+        agent: str = HUMAN,
         window_id: str | None = None,
         note: str | None = None,
     ) -> dict:
-        agent = normalize_name(agent or "human")
+        agent = normalize_name(agent or HUMAN)
         case_id = normalize_case_id(case_id)
         window_id = normalize_window(window_id)
         note_text = _node_note(note or "恢复在办")
@@ -2034,12 +2062,12 @@ class Store:
     def abort_case(
         self,
         case_id: str,
-        agent: str = "human",
+        agent: str = HUMAN,
         window_id: str | None = None,
         note: str | None = None,
         auto: bool = False,
     ) -> dict:
-        agent = normalize_name(agent or "human")
+        agent = normalize_name(agent or HUMAN)
         case_id = normalize_case_id(case_id)
         window_id = normalize_window(window_id)
         note_text = _node_note(note or "中止（封卷）")
@@ -2056,12 +2084,12 @@ class Store:
     def close_case(
         self,
         case_id: str,
-        agent: str = "human",
+        agent: str = HUMAN,
         window_id: str | None = None,
         note: str | None = None,
         auto: bool = False,
     ) -> dict:
-        agent = normalize_name(agent or "human")
+        agent = normalize_name(agent or HUMAN)
         case_id = normalize_case_id(case_id)
         window_id = normalize_window(window_id)
         note_text = _node_note(note or "办结（结案封档）")
@@ -2078,12 +2106,12 @@ class Store:
     def reopen_case(
         self,
         case_id: str,
-        agent: str = "human",
+        agent: str = HUMAN,
         window_id: str | None = None,
         note: str | None = None,
         pid: int | None = None,
     ) -> dict:
-        agent = normalize_name(agent or "human")
+        agent = normalize_name(agent or HUMAN)
         case_id = normalize_case_id(case_id)
         window_id = normalize_window(window_id)
         note_text = _node_note(note or "重开案卷")
@@ -2106,7 +2134,7 @@ class Store:
                     agent=new_owner_agent,
                     workspace=row["workspace"],
                     activity=None,
-                    pid=pid if new_owner_agent == agent else None,
+                    pid=pid if _same_agent(new_owner_agent, agent) else None,
                     now=now,
                 )
             conn.execute(
@@ -2302,7 +2330,7 @@ class Store:
             if row["status"] != "todo":
                 raise MailError("invalid_transition", f"只有 todo 能开工（当前 {row['status']}）", 409)
             # 第三条线只兜底：规格不全**不拦人**（看板会把它标黄）。
-            if agent != row["owner"] and not _is_coordinator(conn, agent, row["workspace"]):
+            if not _same_agent(agent, row["owner"]) and not _is_coordinator(conn, agent, row["workspace"]):
                 raise MailError("not_yours", "只有该任务的 owner 或 coordinator 能开工", 403)
             conn.execute(
                 "UPDATE tasks SET status = 'doing', updated_at = ?, updated_by = ? WHERE id = ?",
@@ -2344,7 +2372,7 @@ class Store:
             if st == cur:
                 raise MailError("invalid_transition", f"已经是 {st}", 409)
             is_coord = _is_coordinator(conn, agent, row["workspace"])
-            mine = agent == row["owner"]
+            mine = _same_agent(agent, row["owner"])
             # 状态机 = 两张表的**并集**，对谁都一样（表就是唯一事实，别再散判）。
             # 注意：`doing → todo` 对 coordinator **也不许**——倒回 todo 等于"解冻规格"，
             # 而"开工即冻结规格"是硬口径；要改规格就 stop 后新建任务线。
@@ -2540,7 +2568,7 @@ class Store:
                         (r for r in existing if _same_file(r["path"], path)),
                         None,
                     )
-                if row is None or row["agent"] == agent or force:
+                if row is None or _same_agent(row["agent"], agent) or force:
                     continue
                 item = {
                     "path": path,
@@ -2571,7 +2599,7 @@ class Store:
             lacking: list[str] = []
             for path in wanted:
                 row = _matching_lock(existing, path)
-                if row is None or row["agent"] != agent:
+                if row is None or not _same_agent(row["agent"], agent):
                     continue
                 renewals[path] = row
                 if not _lock_has_progress(path, row["acquired_at"]):
@@ -2624,6 +2652,9 @@ class Store:
                             (val for key, val in dirty_text.items() if _same_file(key, path)), ""
                         )
                     acquired_at, path_expires, _stay_mark = plans[path]
+                    # 别名续期不改落库名字：human 拿的锁，manager 来续，行里仍是 human。
+                    prior = renewals.get(path)
+                    stored_agent = prior["agent"] if prior is not None else agent
                     conn.execute(
                         """
                         INSERT INTO locks(path, agent, window_id, task_id, note, dirty_at_lock, acquired_at, expires_at)
@@ -2639,7 +2670,7 @@ class Store:
                                 ELSE excluded.dirty_at_lock END,
                             acquired_at = excluded.acquired_at, expires_at = excluded.expires_at
                         """,
-                        (path, agent, window_id, task, note_text, dirt, acquired_at, path_expires),
+                        (path, stored_agent, window_id, task, note_text, dirt, acquired_at, path_expires),
                     )
                 for path in wanted:
                     _acquired_at, path_expires, stay_mark = plans[path]
@@ -2734,18 +2765,24 @@ class Store:
                     for row in rows:
                         conn.execute("DELETE FROM locks WHERE path = ?", (row["path"],))
             else:
+                names = _holder_names(agent)
+                marks = ",".join("?" * len(names))
                 if paths is None:
-                    rows = conn.execute("SELECT * FROM locks WHERE agent = ?", (agent,)).fetchall()
-                    conn.execute("DELETE FROM locks WHERE agent = ?", (agent,))
+                    rows = conn.execute(
+                        f"SELECT * FROM locks WHERE agent IN ({marks})", names
+                    ).fetchall()
+                    conn.execute(f"DELETE FROM locks WHERE agent IN ({marks})", names)
                 else:
                     rows = _rows_covering(
-                        conn.execute("SELECT * FROM locks WHERE agent = ?", (agent,)).fetchall(),
+                        conn.execute(
+                            f"SELECT * FROM locks WHERE agent IN ({marks})", names
+                        ).fetchall(),
                         _lock_paths(paths),
                     )
                     for row in rows:
                         conn.execute(
                             "DELETE FROM locks WHERE path = ? AND agent = ?",
-                            (row["path"], agent),
+                            (row["path"], row["agent"]),
                         )
             targets = [row["path"] for row in rows]
             released = len(rows)
@@ -2891,7 +2928,7 @@ class Store:
         with self._session(immediate=True) as conn:
             holder = conn.execute("SELECT agent FROM locks WHERE path = ?", (target,)).fetchone()
             is_coord = _may_force(conn, agent, [target])
-            if holder is not None and holder["agent"] != agent and not is_coord:
+            if holder is not None and not _same_agent(holder["agent"], agent) and not is_coord:
                 raise MailError(
                     "not_yours",
                     f"{target} 的钥匙在 {holder['agent']} 手里：合并只能由**拿钥匙的人**做"
@@ -3070,7 +3107,7 @@ class Store:
             row = covering[0] if covering else None
             if row is None:
                 unlocked.append(path)
-            elif (not require_mine) or row["agent"] == agent or is_coord:
+            elif (not require_mine) or _same_agent(row["agent"], agent) or is_coord:
                 mine.append({"path": path, "holder": row["agent"]})
                 if row["dirty_at_lock"]:
                     # 拿钥匙时盘上就已经有别处来的改动：这次提交会把它们一起带走（黄灯，不拦）
@@ -3381,7 +3418,7 @@ class Store:
             ).fetchall()
             out = []
             for row in rows:
-                if agent_filter and row["agent"] != agent_filter:
+                if agent_filter and not _same_agent(row["agent"], agent_filter):
                     continue
                 if workspace is not None and not _workspace_scope(row["workspace"], workspace):
                     continue
@@ -3410,7 +3447,7 @@ class Store:
         now = utcnow()
         with self._session(immediate=True) as conn:
             row = conn.execute("SELECT * FROM windows WHERE window_id = ?", (wid,)).fetchone()
-            agent_name = normalize_name(acting) if acting else (row["agent"] if row else "human")
+            agent_name = normalize_name(acting) if acting else (row["agent"] if row else HUMAN)
             if row is None:
                 conn.execute(
                     """
@@ -3567,7 +3604,7 @@ class Store:
                 # **留痕**：指定/更换项目的 coordinator 是**治理**动作——必须进只增痕迹（哈希链覆盖它，
                 # 外锚也把它钉住）。空 task_id 与案卷的 `acceptance` 事件同例，属正常用法。
                 _emit_task_event(
-                    conn, "", normalize_name(actor or "human"), "project_coordinator",
+                    conn, "", normalize_name(actor or HUMAN), "project_coordinator",
                     prev_coord, wait_coord, {"workspace": ws, "coordinator": wait_coord}, now,
                 )
             projects = _collect_projects(conn)
@@ -4220,7 +4257,7 @@ def _effective_thread_claim(
     if row and row["claimed_by"]:
         return row["claimed_by"]
     case_row = _find_case(conn, thread_id)
-    if case_row and not case_row["sealed"] and case_row["owner_window"] and case_row["owner_agent"] == agent:
+    if case_row and not case_row["sealed"] and case_row["owner_window"] and _same_agent(case_row["owner_agent"] or "", agent):
         return case_row["owner_window"]
     return None
 
@@ -4280,7 +4317,7 @@ def _claim_thread_on_touch(
     ).fetchone()
     direct_claim = delivery["claimed_by"] if delivery else None
     existing_claim = _effective_thread_claim(conn, thread_id, agent, direct_claim)
-    if existing_claim is None and case_row is not None and case_row["owner_window"] and case_row["owner_agent"] == agent:
+    if existing_claim is None and case_row is not None and case_row["owner_window"] and _same_agent(case_row["owner_agent"] or "", agent):
         existing_claim = case_row["owner_window"]
 
     if existing_claim is not None and existing_claim != window_id and not force:
@@ -5073,15 +5110,19 @@ def _task_priority(value) -> int:
 
 
 def _must_human(agent: str) -> None:
-    """**只有 human**：指定项目的 coordinator、移除成员（README 一直这么写，2026-10-16 起有机器兜底）。"""
-    if normalize_name(agent) != "human":
-        raise MailError("human_only", f"{agent} 不是 human；这件事只有 human 能做", 403)
+    """只有人能指定项目的 coordinator、移除别人。现名 manager，旧名 human 同样算。"""
+    if not is_person(agent):
+        raise MailError(
+            "human_only",
+            f"{agent} 不是 manager；这件事只有 manager 能做（旧名 human 仍认）",
+            403,
+        )
 
 
 def _is_manager(conn: sqlite3.Connection, agent: str) -> bool:
-    """**全局管理者**（旧称 coordinator）：名册里 `role=manager` 的；human 天然算。"""
+    """**全局管理者**（旧称 coordinator）：名册里 `role=manager` 的；人（manager / human）天然算。"""
     agent = normalize_name(agent)
-    if agent == "human":
+    if is_person(agent):
         return True
     row = conn.execute("SELECT role FROM agents WHERE name = ?", (agent,)).fetchone()
     return bool(row and str(row["role"] or "") in {"manager", "coordinator"})
@@ -5123,12 +5164,12 @@ def _is_coordinator(conn: sqlite3.Connection, agent: str, workspace: str | None)
 
     人拍的口径（2026-10-16）：每个项目 coordinator **不固定、由用户指定**；**项目在、没指定 ⇒ 拒**
     （不许默认兜底）。三种边角：
-    - `human` 天然算（它是拍板的人）；
+    - 人（manager，旧名 human）天然算（拍板的人）；
     - **不属于任何项目**（空 workspace / 没登记过的目录）⇒ 回落 `_is_manager`（跟锁那条规则同源）；
     - 项目在而 `coordinator` 为空 ⇒ **False**（必须指定）。
     """
     agent = normalize_name(agent)
-    if agent == "human":
+    if is_person(agent):
         return True
     row = _project_for(conn, workspace)
     if row is None:
@@ -5247,7 +5288,7 @@ def _human_voices(conn: sqlite3.Connection) -> set[str]:
     （`seed` 当时裸插旧值、绕过归一化）⇒ 看板的「人话 / 人话过期」判定**静默退化成只有 human**。
     教训：扫角色比较要连 **SQL 谓词**一起扫。
     """
-    voices = {"human"}
+    voices = set(HUMAN_NAMES)
     voices.update(
         row["name"]
         for row in conn.execute("SELECT name FROM agents WHERE role IN ('manager', 'coordinator')")

@@ -252,7 +252,10 @@ hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
 
 <script>
 // D3 应用管理台 · 三栏级联 + 设置弹窗
-// 后端默认回退 human，浏览器直接 fetch
+// 后端默认回退 human，浏览器直接 fetch。给人看时 human 写成 manager；请求、锚点、库里的名字不动。
+function showName(name) {
+  return name === "human" ? "manager" : (name || "");
+}
 
 let state = {
   projects: [],
@@ -530,7 +533,7 @@ function render() {
         + acts.map(a => {
             const p = state.projects.find(x => sameWs(x.workspace, a.workspace));
             const proj = p ? (p.name || p.workspace) : (a.workspace ? String(a.workspace).split("/").filter(Boolean).pop() : "");
-            const office = (a.agent || "") + (a.window_id ? " · " + a.window_id : "");
+            const office = showName(a.agent || "") + (a.window_id ? " · " + a.window_id : "");
             return `<tr class="${a.auto ? 'auto' : ''}">
             <td class="time">${escapeHtml(a.created_at_beijing || "")}</td>
             <td>${escapeHtml(proj)}</td>
@@ -548,12 +551,12 @@ function render() {
   const agEl = document.getElementById("agents");
   if (agEl) {
     const ordered = state.agents.filter(a => a.roster !== false)
-      .sort((a, b) => (a.name === "human" ? 1 : 0) - (b.name === "human" ? 1 : 0));
+      .sort((a, b) => ((a.name === "human" || a.name === "manager") ? 1 : 0) - ((b.name === "human" || b.name === "manager") ? 1 : 0));
     agEl.innerHTML = ordered.map(a => {
-      const isHuman = a.name === "human";
+      const isHuman = a.name === "human" || a.name === "manager";
       const hd = state.headless.some(h => h.agent === a.name && h.alive);
       return `<span class="chip ${["manager", "coordinator"].includes(a.role) ? "coord" : ""} ${isHuman ? "human" : ""}" data-agent="${escapeHtml(a.name)}" title="${escapeHtml(a.activity || "")}">
-        <b>${escapeHtml(a.name)}</b>${["manager", "coordinator"].includes(a.role) ? '<span class="role">coord</span>' : ""}${hd ? ' <span class="hd" title="headless 正在跑">&#9889;</span>' : ""}<span class="unread">未读 ${a.unread || 0}</span>${a.probe ? `<span class="${a.probe.verdict === 'ok' || a.probe.verdict === 'quiet' ? 'unread' : 'stale'}" title="${escapeHtml(a.probe.why || '')}——最近 ${a.probe.minutes} 分钟的 headless 触发数 / 产出（机械动作 ${a.probe.machinery} 次不算产出）${a.probe.truncated ? '；触发数只是下限' : ''}">触发 ${a.probe.triggers}/产出 ${a.probe.produced}</span>` : ""}
+        <b>${escapeHtml(showName(a.name))}</b>${["manager", "coordinator"].includes(a.role) ? '<span class="role">coord</span>' : ""}${hd ? ' <span class="hd" title="headless 正在跑">&#9889;</span>' : ""}<span class="unread">未读 ${a.unread || 0}</span>${a.probe ? `<span class="${a.probe.verdict === 'ok' || a.probe.verdict === 'quiet' ? 'unread' : 'stale'}" title="${escapeHtml(a.probe.why || '')}——最近 ${a.probe.minutes} 分钟的 headless 触发数 / 产出（机械动作 ${a.probe.machinery} 次不算产出）${a.probe.truncated ? '；触发数只是下限' : ''}">触发 ${a.probe.triggers}/产出 ${a.probe.produced}</span>` : ""}
       </span>`;
     }).join("");
     agEl.querySelectorAll(".chip[data-agent]").forEach(c => c.addEventListener("click", () => openSettings(c.dataset.agent === "human" ? "human" : "agent", c.dataset.agent)));
@@ -627,7 +630,7 @@ function openSettings(kind, id) {
       <div class="form-row"><label>指派给（选了就同时发一封始信，触发对方开工）</label>
         <select id="s-case-assign">
           <option value="">不指派（只建案卷，不发信）</option>
-          ${state.agents.filter(a => a.name !== "human").map(a => `<option value="${escapeHtml(a.name)}">${escapeHtml(a.name)}${["manager", "coordinator"].includes(a.role) ? "（coordinator）" : ""}</option>`).join("")}
+          ${state.agents.filter(a => a.name !== "human").map(a => `<option value="${escapeHtml(a.name)}">${escapeHtml(showName(a.name))}${["manager", "coordinator"].includes(a.role) ? "（coordinator）" : ""}</option>`).join("")}
         </select>
       </div>
       <div class="form-row"><label>说明 / 始信正文（可选）</label><textarea id="s-case-body" placeholder="不指派 → 作为案卷开篇节点；指派 → 作为始信正文（留空则用标题）"></textarea></div>
@@ -645,12 +648,12 @@ function openSettings(kind, id) {
       <div class="form-row"><label>该项目的 coordinator</label>
         <select id="s-proj-coord">
           ${[""].concat(state.agents.filter(a => a.name !== "human").map(a => a.name))
-              .map(n => `<option value="${escapeHtml(n)}"${n === (p.coordinator || "") ? " selected" : ""}>${n ? escapeHtml(n) : "——（没指定：coordinator 类操作会被拒）"}</option>`)
+              .map(n => `<option value="${escapeHtml(n)}"${n === (p.coordinator || "") ? " selected" : ""}>${n ? escapeHtml(showName(n)) : "——（没指定：coordinator 类操作会被拒）"}</option>`)
               .join("")}
         </select>
         <button class="btn" data-act="set-project-coordinator">保存</button>
       </div>
-      <div class="kv quiet">只有 human 能设（机器兜底，不是文档级）。<b>没指定</b>的项目里，里程碑 / WBS / 建任务 / 任务的 done·stopped 一律拒——这是 human 2026-10-16 拍的口径。</div>
+      <div class="kv quiet">只有 manager 能设（机器兜底，不是文档级；旧名 human 仍认）。<b>没指定</b>的项目里，里程碑 / WBS / 建任务 / 任务的 done·stopped 一律拒——这是 manager 2026-10-16 拍的口径。</div>
 
       <div class="section-title">归档</div>
       <div class="settings-actions">
@@ -662,7 +665,7 @@ function openSettings(kind, id) {
       <div class="section-title">该项目的项目团队会话（${wins.length}）</div>
       ${wins.length === 0 ? '<div class="empty">暂无</div>' : wins.map(w => `
         <div class="mini" data-act="goto-window" data-wid="${escapeHtml(w.window_id || w.id)}">
-          ${escapeHtml(w.agent)} · ${escapeHtml(w.window_id || w.id)} · ${escapeHtml(w.state_label || w.state || "")}
+          ${escapeHtml(showName(w.agent))} · ${escapeHtml(w.window_id || w.id)} · ${escapeHtml(w.state_label || w.state || "")}
         </div>`).join("")}`;
     overlay.classList.add("show");
     return;
@@ -732,10 +735,10 @@ function openSettings(kind, id) {
   }
 
   if (kind === "human") {
-    const opts = state.agents.filter(a => a.roster !== false && a.name !== "human").map(a => `<option value="${escapeHtml(a.name)}">${escapeHtml(a.name)}</option>`).join("");
+    const opts = state.agents.filter(a => a.roster !== false && a.name !== "human").map(a => `<option value="${escapeHtml(a.name)}">${escapeHtml(showName(a.name))}</option>`).join("");
     const offices = state.windows.filter(w => w.state !== "left");
     const openCases = state.cases.filter(c => !c.sealed);
-    titleEl.textContent = "human · 干预中枢";
+    titleEl.textContent = "manager · 干预中枢";
     bodyEl.innerHTML = `
       <div class="section-title">① 发信（下指令）</div>
       <div class="form-row"><label>收件人（可多选；「★ 所有 agent」= 广播）</label>
@@ -785,7 +788,7 @@ function openSettings(kind, id) {
         </div>`;
       }).join("")}
 
-      <div class="section-title">⑤ human 的信件往来</div>
+      <div class="section-title">⑤ manager 的信件往来</div>
       <div id="s-agent-mail"><div class="empty">加载…</div></div>`;
     overlay.classList.add("show");
     loadAgentMail("human");
@@ -991,7 +994,7 @@ async function loadAgentMail(name) {
           return `<tr>
           <td class="time">${escapeHtml(m.created_at_beijing || "")}</td>
           <td>${dir}</td>
-          <td>${escapeHtml(m.other || "")}</td>
+          <td>${escapeHtml(showName(m.other || ""))}</td>
           <td>${escapeHtml(proj)}</td>
           <td title="会话编号（点击复制）">${m.claimed_by ? '<span class="cid copy" data-copy="' + escapeHtml(m.claimed_by) + '">' + escapeHtml(m.claimed_by) + '</span>' : "—"}</td>
           <td title="${escapeHtml(m.case_title || "")}">${m.case_id ? '<span class="cid copy" data-copy="' + escapeHtml(m.case_id) + '">' + escapeHtml(m.case_id) + '</span>' : "—"}</td>

@@ -5,10 +5,12 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from infocenter import __version__, config
 from infocenter.store import (
+    HUMAN,
     LOCK_TTL,
     MailError,
     Store,
     beijing_time,
+    is_person,
     iso_ago,
     normalize_name,
     normalize_window,
@@ -627,9 +629,9 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         b_ag = _opt_str(body, "agent")
         if method == "GET":
             q_ag = query.get("agent", [None])[0]
-            agent = normalize_name(b_ag or q_ag or "human")
+            agent = normalize_name(b_ag or q_ag or HUMAN)
         else:
-            agent = normalize_name(b_ag or "human")
+            agent = normalize_name(b_ag or HUMAN)
     else:
         agent = _agent_header(headers)
         if window_id is not None:
@@ -708,8 +710,8 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
 
     if method == "DELETE" and path.startswith("/v1/agents/"):
         name = normalize_name(_one(path, "/v1/agents/"))
-        if name != agent and agent != "human":
-            raise MailError("not_you", "只能移除你自己；用户请用 human 身份移除别人", 403)
+        if name != agent and not is_person(agent):
+            raise MailError("not_you", "只能移除你自己；用户请用 manager 身份移除别人（旧名 human 仍认）", 403)
         return 200, store.remove_agent(agent, name)
 
     if method == "POST" and path == "/v1/messages":
