@@ -10,13 +10,15 @@
    新加子命令若忘了进这张表，测试会红（"忘了接线"比"接错线"更常见）。
 
 **已知不够（登记，未做）**：
-1. 挡不住"开关只在某个分支里被读"那类——`--status` 正是这种（它确实被读了，但只在带 `--note` 的那条路上）。
-   要机器化，得先把 parser 抽成可构造的（`build_parser()`），再逐个开关"单独给一次"扫一遍。
-2. **循环生成的子解析器扫不到**（kimi 2026-10-16 追审登记）：静态那段只认字面 `sub.add_parser("x")`，
-   `crew` / `sync` 里在循环里建的那些看不见 ⇒ "新加子命令忘了进表"只对字面写得出的生效。
-   同样得等 `build_parser()` 才能根治。
+1. 挡不住"开关只在某个分支里被读"那类——`case --status` 正是这种（它确实被读了，但只在带 `--note` 的那条路上）。
+   `build_parser()` 已经可构造；还差逐个开关"单独给一次"扫一遍。
+
+循环生成的子解析器（kimi 2026-10-16 追审登记，本轮已解决）：对账改为从 `build_parser()` 递归内省，
+不再认字面 `sub.add_parser("x")`。`crew` 的 pause/resume/abort/close 与 `sync` 的 export/import/once
+必须出现在内省集合里，退回正则会红。
 """
 
+import argparse
 import ast
 import contextlib
 import io
@@ -34,9 +36,16 @@ from infocenter import cli
 
 CLI_SRC = (ROOT / "infocenter" / "cli.py").read_text(encoding="utf-8")
 
-# `crew` 下面还有一层子动作（`ic crew up|kickoff|down|watch`）——它们由 `ic crew` 那条冒烟项
-# 连同 crew 自己的测试覆盖，不必各来一条最小 argv。
-NESTED_SUBCOMMANDS = {"up", "kickoff", "down", "watch"}
+# `crew` / `sync` 下面还有一层子动作。它们由父命令那条冒烟项和各自的测试覆盖，
+# 不必各来一条最小 argv。`crew status` 与顶层 `status` 同名，名字已在 SMOKE 里
+# （冒烟 argv 就是 `crew status`）。
+NESTED_SUBCOMMANDS = {
+    "up", "kickoff", "down", "watch",
+    "pause", "resume", "abort", "close",
+    "export", "import", "once",
+}
+# 在循环里 add_parser 的名字。内省必须看见；退回字面正则会漏掉这 7 个。
+LOOP_SUBCOMMANDS = {"pause", "resume", "abort", "close", "export", "import", "once"}
 
 
 class _Any(dict):
@@ -118,10 +127,17 @@ def _flags_with_dests() -> list[tuple[str, str]]:
     return out
 
 
-def _subcommands_in_source() -> list[str]:
-    names = []
-    for m in re.finditer(r'sub\.add_parser\(\s*"([a-z0-9\-]+)"', CLI_SRC):
-        names.append(m.group(1))
+def _subcommand_names(parser=None) -> set[str]:
+    """从 `build_parser()` 递归收集子命令名（subparsers 逐层下钻，含循环里建的）。"""
+    if parser is None:
+        parser = cli.build_parser()
+    names: set[str] = set()
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        for name, sub in action.choices.items():
+            names.add(name)
+            names |= _subcommand_names(sub)
     return names
 
 
@@ -145,9 +161,12 @@ class CliSurfaceTest(unittest.TestCase):
         )
 
     def test_子命令都在冒烟矩阵里(self):
-        missing = [name for name in _subcommands_in_source()
-                   if name not in SMOKE and name not in NESTED_SUBCOMMANDS]
+        names = _subcommand_names()
+        missing = sorted(name for name in names if name not in SMOKE and name not in NESTED_SUBCOMMANDS)
         self.assertEqual(missing, [], f"这些子命令没有冒烟项（新加的？加一条最小 argv）：{missing}")
+        # 防退回字面正则：那条路看不见循环里建的解析器。
+        unseen = sorted(LOOP_SUBCOMMANDS - names)
+        self.assertEqual(unseen, [], f"内省没看见循环生成的子命令（退回字面正则了？）：{unseen}")
 
     def test_每个子命令叫得起来_并且真的打到那条路(self):
         for name, (argv, target) in sorted(SMOKE.items()):

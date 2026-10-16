@@ -111,9 +111,8 @@ def _peel_globals(argv: list[str]):
     return argv[index:], agent, url, home, as_json
 
 
-def main(argv=None) -> int:
-    raw = list(sys.argv[1:] if argv is None else argv)
-    argv, agent_arg, url_arg, home_arg, as_json = _peel_globals(raw)
+def build_parser() -> argparse.ArgumentParser:
+    """构造完整的命令行解析器。可单独调用、可内省；不解析、不分发。"""
     parser = argparse.ArgumentParser(
         prog="ic",
         description="信息中心：agent 之间的异步留言",
@@ -344,7 +343,13 @@ def main(argv=None) -> int:
     ):
         sync_cmd = sync_sub.add_parser(name, help=help_text)
         sync_cmd.add_argument("--dir", required=True, help="项目目录")
+    return parser
 
+
+def main(argv=None) -> int:
+    raw = list(sys.argv[1:] if argv is None else argv)
+    argv, agent_arg, url_arg, home_arg, as_json = _peel_globals(raw)
+    parser = build_parser()
     args = parser.parse_args(argv)
     # 子命令之后给的全局参数由 parent parser 填进 args；之前给的由 _peel_globals 取出。
     args.agent = args.agent if args.agent is not None else agent_arg
