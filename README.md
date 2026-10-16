@@ -203,7 +203,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic case <案卷或线程 id> [--note "一行进展"] [--status 状态]` | 查看一份案卷；`--note` 追加一行节点，`--status` 顺手改状态。**`--status` 必须和 `--note` 一起给**：状态变更天生要留一行节点，单独给会直接报 `status_needs_note`（不再"看着像改了"），和 `--milestone-*` / `--acceptance` 同给也一样拒。列表侧 `ic cases --status` 是筛选，不受此限。封卷（`办结` / `中止`）前会**先把没勾的里程碑逐个念出来**（封卷之后里程碑改不动了；**只提示、不拦**）。控制台点「办结 / 中止」也是同一盏灯（弹出确认，可取消） |
 | `ic case <id> --wbs 父/子` | 给案卷打 WBS 路径（`/` 分隔，空=未归类）；**只有 coordinator 能改** |
 | `ic case <id> --milestone-add "名字" [--milestone-owner 身份]` / `--milestone-done N` | 加一条里程碑 / 勾掉第 N 条（下标从 0 起，`!N` 撤回完成）；**只有 coordinator 能改** |
-| `ic cases [--workspace X] [--status 状态] [--owner 身份] [--wbs 前缀] [--limit N] [--all]` | 列出案卷（**默认只列有实质内容的**：有人写过验收/里程碑/WBS；信线程折成一行，`--all` 看全）；`--wbs` 前缀匹配（给 `防混写` 会带出 `防混写/锁与闸` 下面的） |
+| `ic cases [--workspace X] [--status 状态] [--owner 身份] [--wbs 前缀] [--limit N] [--all]` | 列出案卷（**默认只列未封卷**；没实质内容的（验收/里程碑/WBS 都没有）打 `[信]` 标、**不藏**——实测那堆里有真活；已封卷的折成一行，`--all` 看全）；`--wbs` 前缀匹配（给 `防混写` 会带出 `防混写/锁与闸` 下面的） |
 | `ic windows [--agent 身份] [--workspace X] [--state 状态]` | 列出办公室（窗口）登记；默认只列在办/暂停 + 近期离场，`--all` 看全 |
 
 ### 任务队列

@@ -4936,8 +4936,9 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     header_line = f"状态：{status_display}" + ("（已封卷）" if sealed else "")
     lines = [header_line, *(n["line"] for n in nodes)]
     # 「有实质内容」= 有人写过验收 / 里程碑 / WBS 之一。**任何 thread 都能当案卷**，
-    # 所以信（派单、回信、报告）也会出现在案卷列表里；看板默认只列有实质内容的，
-    # 信线程折叠成一行（实测：100 条里 92 条是信 ⇒ 黄灯会被噪声淹没）。
+    # 所以信（派单、回信、报告）也会出现在案卷列表里。它只是个**标记**（看板拿它打 `[信]`），
+    # **不是过滤条件**——实测那堆里有真活（派单线程可以是"在办"、有 5 封信、三样全无）；
+    # 看板默认折的是**已封卷**（归档；实测 100 条里 52 条是它）。
     substantive = bool((row["acceptance"] or "").strip() or milestones or (row["wbs_path"] or "").strip())
     return {
         "substantive": substantive,

@@ -478,7 +478,8 @@ function render() {
   }
   if (state.caseStatus) shownCases = shownCases.filter(c => (c.status_label || c.status) === state.caseStatus);
   // 看板减噪：任何 thread 都能当案卷 ⇒ 信（派单/回信/报告）也混进来。
-  // 实测 100 条里 92 条是信 ⇒ 案卷栏只列**有实质内容**的；信去「信件往来」看，不在这儿占位。
+  // 实测 100 条里 52 条**已封卷**（归档）、48 条未封卷里 45 条是信 ⇒ 默认只折已封卷；
+  // 没实质内容的留着并打 `信` 标——**不藏**，那堆里有真活（派单线程可以是"在办"）。
   const sealedHidden = shownCases.filter(c => c.sealed).length;
   shownCases = shownCases.filter(c => !c.sealed);
   const lettersHint = sealedHidden

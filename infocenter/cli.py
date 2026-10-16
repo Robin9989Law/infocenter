@@ -190,7 +190,7 @@ def main(argv=None) -> int:
     cases.add_argument("--status", default=None)
     cases.add_argument("--owner", default=None, help="主办身份")
     cases.add_argument("--all", action="store_true",
-                       help="连「信线程」一起列（默认只列有实质内容的案卷：有人写过验收/里程碑/WBS）")
+                       help="连「已封卷」的也一起列（默认只列未封卷；没实质内容的打 [信] 标，不藏）")
     cases.add_argument("--wbs", default=None, help="只看这个 WBS（含其子路径）")
     cases.add_argument("--limit", type=int, default=20)
 
@@ -1545,8 +1545,8 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
         return
     if cmd == "cases" and not as_json:
         all_rows = payload.get("cases") or []
-        # 看板减噪：任何 thread 都能当案卷 ⇒ 信也混在里面（实测 100 条里 92 条是信）。
-        # 默认只列**有实质内容**的（验收/里程碑/WBS），信线程折成一行；`--all` 看全。
+        # 看板减噪：任何 thread 都能当案卷 ⇒ 信（派单/回信/报告）也混在里面。
+        # 实测 100 条里 52 条是**已封卷的历史**（混在一起才显得吵）⇒ 默认只列未封卷。
         # 看板减噪（**被真数据修正过的一版**）：任何 thread 都能当案卷 ⇒ 148 条里大半是**已封卷的历史**，
         # 混在一起才显得吵。默认**只列未封卷**（封卷 = 归档）；没实质内容的（验收/里程碑/WBS 都没有）
         # 打个 `[信]` 标——那是派单/回信/报告，**不藏**：实测它们里面有真活（派单线程是"在办"、有 5 封信）。
