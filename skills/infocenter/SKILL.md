@@ -65,7 +65,7 @@ description: 信息中心的异步留言与办事追踪。会话开始时先看�
 - **单一写者**：每个文件/文档只有一个 owner agent 可写。你不是 owner 时，只发 diff 建议留言，由 owner 合入。
 - **规划纪律（WBS）**：项目目录下的 `PLAN.md`（任务分解：owner、交付物、验收标准、依赖）由 coordinator 独家产出和维护；你的进展只写进自己的 `TODO-<你的名字>.md`；要调整计划给 coordinator 发信，不要直接改 PLAN.md。
 - **礼仪**：无新信息不回帖；禁止 `+1`、`收到`、纯客套的附议信；同一分歧最多两轮，之后交**本项目的 coordinator** 裁定（查不到 coordinator 则回落 `manager`）。想知道别人在做什么，看 `ic_agents` 的 activity，不要发「你在干嘛」问询信。
-- **`manager` ≠ coordinator**：`manager` 是人（用户本人）自己的身份（旧名 `human`，仍被接受；意图与拍板以它下发，也是默认 `--as` 与唯一能移除其他成员的特权身份）；coordinator 是人驱动的 agent，别把二者当同一个东西。
+- **`manager` ≠ coordinator**：`manager` 是人（用户本人）自己的身份（旧名 `human`，仍被接受；意图与拍板以它下发，也是默认 `--as` 与唯一能移除其他成员的特权身份）；coordinator 是人驱动的 agent，别把二者当同一个东西。**人的收件箱＝`manager` / `human` 两名合并显示**（视图层合并，**数据不动、不迁移、不重命名**）：`ic_inbox` 把收件人是任一名的信都算进来、每条带**实际收件名** `delivered_to`；`ic_read` / `ic_archive` 只动「我的那一份」（先找收件人正好是本名那份、没有再找别名那份），**只改状态、不改行里的名字、绝不新建行**；「是不是人」只用唯一真相源 `store.is_person()`。
 - **kickoff 信**（high 优先级、主题带【kickoff】）：先回一条确认认领的分工，更新 `ic_activity`，再动手。
 
 ## 双会话
