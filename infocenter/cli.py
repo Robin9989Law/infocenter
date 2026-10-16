@@ -1514,12 +1514,77 @@ def _has_lease_advice(text: str) -> bool:
     )
 
 
+# 服务端没写人话时的兜底。不编案卷号、不编「来自谁 / 多久」——那两样只有 store 查得到。
+_UNREAD_REPLIES_BARE = (
+    "这条线上你还有没签收的回信。先把回信看完再封卷（`ic inbox --status unread`）。中止不要求这一句。"
+)
+
+
+def _format_unread_replies(text: str) -> str:
+    """`unread_replies` 的 409 人话由 store 给。有话就原样印。
+
+    同 `no_acceptance`：不把案卷号和「来自谁 / 多久」换成一句空话。
+    不接锁那套「别硬写 / 记进 TODO」——这扇门的下一步是把回信看完，不是去排队。
+    """
+    if text and text != "unread_replies":
+        return f"unread_replies: {text}\n"
+    return f"unread_replies: {_UNREAD_REPLIES_BARE}\n"
+
+
+def _unread_replies_when(item: dict) -> str:
+    """最早一封的时间。只读 store 给的伴随字段，不自己查信。已经是北京时间的原样用。"""
+    shown = item.get("unread_replies_earliest_beijing")
+    if isinstance(shown, str) and shown.strip():
+        return shown.strip()
+    raw = item.get("unread_replies_earliest")
+    if isinstance(raw, str) and raw.strip():
+        return beijing_time(raw.strip())
+    return ""
+
+
+def _unread_replies_who(item: dict) -> str:
+    raw = item.get("unread_replies_from")
+    if isinstance(raw, str):
+        return raw.strip()
+    return ""
+
+
+def _unread_replies_line(item) -> str:
+    """未签收回信黄灯。只读 store 的 `unread_replies`，不自己数。
+
+    字段不在、读不成整数、或 ≤0：不显示。只提示、不拦。
+    「最早 / 来自」要 store 另外给 `unread_replies_earliest_beijing`
+    （或 UTC 的 `unread_replies_earliest`）和 `unread_replies_from`。
+    缺了就不编时间、不编来信人，只留「有 N 封」。
+    """
+    if not isinstance(item, dict) or "unread_replies" not in item:
+        return ""
+    raw = item.get("unread_replies")
+    if isinstance(raw, bool):
+        return ""
+    try:
+        count = int(raw)
+    except (TypeError, ValueError):
+        return ""
+    if count <= 0:
+        return ""
+    line = f"⚠ 有 {count} 封未签收回信"
+    when = _unread_replies_when(item)
+    who = _unread_replies_who(item)
+    if when and who:
+        line += f"（最早 {when}，来自 {who}）"
+    return line
+
+
 def _format_mail_error(exc: MailError) -> str:
     """人话出口。三个新错误码在服务端没写人话时，用上面那套 409 文案。
 
     服务端若已经写了事由（路径、案卷号），人话没接上就接在后面，不把事由盖掉。
+    `unread_replies` 另走：服务端有话就整句原样印，不盖掉案卷号和「来自谁 / 多久」。
     """
     text = (exc.message or "").strip()
+    if exc.code == "unread_replies":
+        return _format_unread_replies(text)
     canon = _LEASE_COPY.get(exc.code)
     if canon is None:
         return f"{exc.code}: {text}\n"
@@ -1935,6 +2000,9 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
         title = payload.get("title") or payload.get("subject")
         if title:
             print(title)
+        unread = _unread_replies_line(payload)
+        if unread:
+            print(f"  {unread}")
         print(f"WBS: {payload.get('wbs_path') or '（未归类）'}")
         if payload.get("human_note"):
             mark = "  ⚠ 人话过期（这之后又发生了别的事，该重写）" if payload.get("human_stale") else ""
@@ -2009,6 +2077,9 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 f"{item.get('id')}  {item.get('status_label') or item.get('status')}  {owner}  "
                 f"[{wbs}]  {tag}{item.get('title')}{reached}{stale}"
             )
+            unread = _unread_replies_line(item)
+            if unread:
+                print(f"  {unread}")
         return
     if cmd == "audit" and not as_json:
         if payload.get("ok"):
