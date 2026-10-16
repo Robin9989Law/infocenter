@@ -588,7 +588,7 @@ def _import_one_message(path, node, project, counts, ledger, getter) -> None:
         "workspace_name": data.get("workspace_name") if isinstance(data.get("workspace_name"), str) else None,
         "created_at": created_at,
     }
-    status = _call_import(getter(), envelope, names)
+    status, parent = _call_import(getter(), envelope, names)
     if status == "imported":
         counts["imported"] += 1
         ledger.event("import", key, hashlib.sha256(raw).hexdigest(), stem)
@@ -596,6 +596,10 @@ def _import_one_message(path, node, project, counts, ledger, getter) -> None:
         if isinstance(label, str) and label and label != project.name:
             sys.stderr.write(
                 f"warning: {path.name} 的 workspace_name={label} 与目录名 {project.name} 不一致，仍导入\n"
+            )
+        if parent == "missing":
+            sys.stderr.write(
+                f"warning: {path.name} 的 parent=missing，回复的父信还不在库里，仍导入\n"
             )
     elif status == "conflict":
         counts["conflict"] += 1
@@ -664,7 +668,7 @@ def _reject_bytes(ledger, counts, key: str, raw: bytes, reason: str, message_id)
         counts["rejected"] += 1
 
 
-def _call_import(store: Store, envelope: dict, names: list[str]) -> str:
+def _call_import(store: Store, envelope: dict, names: list[str]) -> tuple[str, str | None]:
     method = getattr(store, "import_remote", None)
     if method is None:
         raise MailError(
@@ -677,7 +681,10 @@ def _call_import(store: Store, envelope: dict, names: list[str]) -> str:
     result = method(envelope, names)
     if not isinstance(result, dict) or "status" not in result:
         raise MailError("invalid_sync", "import_remote 没有返回 status")
-    return result["status"]
+    parent = result.get("parent")
+    if not isinstance(parent, str):
+        parent = None
+    return result["status"], parent
 
 
 def _call_receipt(store: Store, message_id: str, by: str, read_at: str) -> str:

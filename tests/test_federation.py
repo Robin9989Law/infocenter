@@ -608,7 +608,14 @@ class FederationSyncTest(unittest.TestCase):
             body="先到的回复",
             created_at="2026-10-14T00:01:00Z",
         )
-        self.assertEqual(self._ok(home, project, "import")["imported"], 1)
+        # 父信未到仍导入。sync 打一行 parent=missing 警告（M6-9），计数仍算 imported。
+        code, out, err = _run(home, project, "import")
+        self.assertEqual(code, 0, err or out)
+        self.assertEqual(json.loads(out)["imported"], 1)
+        self.assertIn(
+            f"warning: {reply_id}.json 的 parent=missing，回复的父信还不在库里，仍导入\n",
+            err,
+        )
         _plant(
             peer,
             id=parent_id,

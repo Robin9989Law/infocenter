@@ -625,6 +625,7 @@ class Store:
         wait = max(0.0, min(wait, 120.0))
         deadline = time.monotonic() + wait
         first_pass = True
+        unread_before: int | None = None
         with self._cond:
             while True:
                 seen = self._seq
@@ -634,9 +635,14 @@ class Store:
                 first_pass = False
                 if snapshot["new"] or wait <= 0:
                     return snapshot
+                # 回执不新增 deliveries，new 仍为空。未读数相对这次等待变了就返回，
+                # 当前这次长轮询才能交回新的 unread_total。无关的叫醒继续睡。
+                if unread_before is not None and snapshot["unread_total"] != unread_before:
+                    return snapshot
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return snapshot
+                unread_before = snapshot["unread_total"]
                 self._cond.wait(remaining)
                 if not self.path.exists():
                     return snapshot
@@ -1040,7 +1046,11 @@ class Store:
         )
 
     def import_remote(self, envelope: dict, local_bare_names: list[str]) -> dict:
-        """B3 §10：从网盘 JSON 导入他机消息。按 id + 不可变字段幂等，不 upsert 发信方，不 _signal。
+        """B3 §10：从网盘 JSON 导入他机消息。按 id + 不可变字段幂等，不 upsert 发信方。
+
+        只有新插入（status=imported）才在事务提交之后 _signal。
+        duplicate / conflict / skipped 不叫。父信不在库里仍插入，返回 parent=missing；
+        父信 thread 不一致、reply_to 指向自己、或已有子信 thread 不一致，则 conflict、不插入。
 
         U-3 规格降级（记录）：`federation-design.md` §7 说「两份信封之间仍比排序后的完整
         `to`」，但 `messages` 表没有 `to` 列，且按设计「他机收件人不产生投递、仅作记录」，
@@ -1068,6 +1078,13 @@ class Store:
         if not msg_id or not thread_id or not created_at:
             raise MailError("invalid_envelope", "缺少必填字段 id/thread_id/created_at")
 
+        def _blank(value: str | None) -> str | None:
+            # 只用于幂等比较。空串当 None，不把库里的空串改掉。
+            if value is None or (isinstance(value, str) and value.strip() == ""):
+                return None
+            return value
+
+        inserted_parent: str | None = None
         with self._session(immediate=True) as conn:
             existing = conn.execute("SELECT * FROM messages WHERE id = ?", (msg_id,)).fetchone()
             if existing is not None:
@@ -1079,9 +1096,33 @@ class Store:
                     and existing["body"] == body
                     and existing["priority"] == priority
                     and existing["created_at"] == created_at
+                    and _blank(existing["workspace"]) == _blank(workspace)
                     and sorted(_recipients(conn, msg_id)) == bare_names
                 )
                 return {"status": "duplicate" if same else "conflict"}
+
+            if reply_to == msg_id:
+                return {"status": "conflict"}
+            if reply_to is None:
+                parent_flag = "none"
+            else:
+                parent = conn.execute(
+                    "SELECT thread_id FROM messages WHERE id = ?",
+                    (reply_to,),
+                ).fetchone()
+                if parent is None:
+                    parent_flag = "missing"
+                elif parent["thread_id"] != thread_id:
+                    return {"status": "conflict"}
+                else:
+                    parent_flag = "present"
+            # 已有行把这封当父信时，thread 必须一致。不等则这封不入库，子信保持原样。
+            mismatch = conn.execute(
+                "SELECT 1 FROM messages WHERE reply_to = ? AND thread_id != ? LIMIT 1",
+                (msg_id, thread_id),
+            ).fetchone()
+            if mismatch is not None:
+                return {"status": "conflict"}
 
             conn.execute(
                 """
@@ -1109,15 +1150,21 @@ class Store:
                 """,
                 [(msg_id, name) for name in bare_names],
             )
-        return {"status": "imported"}
+            inserted_parent = parent_flag
+        self._signal()
+        return {"status": "imported", "parent": inserted_parent}
 
     def apply_receipt(self, message_id: str, by: str, read_at: str) -> dict:
-        """B3 §10：应用他机已读回执。仅当 to_agent==by 且当前为 unread 时标成 read，不 _signal。"""
+        """B3 §10：应用他机已读回执。仅当 to_agent==by 且当前为 unread 时标成 read。
+
+        applied 在事务提交之后 _signal。duplicate / absent / archived 不叫。
+        """
         msg_id = str(message_id or "").strip()
         by_name = normalize_name(str(by or ""))
         read_time = str(read_at or "").strip()
         if not msg_id or not read_time:
             raise MailError("invalid_receipt", "回执缺少 message_id 或 read_at")
+        applied = False
         with self._session(immediate=True) as conn:
             row = conn.execute(
                 "SELECT status, read_at FROM deliveries WHERE message_id = ? AND to_agent = ?",
@@ -1130,10 +1177,15 @@ class Store:
                     "UPDATE deliveries SET status = 'read', read_at = ? WHERE message_id = ? AND to_agent = ?",
                     (read_time, msg_id, by_name),
                 )
-                return {"status": "applied"}
-            if row["status"] == "read":
+                applied = True
+            elif row["status"] == "read":
                 return {"status": "duplicate"}
-            return {"status": "archived"}
+            else:
+                return {"status": "archived"}
+        if applied:
+            self._signal()
+            return {"status": "applied"}
+        return {"status": "archived"}
 
     def inbox(
         self,
