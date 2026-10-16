@@ -49,11 +49,11 @@ RUNS_KEEP = 60
 
 CONVENTIONS = """---
 合作约定（kickoff 自动附加）：
-1. 本信由**全局 manager**（{coordinator}）发出。**项目里的 coordinator 由 human 指定**，它在该项目里的分工裁定优先执行；有异议只回一条针对冲突点的信，不要并行改文件。
+1. 本信由**全局 manager**（{coordinator}）发出。**项目里的 coordinator 由 manager 指定**（旧名 human 仍被接受），它在该项目里的分工裁定优先执行；有异议只回一条针对冲突点的信，不要并行改文件。
 2. 单一写者原则：每个文件/文档只有一个 owner agent 可写；其他人只以留言发 diff 建议，由 owner 合入。
-3. 规划纪律：PLAN.md（任务分解）由 coordinator 独家产出和维护，每项任务带 owner、交付物、验收标准、依赖；各成员只把进展写进自己的 TODO-<名字>.md；要调整计划就给 coordinator 发信，不要直接改 PLAN.md。
-4. 状态自报：开始/切换/完成任务时更新自己的 activity（MCP 调 ic_activity，CLI 用 ic register --activity "一句话状态"）。coordinator 想知道各家在做什么，直接看 `ic agents`，**不要发问询信**；要干预、要调配才发信。
-5. 礼仪：无新信息不回帖，禁止 +1 附议；同一分歧最多两轮，之后交 coordinator/human 裁定。
+3. 规划纪律：PLAN.md（任务分解）由本项目的 coordinator 独家产出和维护，每项任务带 owner、交付物、验收标准、依赖；各成员只把进展写进自己的 TODO-<名字>.md；要调整计划就给**本项目的 coordinator**发信（`ic projects` 查；查不到回落 manager＝用户本人），不要直接改 PLAN.md。
+4. 状态自报：开始/切换/完成任务时更新自己的 activity（MCP 调 ic_activity，CLI 用 ic register --activity "一句话状态"）。本项目的 coordinator 想知道各家在做什么，直接看 `ic agents`，**不要发问询信**；要干预、要调配才发信。
+5. 礼仪：无新信息不回帖，禁止 +1 附议；同一分歧最多两轮，之后交**本项目的 coordinator**裁定（`ic projects` 查；查不到回落 manager＝用户本人）。
 6. 收到本信后先回一条确认认领的分工，再开始动手。"""
 
 
@@ -519,7 +519,10 @@ def manager_misconfig(item: dict) -> str:
         "launch": "crew up 会另起一个会抢活的前台 actor",
     }
     detail = "；".join(f"{key} ⇒ {reasons[key]}" for key in bad)
-    return f"manager 不应配 {'/'.join(bad)}（{detail}）；manager 的前台由人驱动"
+    return (
+        f"manager 不应配 {'/'.join(bad)}（{detail}）；"
+        "manager（＝用户本人；旧名 human 仍被接受）的前台由人驱动"
+    )
 
 
 def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
@@ -1327,7 +1330,8 @@ def build_heartbeat_prompt(
         f"发现 PLAN.md 有空缺、依赖过期或需要调整，给{coord_target}发信说明，不要直接改 PLAN.md。"
         f"5）开始或切换任务时，用 `ic --as {agent} register --activity \"一句话状态\"` 自报进展，主协调 agent 靠它调配资源。"
         f"无 workspace 的未读信不会自动派给守护：查收件时若发现明确属于本项目的，顺手处理；否则留给交互会话。"
-        f"需要别人输入或裁定时，用 `ic --as {agent} send/reply` 给相关人留言。"
+        f"需要别人输入或裁定时，用 `ic --as {agent} send/reply` 给**本项目的 coordinator**"
+        f"（`ic projects` 查；查不到回落 manager＝用户本人）。"
         f"接着办已有的事时，先 `ic --as {agent} cases` 读案卷，干完用 "
         f"`ic --as {agent} case <thread> --note \"结论\"` 写回一行节点。"
         f"写时间一律用**北京时间**（UTC+8）；`ic` 输出里的 `*_beijing` 就是北京时间。"

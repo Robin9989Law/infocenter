@@ -205,6 +205,49 @@ class CliSurfaceTest(unittest.TestCase):
                     f"{name}: 没打到 {target}（argv={argv}）——接线断了？stdout={buf.getvalue()[:120]}",
                 )
 
+    def test_缺省身份是_manager_帮助保留旧名(self):
+        from infocenter import config as cfg
+
+        self.assertEqual(cli._env_agent(), "manager")
+        self.assertEqual(cli._env_agent(), cfg.HUMAN)
+
+        parser = cli.build_parser()
+        sub = next(a for a in parser._actions if isinstance(a, argparse._SubParsersAction))
+
+        def opt_help(command: str, flag: str) -> str:
+            for action in sub.choices[command]._actions:
+                if flag in action.option_strings:
+                    return action.help or ""
+            self.fail(f"{command} {flag} 没有帮助")
+
+        as_help = next(a.help or "" for a in cli._GLOBAL._actions if "--as" in a.option_strings)
+        self.assertIn("否则 manager", as_help)
+        self.assertIn("旧名 human 仍被接受", as_help)
+        self.assertNotIn("否则 human", as_help)
+
+        force = opt_help("lock", "--force")
+        self.assertIn("manager＝用户本人，天然算", force)
+        self.assertIn("旧名 human 仍被接受", force)
+        self.assertNotIn("human 天然算", force)
+
+        unlock = opt_help("unlock", "--force")
+        self.assertIn("manager＝用户本人", unlock)
+        self.assertIn("旧名 human 仍被接受", unlock)
+
+        role = opt_help("agents", "--role")
+        self.assertIn("人的身份名是 manager", role)
+        self.assertIn("旧名 human 仍被接受", role)
+
+        projects_help = next(
+            (a.help or "") for a in sub._choices_actions if a.dest == "projects"
+        )
+        self.assertIn("manager", projects_help)
+        self.assertNotIn("human**", projects_help)
+        coord = opt_help("projects", "--coordinator")
+        self.assertIn("只有 manager", coord)
+        self.assertIn("旧名 human 仍被接受", coord)
+        self.assertNotIn("只有 human", coord)
+
 
 if __name__ == "__main__":
     unittest.main()

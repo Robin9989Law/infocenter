@@ -7,7 +7,7 @@
   name         身份名（必填）
   description  描述
   role         "manager"（**全局**管理者；旧值 "coordinator" 仍认）或空（成员）。
-               注意：**项目里的 coordinator 不在名册上**——它是项目的 `projects.coordinator`，由 human 指定、没指定就拒
+               注意：**项目里的 coordinator 不在名册上**——它是项目的 `projects.coordinator`，由 manager 指定（旧名 human 仍被接受）、没指定就拒
   launch       交互启动命令，crew up 时在 tmux/Terminal 里于项目目录运行
   app          macOS 应用名，crew up 时 `open -a <app> <项目目录>`
   headless     无人值守命令模板，{prompt} 会被替换为收信处理指令；配了才会开守护
@@ -28,12 +28,32 @@ from pathlib import Path
 
 from infocenter.store import MailError, atomic_replace, normalize_name
 
+# 人的名字只有 store 一份：HUMAN / HUMAN_NAMES / is_person。
+# 符号还没进 store 时（cursor 那一笔）ImportError。except 里的契约与派单相同，
+# 只为这一小段空窗让 import 不把 `ic` 打崩；符号一落地，测试钉死必须用 store 那份。
+try:
+    from infocenter.store import HUMAN, HUMAN_NAMES, is_person
+except ImportError:
+    HUMAN = "manager"
+    HUMAN_NAMES = frozenset({"manager", "human"})
+
+    def is_person(name: str) -> bool:
+        try:
+            return normalize_name(name) in HUMAN_NAMES
+        except MailError:
+            return False
+
+
 DEFAULT_AGENTS = (
     {"name": "grok", "description": "Grok"},
     {"name": "kimi", "description": "Kimi Code"},
     {"name": "opencode", "description": "OpenCode"},
     {"name": "cursor", "description": "Cursor"},
-    {"name": "human", "description": "用户"},
+    {
+        "name": HUMAN,
+        "role": "manager",
+        "description": "用户（全局管理者：只有他能指定项目的 coordinator、移除成员）",
+    },
 )
 
 _KNOWN_KEYS = {
@@ -45,7 +65,7 @@ _KNOWN_KEYS = {
 
 
 def config_path(home) -> Path:
-    return Path(home) / "config.json"
+    return Path(home).expanduser() / "config.json"
 
 
 def load(home) -> dict:
@@ -158,8 +178,14 @@ def entry(home, name: str) -> dict | None:
 
 
 def manager(home) -> str | None:
-    """**全局**管理者（旧名 coordinator）：名册里 `role` 是 manager / 旧值 coordinator 的第一个。"""
-    for item in load(home)["agents"]:
+    """全局管理者。先按名字找（现名 `manager`，再旧名 `human`），再回落 role∈{manager, coordinator}。"""
+    agents = load(home)["agents"]
+    named = [item["name"] for item in agents if is_person(item["name"])]
+    if HUMAN in named:
+        return HUMAN
+    if named:
+        return named[0]
+    for item in agents:
         if str(item.get("role") or "").strip().lower() in {"manager", "coordinator"}:
             return item["name"]
     return None

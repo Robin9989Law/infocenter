@@ -27,7 +27,7 @@ SKILL_INSTALL_HINTS = (
 # - 子命令之后的全局参数交给 argparse 的 parent parser，写在子命令前/后都认，保持
 #   README 里「全局参数可以写在任何位置」的约定。
 _GLOBAL = argparse.ArgumentParser(add_help=False)
-_GLOBAL.add_argument("--as", dest="agent", default=None, help="以某个身份操作（默认取 INFOCENTER_AGENT，否则 human）")
+_GLOBAL.add_argument("--as", dest="agent", default=None, help="以某个身份操作（默认取 INFOCENTER_AGENT，否则 manager；旧名 human 仍被接受）")
 _GLOBAL.add_argument("--url", default=None, help="信息中心地址")
 _GLOBAL.add_argument("--home", default=None, help="信息中心主目录")
 _GLOBAL.add_argument("--json", action="store_true", help="JSON 输出")
@@ -132,7 +132,7 @@ def build_parser() -> argparse.ArgumentParser:
     agents_p.add_argument("action", nargs="?", default="list", choices=["list", "add", "remove"])
     agents_p.add_argument("name", nargs="?", default=None, help="add/remove 的 agent 名字")
     agents_p.add_argument("--description", "-d", default="", help="add 时的描述")
-    agents_p.add_argument("--role", default="", help="add 时的角色：manager（全局管理者）或留空")
+    agents_p.add_argument("--role", default="", help="add 时的角色：manager（全局管理者）或留空。人的身份名是 manager（旧名 human 仍被接受）")
 
     reg = sub.add_parser("register", help="注册或更新自己")
     reg.add_argument("--description", default=None)
@@ -181,7 +181,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="在等谁（身份名）：状态同时转成「待 <身份>」，被等的人敲 ic status 能看到")
     case.add_argument("--wbs", default=None, help="给案卷打 WBS 路径（如 防混写/锁与闸）")
     case.add_argument("--milestone-add", dest="milestone_add", default=None,
-                      help="加一条里程碑（**只有本项目的 coordinator 或 human 能改**；项目没指定就拒）")
+                      help="加一条里程碑（**只有本项目的 coordinator 或 manager** 能改，旧名 human 仍被接受；项目没指定就拒）")
     case.add_argument("--milestone-owner", dest="milestone_owner", default=None, help="里程碑负责人")
     case.add_argument("--milestone-done", dest="milestone_done", default=None,
                       help="勾掉第 N 条里程碑（下标从 0 起；加 ! 前缀=撤回完成，如 '!0'）")
@@ -238,7 +238,7 @@ def build_parser() -> argparse.ArgumentParser:
     queue.add_argument("--note", default=None, help="我要改什么（提议内容）")
     queue.add_argument("--patch-file", dest="patch_file", default=None, help="改动补丁（可选，从文件读）")
     queue.add_argument("--merge", action="store_true",
-                       help="合并排队的改动（**只有拿钥匙的人**能做；钥匙主人不在时那个项目的 coordinator / human 可收口）")
+                       help="合并排队的改动（**只有拿钥匙的人**能做；钥匙主人不在时那个项目的 coordinator / manager 可收口，旧名 human 仍被接受）")
     queue.add_argument("--id", dest="ids", action="append", default=None,
                        help="只合并这几条（q<编号>；可重复给，也可逗号分隔：--id q271,q272）")
     queue.add_argument("--task", default=None, help="提议关联的任务")
@@ -251,13 +251,13 @@ def build_parser() -> argparse.ArgumentParser:
     lock.add_argument("--ttl", type=int, default=None, help="锁的有效秒数（默认 1800，最短 30，最长 12h）")
     lock.add_argument("--task", dest="task_id", default=None, help="这次改的是哪个任务")
     lock.add_argument("--note", default=None, help="为什么锁")
-    lock.add_argument("--force", action="store_true", help="强制抢占：项目内的路径要那个项目的 coordinator，项目外要 manager（human 天然算）")
+    lock.add_argument("--force", action="store_true", help="强制抢占：项目内的路径要那个项目的 coordinator，项目外要 manager（manager＝用户本人，天然算；旧名 human 仍被接受）")
     lock.add_argument("--changed", action="store_true",
                       help="锁住 git 工作区里所有改动文件（可与显式路径并用，取并集）")
 
     unlock = sub.add_parser("unlock", help="放写锁（默认只放自己的）")
     unlock.add_argument("paths", nargs="*", help="要放的路径；不填 = 放掉自己的全部锁")
-    unlock.add_argument("--force", action="store_true", help="清场：不带路径时是 hub 级（要 manager）；带路径按路径找项目（找不到回落 manager）")
+    unlock.add_argument("--force", action="store_true", help="清场：不带路径时是 hub 级（要 manager＝用户本人）；带路径按路径找项目（找不到回落 manager）。旧名 human 仍被接受")
 
     probe = sub.add_parser(
         "probe", help="空转采样（**只读**）：把每家的 headless 触发数和产出并排摆出来"
@@ -292,10 +292,10 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"列出全部办公室，包含离场超过 {_RECENT_LEFT_TEXT}的。不指定时默认隐藏这些",
     )
 
-    projects = sub.add_parser("projects", help="列出项目；**human** 可指定项目的 coordinator")
+    projects = sub.add_parser("projects", help="列出项目；**manager** 可指定项目的 coordinator（旧名 human 仍被接受）")
     projects.add_argument("--project", dest="project", default=None, help="项目路径（指定 coordinator 时必填）")
     projects.add_argument("--coordinator", dest="coordinator", default=None,
-                          help="指定/更换该项目的 coordinator（**只有 human** 能设；没指定则 coordinator 类操作一律拒）")
+                          help="指定/更换该项目的 coordinator（**只有 manager** 能设，旧名 human 仍被接受；没指定则 coordinator 类操作一律拒）")
 
     mcp = sub.add_parser("mcp", help="以 stdio MCP 运行")
     mcp.add_argument("--agent", dest="mcp_agent", default=None, help="固定身份。不写则每个工具调用自己带 agent")
@@ -1253,7 +1253,7 @@ def _mcp_identity(args) -> str | None:
 def _env_agent() -> str:
     import os
 
-    return os.environ.get("INFOCENTER_AGENT", "").strip() or "human"
+    return os.environ.get("INFOCENTER_AGENT", "").strip() or config.HUMAN
 
 
 def _read_body(body: str | None, body_file: str | None) -> str:
@@ -1692,7 +1692,7 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 f"{payload['human_note']}{mark}"
             )
         else:
-            print("人话: 还没有（看板上的说法只能由本项目的 coordinator 或 human 用 `ic case <id> --note \"…\"` 写）")
+            print("人话: 还没有（看板上的说法只能由本项目的 coordinator 或 manager 用 `ic case <id> --note \"…\"` 写；旧名 human 仍被接受）")
         stones = payload.get("milestones") or []
         if payload.get("acceptance"):
             print(f"怎样算完: {payload['acceptance']}")
@@ -1705,7 +1705,7 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 who = f"  （{item['owner']}）" if item.get("owner") else ""
                 print(f"  {index}. {mark} {item['name']}{who}")
         else:
-            print("里程碑：无（`ic case <id> --milestone-add \"名字\"`，只有本项目的 coordinator 或 human 能改）")
+            print("里程碑：无（`ic case <id> --milestone-add \"名字\"`，只有本项目的 coordinator 或 manager 能改；旧名 human 仍被接受）")
         print(payload.get("text") or json.dumps(payload, ensure_ascii=False, indent=2))
         return
     if cmd == "projects" and not as_json:

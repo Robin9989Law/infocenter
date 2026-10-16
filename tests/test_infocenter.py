@@ -634,5 +634,24 @@ class HubTest(unittest.TestCase):
         self.assertEqual(inbox["messages"][0]["from"], "kimi")
 
 
+class FreshSeedTest(unittest.TestCase):
+    """新家的名册种子：人叫 manager，不再种一个叫 human 的身份。"""
+
+    def test_新家名册的人叫_manager(self):
+        from infocenter import config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            agents = {item["name"]: item for item in config.load(home)["agents"]}
+            self.assertEqual(config.manager(home), "manager")
+        self.assertIn("manager", agents)
+        self.assertNotIn("human", agents)
+        self.assertEqual(agents["manager"]["role"], "manager")
+        self.assertEqual(
+            agents["manager"]["description"],
+            "用户（全局管理者：只有他能指定项目的 coordinator、移除成员）",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
