@@ -1680,6 +1680,7 @@ class Store:
         status: str | None = None,
         owner_window: str | None = None,
         owner_agent: str | None = None,
+        waiting_for: str | None = None,
         limit: int = 100,
         wbs: str | None = None,
     ) -> list[dict]:
@@ -1688,6 +1689,8 @@ class Store:
         status_filter = _case_status(status) if status else None
         window_filter = normalize_window(owner_window) if owner_window else None
         agent_filter = normalize_name(owner_agent) if owner_agent else None
+        # 「在等谁」：只按名字比（空表示不在等）
+        wait_filter = normalize_name(waiting_for) if waiting_for else None
         now = utcnow()
         with self._session(immediate=True) as conn:
             _lazy_reconcile_all(conn, now)
@@ -1703,6 +1706,8 @@ class Store:
                 if window_filter is not None and row["owner_window"] != window_filter:
                     continue
                 if agent_filter is not None and row["owner_agent"] != agent_filter:
+                    continue
+                if wait_filter is not None and (row["waiting_for"] or "") != wait_filter:
                     continue
                 if wbs_filter is not None:
                     # 前缀匹配：给 `防混写` 就带出 `防混写/锁与闸` 下面的案卷

@@ -176,6 +176,8 @@ def main(argv=None) -> int:
     case.add_argument("id", help="案卷编号或线程 id")
     case.add_argument("--note", default=None, help="写回一行节点")
     case.add_argument("--status", default=None, help="顺手改案卷状态")
+    case.add_argument("--wait-for", dest="wait_for", default=None,
+                      help="在等谁（身份名）：状态同时转成「待 <身份>」，被等的人敲 ic status 能看到")
     case.add_argument("--wbs", default=None, help="给案卷打 WBS 路径（如 防混写/锁与闸）")
     case.add_argument("--milestone-add", dest="milestone_add", default=None,
                       help="加一条里程碑（**只有 coordinator 能改**）")
@@ -192,6 +194,7 @@ def main(argv=None) -> int:
     cases.add_argument("--all", action="store_true",
                        help="连「已封卷」的也一起列（默认只列未封卷；没实质内容的打 [信] 标，不藏）")
     cases.add_argument("--wbs", default=None, help="只看这个 WBS（含其子路径）")
+    cases.add_argument("--wait-for", dest="wait_for", default=None, help="只看在等这个身份的案卷")
     cases.add_argument("--limit", type=int, default=20)
 
     task = sub.add_parser("task", help="任务队列（工作包）：建 / 看 / 开工 / 改状态 / 调优先级")
@@ -440,7 +443,7 @@ def main(argv=None) -> int:
         elif args.cmd == "case":
             # `--status` 只在"写节点"那条路上生效（状态变更必须留一行节点，看板才知道你为什么改）。
             # 单独给 `--status` 会**静默**走成"只看一眼"（实测连踩两次）⇒ 明确拒，并说清怎么写。
-            if args.status and not (
+            if (args.status or args.wait_for) and not (
                 args.note
                 and args.milestone_add is None
                 and args.milestone_done is None
@@ -448,8 +451,8 @@ def main(argv=None) -> int:
             ):
                 raise MailError(
                     "status_needs_note",
-                    "改案卷状态要跟 `--note` 一起用——状态变更必须留一行节点，看板才知道你为什么改："
-                    "`ic case <id> --note \"为什么改\" --status 待谁`。"
+                    "改状态 / 说「在等谁」都要跟 `--note` 一起用——必须留一行节点，看板才知道你在等什么："
+                    "`ic case <id> --note \"为什么等\" --wait-for 身份`（等价于 --status 待谁）。"
                     "（`--milestone-*` / `--acceptance` 那几条路都不带状态。）",
                 )
             # 黄灯（**不拦**）：封卷不可逆（要改只能 `reopen`），所以动手前把"还有里程碑没勾"摆到眼前。
@@ -478,6 +481,10 @@ def main(argv=None) -> int:
                 body = {"note": args.note, "action": "note"}
                 if args.status:
                     body["status"] = args.status
+                if args.wait_for:
+                    # 「在等谁」本身就是一次状态变更（转「待 X」）——由 store 落 waiting_for。
+                    body["waiting_for"] = args.wait_for
+                    body.setdefault("status", "待谁")
                 payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/nodes", body, home=home)
             elif args.wbs is not None:
                 body = {"wbs_path": args.wbs}
@@ -495,6 +502,7 @@ def main(argv=None) -> int:
                     "status": args.status,
                     "owner": args.owner,
                     "wbs": args.wbs,
+                    "waiting_for": getattr(args, "wait_for", None),
                     "limit": str(args.limit),
                 },
                 home=home,
@@ -1352,6 +1360,23 @@ def _unlocked_dirty(subprocess, url: str, agent: str, home) -> list[str]:
     return [path for path in changed if not any(_same_file(path, h) for h in held)]
 
 
+def _waiting_on_you(url: str, agent: str, home) -> list[dict]:
+    """**有人在这卷里等你**：未封卷、状态是「待你」。
+
+    为什么（2026-10-16 实测）：SKILL 那卷的验收写着「触发 = kimi 宣布修订冻结」，而 kimi 的 TODO 里
+    **没有这一项** ⇒ 那是个永远不会响的触发，事就那么悬着。规矩是「**触发条件不许只写在信里**」——
+    写过 `--wait-for` 的案卷，至少要出现在**被等人的 `ic status`** 里（这是那件事的钩子）。
+
+    读不到服务 ⇒ 一个字都不说（灯不能挡住看状态）。
+    """
+    try:
+        payload = call(url, agent, "GET", "/v1/cases",
+                       query={"status": "waiting", "waiting_for": agent, "limit": "50"}, home=home)
+    except (ApiError, SystemExit, OSError, ValueError, KeyError):
+        return []
+    return [c for c in (payload or {}).get("cases") or [] if not c.get("sealed")]
+
+
 def _status(args, home: Path, agent: str) -> int:
     url = resolve_url(args.url, home)
     meta = read_meta(home) or {}
@@ -1368,12 +1393,14 @@ def _status(args, home: Path, agent: str) -> int:
     import subprocess
 
     loose = _unlocked_dirty(subprocess, url, agent, home)
+    waiting = _waiting_on_you(url, agent, home)
     if args.json:
         print(json.dumps({
             "url": url, "pid": meta.get("pid"), "agent": agent,
             "unread": mine, "unread_by_agent": {name: count for name, count in unread.items() if count},
             "skill_drift": skill_drift_lines(),
             "unlocked_dirty": loose,
+            "waiting_on_you": [c.get("id") for c in waiting],
         }, ensure_ascii=False))
         return 0
     pid = meta.get("pid")
@@ -1388,6 +1415,13 @@ def _status(args, home: Path, agent: str) -> int:
         print("各家未读: 都清零了")
     for line in skill_drift_lines():
         print(line)
+    if waiting:
+        heads = "、".join(
+            f"{c.get('id')} {str(c.get('title') or '')[:22]}" for c in waiting[:2]
+        )
+        more = f"（共 {len(waiting)} 卷）" if len(waiting) > 2 else ""
+        print(f"  ⚠ 有 {len(waiting)} 卷在等你：{heads}{more}")
+        print("     要么接着办，要么转出去：`ic case <id> --note \"为什么\" --wait-for <别人>`。只提示，不拦")
     if loose:
         shown = "、".join(Path(p).name for p in loose[:3])
         more = f"（共 {len(loose)} 个）" if len(loose) > 3 else ""

@@ -743,6 +743,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 status=status,
                 owner_window=owner_win,
                 owner_agent=owner_ag,
+                waiting_for=query.get("waiting_for", [None])[0] or query.get("wait_for", [None])[0],
                 limit=limit,
                 wbs=query.get("wbs", [None])[0],
             )
