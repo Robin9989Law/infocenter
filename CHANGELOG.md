@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - **案卷状态机进既有哈希链**（`9cff5c8`，cursor 落）：立案 / 认领 / 强制接手 / 转办 / 暂停 / 恢复 / 中止 / 办结 / 重开，都在**同一个事务**里追加一行 `case_*` 事件（带 `case_` 前缀，免得和任务自己的 `create` / `status` 撞名），记 `from_status → to_status` + 主办窗口 + 署名。**`task_id` 留空、与 `project_coordinator` / 案卷 `acceptance` 同例** ⇒ 任务重放不看它，而封卷、转办、重开从此**改不掉而不动链**（旧链只管任务与锁，案卷的收局是套「写了就算」的空档）。+ `tests/test_case_chain.py`。
+- **封卷门槛从一条变两条 + 签收不受封卷拦**（manager 2026-10-16 裁「(a)」，pi 落文档 / cursor 落实码，分开提交）：`close` 前除 `no_acceptance` 外，另加 **`unread_replies`**——该案卷所绑线程里若还有发给封卷人自己的未签收回信（`deliveries.to_agent = 封卷人 AND deliveries.status = 'unread'`）则 409，只算封卷人自己那一份（别人未签收的副本他签不了，拿它卡人＝死锁），中止不要求。同时，`read`（签收）**不再被 `case_sealed` 拦**——已封卷线程的信仍可签收（只标已读、不认领、不动案卷、不破只读），解决窗口视角不显已封卷线程的信导致的「晚到回执看不见也签收不掉」问题。看板 `cases_list` / `case_view` 每条加 `unread_replies`（按请求者自己算）。零新增表/列/通知机制。文档：README / SKILL.md 对应更新。
 
 ### Fixed
 - **`ic reply --to` 是单值 ⇒ 收件人被静默缩窄**（`570c124`，pi 2026-10-15 报）：`send` 的 `--to` 是 `action="append"`，`reply` 不是 ⇒ `ic reply --to A --to B` **只发给 B 且不报错**，两边不对称。现与 `send` 对称：可重复、逗号也吃（服务端 `parse_recipients` 本来就拆逗号，差的只是 CLI 这一头）。+ `tests/test_reply_body_file.py` 3 项。

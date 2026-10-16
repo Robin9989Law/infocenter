@@ -76,7 +76,7 @@ flowchart LR
 | **agent / 身份** | 一个名字，如 `grok`、`kimi`、`cursor` | 邮箱按名字划分，**不按项目划分**；`grok` 全局只有一个收件箱 |
 | **信（message）** | 主题 + 正文 + 优先级 + 可选的 `workspace` | `workspace` 标明这封信属于哪个项目目录 |
 | **收件箱（inbox）** | 某个身份收到的所有信，按状态分为未读 / 已签收 / 已归档 | 查看**不会消费**，签收后才算读过 |
-| **签收（read）** | 把**自己的那一份**标记为已签收 | 一封信发给五个人，各人签收互不影响 |
+| **签收（read）** | 把**自己的那一份**标记为已签收 | 一封信发给五个人，各人签收互不影响。**封卷不拦签收**：已封卷线程里的信仍可签收（只标已读，不动案卷、不破只读） |
 | **线程（thread）** | 一封原信加上它的所有回复 | 回复自动沿用线程；你只能看到自己参与过的回合 |
 | **manager**（**旧名 `human`**，仍被接受） | **人（用户本人）自己的身份**，不是 agent；名册里 `role=manager`，也是 CLI/接口的**默认身份** | **全局只有一个人**：唯一能移除其他成员、**唯一能指定项目 coordinator**；它**天然**能行使 manager 与 coordinator 两种角色的权（它是定这两个角色的人）。`human` 是旧名，历史痕迹与哈希链里仍保留 `human`、**不做迁移**，别把 `manager` 和 `coordinator` 混为一谈 |
 | **coordinator** | 某个项目的协调者：`projects.coordinator`，**由 manager 指定** | 这个项目的里程碑 / WBS / 建任务 / 任务的 done·stopped / 抢锁替成员落地（**项目内路径的写锁与派单归它，项目外归 manager**）；**没指定的项目一律拒**（不默认兜底） |
@@ -191,7 +191,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic send --to A[,B] -s 主题 -b 正文` | 发信。`--to '*'` 为广播；`--priority high` 设置优先级；`--workspace 目录` 标注项目；`--body-file 文件` 从文件读取正文。**多行、或正文含反引号 / `$` / 引号时一律用 `--body-file`**：`-b` 要过一层 shell，那些字符会被当命令替换执行掉 |
 | `ic inbox [--status unread\|read\|archived\|all] [--full] [--workspace X] [--limit N]` | 查看收件箱，不签收。`--full` 会同时显示正文 |
 | `ic peek <id>` | 查看一封信的全文，不签收 |
-| `ic read <id>` | 签收自己的那一份 |
+| `ic read <id>` | 签收自己的那一份（**封卷线程里的信仍可签收**——只标已读，不动案卷） |
 | `ic archive <id>` | 归档自己的那一份 |
 | `ic reply <id> -b 正文 [--body-file 文件] [-s 主题] [--to X]` | 回复，默认回给发信人，沿用线程；`--body-file` 从文件读正文（同 send）；`--to` **可重复、也吃逗号**（`--to A --to B` 与 `--to A,B` 都同时发给两人，和 `ic send` 对称——旧版是单值，`--to A --to B` 会**静默只留最后一个**） |
 | `ic thread <id>` | 查看自己参与过的整个回合 |
@@ -200,11 +200,11 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 
 | 命令 | 作用 |
 | --- | --- |
-| `ic case <案卷或线程 id> [--note "一行进展"] [--status 状态]` | 查看一份案卷；`--note` 追加一行节点，`--status` 顺手改状态。**`--status` 必须和 `--note` 一起给**：状态变更天生要留一行节点，单独给会直接报 `status_needs_note`（不再"看着像改了"），和 `--milestone-*` / `--acceptance` 同给也一样拒。列表侧 `ic cases --status` 是筛选，不受此限。封卷（`办结` / `中止`）前会**先把没勾的里程碑逐个念出来**（封卷之后里程碑改不动了；**只提示、不拦**）。控制台点「办结 / 中止」也是同一盏灯（弹出确认，可取消） |
+| `ic case <案卷或线程 id> [--note "一行进展"] [--status 状态]` | 查看一份案卷；`--note` 追加一行节点，`--status` 顺手改状态。**`--status` 必须和 `--note` 一起给**：状态变更天生要留一行节点，单独给会直接报 `status_needs_note`（不再"看着像改了"），和 `--milestone-*` / `--acceptance` 同给也一样拒。列表侧 `ic cases --status` 是筛选，不受此限。封卷（`办结` / `中止`）前会**先把没勾的里程碑逐个念出来**（封卷之后里程碑改不动了；**只提示、不拦**）。**办结（close）另有两条硬门槛：① `no_acceptance` ② `unread_replies`（这条线程上自己有未签收回信）**。控制台点「办结 / 中止」也是同一盏灯（弹出确认，可取消） |
 | `ic case <id> --note "…" --wait-for <身份>` | **接活钩子**：把「我在等谁」落到案卷上（状态同时转成「待 <身份>」）——被等的人敲 `ic status` 能看到「有 N 卷在等你」。**必须带 `--note`**（说清在等什么），单独给会被拒 |
 | `ic case <id> --wbs 父/子` | 给案卷打 WBS 路径（`/` 分隔，空=未归类）；**只有本项目的 coordinator 或 manager 能改** |
 | `ic case <id> --milestone-add "名字" [--milestone-owner 身份]` / `--milestone-done N` | 加一条里程碑 / 勾掉第 N 条（下标从 0 起，`!N` 撤回完成）；**只有 coordinator 能改** |
-| `ic cases [--workspace X] [--status 状态] [--owner 身份] [--wait-for 身份] [--wbs 前缀] [--limit N] [--all]` | 列出案卷（**默认只列未封卷**；没实质内容的（验收/里程碑/WBS 都没有）打 `[信]` 标、**不藏**——实测那堆里有真活；已封卷的折成一行，`--all` 看全）；`--wbs` 前缀匹配（给 `防混写` 会带出 `防混写/锁与闸` 下面的） |
+| `ic cases [--workspace X] [--status 状态] [--owner 身份] [--wait-for 身份] [--wbs 前缀] [--limit N] [--all]` | 列出案卷（**默认只列未封卷**；没实质内容的（验收/里程碑/WBS 都没有）打 `[信]` 标、**不藏**——实测那堆里有真活；已封卷的折成一行，`--all` 看全）；`--wbs` 前缀匹配（给 `防混写` 会带出 `防混写/锁与闸` 下面的）。每条带 `unread_replies`（按请求者自己算，别人的未签收副本不算） |
 | `ic projects [--project <路径> --coordinator <身份>]` | 列出项目（名字 / 路径 / **该项目的 coordinator**）；带 `--coordinator` 就是指定或更换它（**只有 manager（旧名 `human`）能设；空值＝清空 ⇒ 回到「没指定」**）。这是**治理动作**，改一次进一条留痕（`project_coordinator`：谁把哪个项目的协调者从谁换成谁），`ic audit` 查得到 |
 | `ic windows [--agent 身份] [--workspace X] [--state 状态]` | 列出办公室（窗口）登记；默认只列在办/暂停 + 近期离场，`--all` 看全 |
 
@@ -227,9 +227,9 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | 在哪写 | 怎么写 | 没写会怎样 |
 | --- | --- | --- |
 | 任务 | `ic task add … --acceptance "一行验收"` | `ic tasks` / 看板标出来（**不拦**） |
-| 案卷 | `ic case <id> --acceptance "…"` | **办结（close）前服务端拦：没写就 409 `no_acceptance`**（中止不要求）；列表侧 `ic cases` / 看板标 **⚠ 没写怎样算完** |
+| 案卷 | `ic case <id> --acceptance "…"` | **办结（close）前服务端拦两条**：① 没写就 409 `no_acceptance`；② 线程上自己有未签收回信就 409 `unread_replies`（中止不要求）；列表侧 `ic cases` / 看板标 **⚠ 没写怎样算完** + `unread_replies` 计数 |
 
-> **办结门槛**：**办结案卷前必须先写「怎样算完」**（`ic case <id> --acceptance "…"`），否则服务端拒（**409 `no_acceptance`**）；**中止（abort）不要求**（没做完的事不该被逼着编一个验收）。
+> **封卷门槛（两条，缺一不可）**：办结（close）前必须同时满足 ① **写了「怎样算完」**（`ic case <id> --acceptance "…"`，否则 **409 `no_acceptance`**）② **把这条线程上自己没签收的回信看完**（`deliveries.to_agent = 封卷人 AND deliveries.status = 'unread'` 的条数为 0，否则 **409 `unread_replies`**——文案：这条线上你还有 N 封没收，先把回信看完再封卷 `ic inbox --status unread`）。**中止（abort）两条都不要求**（没做完的事不该被逼着编验收或等回信）。
 > **判据口径说死**：那个「怎样算完」要写成**第三个人能照着复跑的命令或测试名**（例：`pytest tests/test_lock_progress.py -q 全绿 + grep -c no_progress README.md ≥ 1`），**不许写「已经差不多了」「基本可用」这类形容词**——形容词机器判不了、人也复现不了（这是产品里现成的「锚定测试」位置）。任务侧本来就已要求（开工即冻结规格）。
 
 收尾时对着**四件事**核对（不是靠记性）：
@@ -471,7 +471,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `GET` | `/v1/inbox` | 收件箱，默认只列未读，不消费；可按 `workspace` 过滤 |
 | `GET` | `/v1/events` | **长轮询等待新信**。`since` 取上次返回的 `cursor`，`wait` 上限为 120 秒；带 `workspace` 时只返回属于该项目范围的新信 |
 | `GET` | `/v1/messages/{id}` | 查看全文，不消费 |
-| `POST` | `/v1/messages/{id}/read` | 签收自己的那一份 |
+| `POST` | `/v1/messages/{id}/read` | 签收自己的那一份（**封卷线程里的信仍可签收**——只标已读、不认领、不动案卷） |
 | `POST` | `/v1/messages/{id}/archive` | 归档自己的那一份 |
 | `POST` | `/v1/messages/{id}/reply` | 回复，沿用线程 |
 | `GET` | `/v1/threads/{id}` | 只返回自己参与过的回合；每封带 `parent_id` / `depth` / `root_id` / `children` |
@@ -485,7 +485,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `GET` | `/v1/cases/{id}` | 案卷详情与全部节点流水 |
 | `POST` | `/v1/cases/{id}/nodes` | 写回一行节点（`note` 单行；可带 `status` / `waiting_for`） |
 | `POST` | `/v1/cases/{id}/pause\|resume` | 暂停（不封卷、保留归属）/ 恢复为在办 |
-| `POST` | `/v1/cases/{id}/abort\|close` | 中止 / 办结，两者都会**封卷**；`close` 另释放归属。**`close` 前没写「怎样算完」返回 409 `no_acceptance`**（中止不要求） |
+| `POST` | `/v1/cases/{id}/abort\|close` | 中止 / 办结，两者都会**封卷**；`close` 另释放归属。**`close` 前没写「怎样算完」返回 409 `no_acceptance`；线程上有发给封卷人自己的未签收回信返回 409 `unread_replies`**（中止两条都不要求） |
 | `POST` | `/v1/cases/{id}/reopen` | 重开已封卷案卷：状态回 `open`、解除封卷，并留一条 `reopen` 节点（节点只增不删） |
 | `POST` | `/v1/cases/{id}/claim\|transfer` | 认领到当前窗口 / 转办给另一个窗口 |
 | `GET` `POST` | `/v1/windows` | 列出办公室；登记或更新办公室（`window_id` / `workspace` / `activity` / `state`） |
@@ -747,7 +747,7 @@ ic case m1a2b3c4 --acceptance "三处测试都补了、全量绿、README 记一
 - 收局操作走 `ic crew pause|resume|abort|close <身份>`：暂停只打断当前一轮、可恢复；中止 / 办结会封卷。
 - **层级**：`项目(workspace) → WBS(树) → 案卷(=控制包) → 任务`。**一个案卷唯一归属一个 WBS**；WBS **不建表**、就是路径（`父/子`），**空 = 未归类**（老案卷只归档不转）。WBS 负责人固定是**该项目的 coordinator**（由 manager 指定）。
 - **里程碑**（案卷"做完没有"的清单）：案卷上的**一列 JSON**，**不建表**。`名字 / 负责人 / 完成没完成` 三格；**一个里程碑可对应若干任务**。**agent 提议、只有 coordinator 能改**；案卷只显示里程碑，任务细节不上看板。
-- **怎样算完**（一件事的收尾判据）：案卷上**一行**（≤400 字），`ic case <id> --acceptance "…"`，**owner 或 coordinator 能写**。它不替代里程碑：里程碑是路标，这一行是"做成什么算做成"。**办结前必填**——`close` 前没写就被服务端拒（**409 `no_acceptance`**；中止不要求）；**要写成第三个人能复跑的命令/测试名，不写形容词**（见[收尾判据](#收尾判据什么样算做完)）。未封卷且没写时，`ic cases` 和控制台先标 **⚠ 没写怎样算完** 提醒。
+- **怎样算完**（一件事的收尾判据）：案卷上**一行**（≤400 字），`ic case <id> --acceptance "…"`，**owner 或 coordinator 能写**。它不替代里程碑：里程碑是路标，这一行是"做成什么算做成"。**办结（close）前必填**——`close` 前没写就被服务端拒（**409 `no_acceptance`**；中止不要求）；**要写成第三个人能复跑的命令/测试名，不写形容词**（见[收尾判据](#收尾判据什么样算做完)）。未封卷且没写时，`ic cases` 和控制台先标 **⚠ 没写怎样算完** 提醒。**办结（close）另需第二条门槛：把这条线程上自己没签收的回信看完**——否则服务端拒 **409 `unread_replies`**（中止不要求）；看板 `cases_list` / `case_view` 每条带 `unread_replies`（按请求者自己算，别人那份不算）。
 - **案卷只随"事做完"关闭**：窗口离场 / 进程死**不会**自动中止案卷——程序只做两件无争议的事：摘掉主办窗口指针 + 记一行 `[自动]` 说明（**状态不动、不封卷**）。要收工得显式 `abort` / `close`。
 - **人话**（给看板读的那一句）：**coordinator 写的最后一行节点**就是案卷的"人话"（不用新字段）。如果这行之后又有别的节点，`ic cases` / 控制台会给它打上 **⚠ 人话过期** —— 意思是"看板上的说法可能已经不准，等 coordinator 重写"。**agent 写的节点是②线的备忘，不当作给人看的记录。**
 
