@@ -44,11 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   现在 `crew._waiting_count()` 查一次共享状态，收信提示词与心跳提示词（含自定义模板）都会带一行
   `有 N 卷在等你：ic cases --wait-for <我> 看是哪些——要么接着办，要么转出去`。
 
-> **这一版把「谁说了算」分清了**：全局只有一个人 **`manager`**（＝用户本人，旧名 `human`），**每个项目**另有自己的 **coordinator**（由 manager 指定）。
-> 另外补了一个「接活钩子」（`--wait-for`：触发条件不许只写在信里）、`ic status` 的空钥匙灯、
-> 看板减噪（默认只列未封卷）、发布卫生（真打一个包再打开看），以及一批重复实体收尾。
-> 上一版（0.5.0）是首个公开版。
-
 - **`pyproject.toml` 的 `license` 改成 SPDX 字符串，清掉打包弃用告警**：原先写 `license = { text = "MIT" }`（表形式），每次构建都刷
   `SetuptoolsDeprecationWarning: project.license as a TOML table is deprecated`，setuptools 给的期限是 **2027-02-18**；更要紧的是它把 wheel 元数据落成旧的自由文本字段
   `License: MIT`。现在写 `license = "MIT"`（PEP 639），元数据变成规范字段 `License-Expression: MIT`，`LICENSE` 文件照旧进 `dist-info/licenses/`。
