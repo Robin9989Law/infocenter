@@ -3415,7 +3415,18 @@ class Store:
                         raise MailError(
                             "unknown_agent", f"名册里没有 {wait_coord}（先 `ic agents add {wait_coord}`）", 400
                         )
+            prev_coord = ""
+            if wait_coord is not None:
+                row = conn.execute("SELECT coordinator FROM projects WHERE workspace = ?", (ws,)).fetchone()
+                prev_coord = (row["coordinator"] if row else "") or ""
             _upsert_project(conn, ws, proj_name, now, archived=archived, coordinator=wait_coord)
+            if wait_coord is not None:
+                # **留痕**：指定/更换项目的 coordinator 是**治理**动作——必须进只增痕迹（哈希链覆盖它，
+                # 外锚也把它钉住）。空 task_id 与案卷的 `acceptance` 事件同例，属正常用法。
+                _emit_task_event(
+                    conn, "", normalize_name(actor or "human"), "project_coordinator",
+                    prev_coord, wait_coord, {"workspace": ws, "coordinator": wait_coord}, now,
+                )
             projects = _collect_projects(conn)
         ws_bare = Path(ws).name == ws
         for item in projects:

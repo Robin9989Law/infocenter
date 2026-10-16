@@ -155,6 +155,24 @@ class CoordinatorScopeTest(unittest.TestCase):
         self.store.lock_acquire("opencode", [outside], force=True)     # manager：可以
         self.store.lock_release("opencode", [outside])
 
+    def test_指定协调者会留痕(self):
+        """治理动作必须进只增痕迹（哈希链覆盖它，外锚把它钉住）——不然"谁是协调者"查不出来。"""
+        import sqlite3
+
+        self._designate(WS_A, "kimi")
+        self.store.add_project(WS_A, coordinator="", actor="human")     # 再清空
+        con = sqlite3.connect(self.store.path)
+        con.row_factory = sqlite3.Row
+        try:
+            rows = [dict(r) for r in con.execute(
+                "SELECT * FROM task_events WHERE action = 'project_coordinator' ORDER BY seq"
+            )]
+        finally:
+            con.close()
+        self.assertEqual([(r["from_status"], r["to_status"]) for r in rows], [("", "kimi"), ("kimi", "")])
+        self.assertEqual({r["agent"] for r in rows}, {"human"})
+        self.assertIn(WS_A, rows[0]["detail"])
+
     # ── ⑤ 旧名兼容    # ── ⑤ 旧名兼容 ───────────────────────────────────────────────────────
 
     def test_旧的_role值当_manager_认(self):

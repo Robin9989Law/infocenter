@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **治理动作留痕：指定/更换项目的 coordinator 进哈希链**（2026-10-16，晚于分层落地的自查）。分层做完才发现：**「谁是协调者」这件事改起来没留痕**——痕迹（`task_events`）只覆盖任务 / 案卷 / 锁，项目不在内。指定协调者是**治理**动作（它决定谁能改里程碑、谁抢得了锁），查不出来不行。现在 `add_project(coordinator=…)` 在同一事务里追加一行 `project_coordinator`（`from → to` + 工作目录 + 署名），**空 task_id 与案卷的 `acceptance` 事件同例**；`ic audit` 的重放与哈希链照旧认（现场换了一次人复验：链完整、重放一致）。+ `tests/test_coordinator_scope.py` 1 项。
+
 ### Changed
 - **重复实体收尾（L6）+ 一条纪律落地（L7）**：
   - **`crew._parse_utc` 与 `store._parse_utc` 是「同名两义」**（一个返回 `datetime`、一个返回 epoch 秒），
