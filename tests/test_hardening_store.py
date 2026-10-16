@@ -256,6 +256,7 @@ class HardeningStoreTest(unittest.TestCase):
         # 封卷线程里的新信（不继承认领）也不计入角标
         m2 = self.store.send("opencode", ["cursor"], "要封卷", "正文", workspace=self.proj)
         self.store.mark("cursor", m2["id"], "read", window_id="w-1")
+        self.store.case_acceptance_set(m2["thread_id"], "cursor", "封卷后的新信不计未读")
         self.store.close_case(m2["thread_id"], agent="cursor", window_id="w-1")
         self.store.reply("opencode", m2["id"], "封卷后回音", to=["cursor"])
         self.assertEqual({a["name"]: a["unread"] for a in self.store.list_agents()}["cursor"], 0)

@@ -139,7 +139,7 @@ class CaseWbsStoreTest(unittest.TestCase):
         self.assertIn("✔", notes)
 
     def test_sealed_case_rejects_milestone_and_wbs_changes(self):
-        case = self._case()
+        case = self._case(acceptance="封卷后不能改里程碑")
         self.store.close_case(case["id"], agent="cursor", note="做完了")
         for call in (
             lambda: self.store.case_milestone_add(case["id"], agent="opencode", name="封后加"),

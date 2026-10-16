@@ -5,7 +5,8 @@ human 定的毛病（2026-10-15）：任务一多，**没人写清"做成什么�
 
 规矩：
 - 谁能写：该案卷的 owner，或 coordinator（自己的活自己写清标准）；
-- **空着不拦**：看板把它标出来（"⚠ 没写怎样算完"），机器不拦人；
+- **空着不拦写入**：看板把它标出来（"⚠ 没写怎样算完"）；
+- **办结才拦**：没写 acceptance 就 close ⇒ 409 `no_acceptance`；中止不要求；
 - 封了卷就不能再改；写一次留一条节点（只增痕迹）。
 """
 
@@ -76,6 +77,7 @@ class CaseAcceptanceTest(unittest.TestCase):
         self.assertEqual(out["acceptance"], "")
 
     def test_封卷后不能再改(self):
+        self.store.case_acceptance_set(self.cid, "pi", "先写清怎样算完")
         self.store.close_case(self.cid, agent="human", note="办结")
         with self.assertRaises(MailError) as ctx:
             self.store.case_acceptance_set(self.cid, "pi", "补一句")

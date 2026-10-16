@@ -200,7 +200,8 @@ class LockKeyWritableTest(unittest.TestCase):
         """「再锁一次才成」现在是有保证的兜底：拿钥匙的人重锁一定把权限位按回来。"""
         self.store.lock_acquire("grok", [str(self.target)], ttl=600)
         os.chmod(self.target, 0o444)  # 别人/别的机制在背后改回只读
-        self.store.lock_acquire("grok", [str(self.target)], ttl=600)  # 再锁一次
+        # chmod 不改 mtime。盘上没写过时，普通再拿会被 no_progress 拒绝；stay 才能把权限位按回来。
+        self.store.lock_acquire("grok", [str(self.target)], ttl=600, stay=True)
         self.assertEqual(_mode(self.target), 0o644)
 
     # ---- 放钥匙不能打掉同文件别的持有者 ------------------------------------

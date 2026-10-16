@@ -59,7 +59,9 @@ class WriteLockStoreTest(unittest.TestCase):
         self.assertEqual(ctx.exception.status, 409)
         self.assertIn("别硬写", str(ctx.exception))
 
-        # 同一个 agent 再拿一次 = 续期，不是冲突
+        # 同一个 agent 再拿一次 = 续期，不是冲突。盘上要有写入痕迹，否则不给第二把。
+        Path(A).parent.mkdir(parents=True, exist_ok=True)
+        Path(A).touch()
         again = self.store.lock_acquire("cursor", [A], window_id="w-c1")
         self.assertEqual(again["locks"][0]["agent"], "cursor")
 
@@ -100,6 +102,8 @@ class WriteLockStoreTest(unittest.TestCase):
     def test_relock_by_holder_is_renewal(self):
         """同一个人重复锁同一路径 = 续期（长任务不必等锁过期被人抢）。"""
         first = self.store.lock_acquire("cursor", [A], ttl=60)
+        Path(A).parent.mkdir(parents=True, exist_ok=True)
+        Path(A).touch()
         again = self.store.lock_acquire("cursor", [A], ttl=600)
         self.assertEqual(again["locks"][0]["agent"], "cursor")
         self.assertGreater(again["expires_at"], first["expires_at"])

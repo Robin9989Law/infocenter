@@ -98,7 +98,7 @@ class WaitForStoreAndLightTest(unittest.TestCase):
         self.tmp.cleanup()
 
     def _case_waiting_on(self, who: str, title: str = "在等谁") -> str:
-        case = self.store.create_case(agent="opencode", title=title)
+        case = self.store.create_case(agent="opencode", title=title, acceptance="收工后不再催")
         self.store.append_case_node(
             case["id"], agent="opencode", note=f"在等 {who}", status="待谁", waiting_for=who
         )

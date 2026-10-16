@@ -110,7 +110,8 @@ class StoreP2Test(P2TestBase):
         self.store.append_case_node(
             cid, agent="cursor", note="等评审", status="waiting", window_id="w-1", waiting_for="opencode"
         )
-        # 封卷后再重开，waiting_for 必须清掉。
+        # 封卷后再重开，waiting_for 必须清掉。办结前要先写怎样算完。
+        self.store.case_acceptance_set(cid, "cursor", "重开后 waiting_for 清空")
         self.store.close_case(cid, agent="cursor", window_id="w-1")
         reopened = self.store.reopen_case(cid, agent="cursor", window_id="w-1")
         self.assertEqual(reopened["status"], "open")

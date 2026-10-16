@@ -71,6 +71,7 @@ class StoreDirtyAtLockTest(unittest.TestCase):
             "cursor", [str(self.target)], dirty={str(self.target): "+1/-0：别人留下的那行"}
         )
         self.assertTrue(first["dirty_at_lock"])
+        os.utime(self.target, None)  # 盘上有痕迹才给第二把；这一条测的是脏登记不被抹掉
         again = self.store.lock_acquire("cursor", [str(self.target)], dirty={})  # 续期，这次没嗅到
         self.assertEqual(again["dirty_at_lock"][self.resolved], "+1/-0：别人留下的那行")
         self.assertEqual(

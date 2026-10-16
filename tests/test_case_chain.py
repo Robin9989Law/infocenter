@@ -56,7 +56,7 @@ class CaseChainTest(unittest.TestCase):
 
     def test_办结进链_改节点不破链(self):
         """开卷 → 办结：`ic audit` 走的那条链里有 case_close；改 case_nodes.note 不破链。"""
-        case = self.store.create_case(agent="cursor", title="办事状态机")
+        case = self.store.create_case(agent="cursor", title="办事状态机", acceptance="链上有 case_close")
         cid = case["id"]
         self.store.close_case(cid, agent="cursor", note="办结（结案封档）")
 
@@ -88,7 +88,7 @@ class CaseChainTest(unittest.TestCase):
         self.assertEqual(self._rows("case_close", cid)[0]["hash"], row["hash"])
 
     def test_改链上的办结行会破链(self):
-        case = self.store.create_case(agent="cursor", title="钉住封卷")
+        case = self.store.create_case(agent="cursor", title="钉住封卷", acceptance="改链上的办结行会破链")
         self.store.close_case(case["id"], agent="cursor", note="办结")
         self.assertTrue(self.store.audit_events()["ok"])
         con = sqlite3.connect(self.store.path)
@@ -163,7 +163,7 @@ class CaseChainTest(unittest.TestCase):
         self.assertTrue(self.store.audit_events()["ok"])
 
     def test_写节点直接封卷也进链(self):
-        case = self.store.create_case(agent="cursor", title="直接封")
+        case = self.store.create_case(agent="cursor", title="直接封", acceptance="写节点直接封卷")
         self.store.append_case_node(case["id"], "cursor", "收工", status="done")
         rows = self._rows("case_close", case["id"])
         self.assertEqual(len(rows), 1)
@@ -175,7 +175,9 @@ class CaseChainTest(unittest.TestCase):
             "human", "旁边的任务", owner="cursor", workspace=str(self.home),
         )
         self.store.task_start("cursor", task["id"])
-        case = self.store.create_case(agent="cursor", title="旁边的案卷", workspace=str(self.home))
+        case = self.store.create_case(
+            agent="cursor", title="旁边的案卷", workspace=str(self.home), acceptance="不干扰任务重放"
+        )
         self.store.close_case(case["id"], agent="cursor", note="办结")
         whole = self.store.audit_events()
         one = self.store.audit_events(task["id"])

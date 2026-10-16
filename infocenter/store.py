@@ -1570,7 +1570,8 @@ class Store:
         human 定的毛病（2026-10-15）：任务一多，**没人写清"做成什么算做成"**，于是
         "做完没有"全靠事后吵。案卷是控制包，它这一层也要有一句标准。
         谁能写：该案卷的 owner，或 coordinator（跟 `ic task add --acceptance` 一个口径：
-        自己的活自己写清标准）。**空着不拦**，看板会把它标出来。
+        自己的活自己写清标准）。写的时候空着不拦；**办结**时这一栏空着会 409 `no_acceptance`
+        （先 `ic case <id> --acceptance "…"`），中止不要求。
         """
         cid = normalize_case_id(case_id)
         text = _task_text(acceptance, CASE_ACCEPTANCE_MAX)
@@ -2491,6 +2492,7 @@ class Store:
         force: bool = False,
         skip_locked: bool = False,
         dirty: dict | None = None,
+        stay: bool = False,
     ) -> dict:
         """拿锁（可一次拿多个路径）。
 
@@ -2501,6 +2503,9 @@ class Store:
         - `dirty`（可选，`{路径: 摘要}`）：**拿钥匙那一刻盘上本来就有**的未提交改动。
           由命令行嗅出来（`git diff`）后带进来登记，好让提交那一刻再提醒一句：
           "这套改动不是这次拿钥匙写的"。这里**不做任何判定**，只登记。
+        - 续期：这次要的路径里、**当前由我持有**的，自 `acquired_at` 起盘上没有写入痕迹
+          ⇒ 不给第二把租约（409 `no_progress`，已有锁原样留下）。`stay=True` 可以在没写过的
+          情况下再拿一会儿，但 `acquired_at` 不刷新，且最迟到拿锁后 `2×LOCK_TTL`。
         """
         agent = normalize_name(agent)
         window_id = normalize_window(window_id)
@@ -2560,6 +2565,48 @@ class Store:
                     "先做别的；轮到这条时 `ic lock`，能拿到就做，拿不到就跳过。不要发信、不要干等",
                     409,
                 )
+            # 续期：只看「这次要、且现在是我拿着」的路径。盘上自 acquired_at 起没写过 ⇒ 整笔不给第二把。
+            # 拒绝发生在任何 INSERT/chmod 之前；抛错会回滚本事务，已有锁（含这次 sweep 到的）都不动。
+            renewals: dict[str, sqlite3.Row] = {}
+            lacking: list[str] = []
+            for path in wanted:
+                row = _matching_lock(existing, path)
+                if row is None or row["agent"] != agent:
+                    continue
+                renewals[path] = row
+                if not _lock_has_progress(path, row["acquired_at"]):
+                    lacking.append(path)
+            if lacking and not stay:
+                raise MailError(
+                    "no_progress",
+                    "这些路径自拿锁后盘上没有写入痕迹："
+                    + "、".join(lacking)
+                    + "。不给第二把租约。别硬写。把要改的事记下来"
+                    "（`ic queue <路径> --note \"我要改什么\"`，会写进你自己的 TODO）。"
+                    "先做别的；这把锁到期后自然回到可拿。不要发信、不要干等",
+                    409,
+                )
+            if lacking and stay:
+                for path in lacking:
+                    row = renewals[path]
+                    cap = _lock_stay_cap(row["acquired_at"])
+                    if now >= cap or (row["expires_at"] or "") >= cap:
+                        raise MailError(
+                            "stay_exhausted",
+                            "延过一次了，要再拿请先 `ic unlock` 放一次再拿",
+                            409,
+                        )
+            plans: dict[str, tuple[str, str, bool]] = {}
+            for path in wanted:
+                row = renewals.get(path)
+                if row is not None and path in lacking:
+                    cap = _lock_stay_cap(row["acquired_at"])
+                    path_expires = _lock_expiry(now, ttl_seconds)
+                    if path_expires > cap:
+                        path_expires = cap
+                    plans[path] = (row["acquired_at"], path_expires, True)
+                else:
+                    plans[path] = (now, expires, False)
             # skip_locked 把要的路径全跳过时 wanted 为空。这时不能拼 `IN ()`
             # （SQLite 语法错误）——「别人全占着、我一个都不拿」是正常退路，不是 500。
             if wanted:
@@ -2576,6 +2623,7 @@ class Store:
                         dirt = next(
                             (val for key, val in dirty_text.items() if _same_file(key, path)), ""
                         )
+                    acquired_at, path_expires, _stay_mark = plans[path]
                     conn.execute(
                         """
                         INSERT INTO locks(path, agent, window_id, task_id, note, dirty_at_lock, acquired_at, expires_at)
@@ -2591,13 +2639,20 @@ class Store:
                                 ELSE excluded.dirty_at_lock END,
                             acquired_at = excluded.acquired_at, expires_at = excluded.expires_at
                         """,
-                        (path, agent, window_id, task, note_text, dirt, now, expires),
+                        (path, agent, window_id, task, note_text, dirt, acquired_at, path_expires),
                     )
                 for path in wanted:
+                    _acquired_at, path_expires, stay_mark = plans[path]
+                    detail = {
+                        "path": path, "ttl": ttl_seconds, "force": bool(force),
+                        "window_id": window_id or "", "expires_at": path_expires,
+                    }
+                    # 无进度续期才打记号；普通拿锁 / 有进度的续期不加这个键。
+                    if stay_mark:
+                        detail["no_progress_stay"] = True
                     _emit_task_event(
                         conn, task or "", agent, "lock", "", "",
-                        {"path": path, "ttl": ttl_seconds, "force": bool(force),
-                         "window_id": window_id or "", "expires_at": expires},
+                        detail,
                         now,
                     )
                 rows = conn.execute(
@@ -2625,7 +2680,8 @@ class Store:
                         "拿到钥匙了，但这些文件没能变成可写："
                         + "；".join(f"{path}（{why}）" for path, why in unwritable)
                         + "。先看权限位/ACL（`ls -le`），别硬写（`sudo`/`chmod` 都不许）；"
-                        "再 `ic lock` 一次通常就能成。",
+                        "盘上有写入后再 `ic lock` 一次通常就能成；还没写入就带 stay"
+                        "（`ic lock --stay`），普通再拿会被 no_progress 拒绝。",
                         500,
                     )
             else:
@@ -2638,12 +2694,13 @@ class Store:
                 }
                 for path in wanted
             ]
+            response_expires = max((item[1] for item in plans.values()), default=expires)
             res = {
                 "agent": agent,
                 "ttl": ttl_seconds,
                 "queued": [row for row in queued if row["count"]],
-                "expires_at": expires,  # 存储口径：UTC
-                "expires_at_beijing": beijing_time(expires),  # 给人看：北京时间
+                "expires_at": response_expires,  # 存储口径：UTC
+                "expires_at_beijing": beijing_time(response_expires),  # 给人看：北京时间
                 "locks": [_lock_view(r) for r in rows],
                 "skipped": skipped,  # 别人锁着、这次跳过的（只可能是 --changed 那一类）
                 # 拿钥匙前盘上本来就有的未提交改动（不是这次写的）：登记下来，
@@ -2884,13 +2941,54 @@ class Store:
         waiting: dict[str, int] = {}
         for item in pending:
             waiting[item["path"]] = waiting.get(item["path"], 0) + 1
-        for view in views:
+        parsed_now = _parse_utc(now)
+        for view, row in zip(views, rows):
             view["queued"] = waiting.get(view["path"], 0)
+            acquired = row["acquired_at"]
+            parsed_acquired = _parse_utc(acquired)
+            held_long = bool(
+                parsed_now
+                and parsed_acquired
+                and (parsed_now - parsed_acquired).total_seconds() >= LOCK_TTL
+            )
+            # 黄灯：拿满一个 TTL 仍没在盘上留下写入痕迹。刚拿到的锁不亮。
+            view["no_progress"] = bool(held_long and not _lock_has_progress(row["path"], acquired))
+        live = [row["path"] for row in rows]
+        orphans: dict[str, dict] = {}
+        for item in pending:
+            path = item.get("path") or ""
+            if not path or any(_same_file(path, held) for held in live):
+                continue
+            slot = orphans.get(path)
+            seq = int(item["seq"])
+            if slot is None or seq < slot["_seq"]:
+                if slot is None:
+                    orphans[path] = {
+                        "path": path,
+                        "count": 0,
+                        "agent": item["agent"],
+                        "at": item["at"],
+                        "at_beijing": item.get("at_beijing") or beijing_time(item["at"]),
+                        "_seq": seq,
+                    }
+                else:
+                    slot["agent"] = item["agent"]
+                    slot["at"] = item["at"]
+                    slot["at_beijing"] = item.get("at_beijing") or beijing_time(item["at"])
+                    slot["_seq"] = seq
+            orphans[path]["count"] += 1
+        orphan_queue = []
+        for slot in orphans.values():
+            slot.pop("_seq", None)
+            orphan_queue.append(slot)
+        orphan_queue.sort(key=lambda item: (item["at"], item["path"]))
         return {
             "count": len(views),
             "locks": views,
             "now": now,
             "queued_total": len(pending),
+            # 有人记了要改、现在没有活锁：灯用，不加表。
+            "orphan_queue": orphan_queue,
         }
 
     def probe_counts(self, since: str) -> dict:
@@ -3116,6 +3214,14 @@ class Store:
         now: str,
     ) -> dict:
         node_window = window_id or row["owner_window"]
+        # 办结才要求「怎样算完」。中止（aborted）不要求。任务侧的开工门槛不在这里再加一遍。
+        if seal and new_status == "done" and not str(row["acceptance"] or "").strip():
+            raise MailError(
+                "no_acceptance",
+                f"案卷 {row['id']} 还没写「怎样算完」，不能办结。"
+                f"先 `ic case {row['id']} --acceptance \"…\"`。中止不要求这一句。",
+                409,
+            )
         if seal:
             # 封卷（中止 / 办结）：释放主办窗口占用，标记只读
             conn.execute(
@@ -4776,6 +4882,35 @@ def _lock_ttl(value) -> int:
 def _lock_expiry(now_iso: str, ttl: int) -> str:
     base = datetime.strptime(now_iso, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     return (base + timedelta(seconds=ttl)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _lock_stay_cap(acquired_at: str) -> str:
+    """无进度续期的天花板：拿锁时刻 + 2×LOCK_TTL（默认一共 1 小时）。"""
+    return _lock_expiry(acquired_at, 2 * LOCK_TTL)
+
+
+def _lock_has_progress(path: str, acquired_at: str) -> bool:
+    """自这把锁的 acquired_at 起，盘上有没有写入痕迹。
+
+    文件不存在＝无痕迹。比到秒：mtime 的秒 ≥ acquired_at 的秒就算有（宁松勿误杀）。
+    chmod 不改 mtime，所以拿锁 / 改权限本身不会被算成进度。
+    """
+    try:
+        mtime = int(os.stat(path).st_mtime)
+    except OSError:
+        return False
+    moment = _parse_utc(acquired_at)
+    if moment is None:
+        return True
+    return mtime >= int(moment.timestamp())
+
+
+def _matching_lock(rows, path: str):
+    """锁表里和 path 是同一个文件的那一行（字符串或 inode）。没有就 None。"""
+    for row in rows:
+        if row["path"] == path or _same_file(row["path"], path):
+            return row
+    return None
 
 
 def _restore_readonly(conn: sqlite3.Connection, rows) -> dict[str, str]:

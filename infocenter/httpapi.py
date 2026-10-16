@@ -420,7 +420,7 @@ OPENAPI = {
         "/v1/locks": {
             "get": {"summary": "列出写锁", "responses": {"200": {"description": "locks"}}},
             "post": {
-                "summary": "拿写锁。body.paths 必填；可带 ttl、task_id、note、skip_locked、force。被他人锁着返回 409",
+                "summary": "拿写锁。body.paths 必填；可带 ttl、task_id、note、skip_locked、force、stay。被他人锁着返回 409；自己的锁盘上没动再拿返回 409 no_progress",
                 "parameters": [
                     {"$ref": "#/components/parameters/Agent"},
                     {"$ref": "#/components/parameters/Window"},
@@ -854,6 +854,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 ttl=body.get("ttl", LOCK_TTL),
                 force=_flag(query.get("force", ["0"])[0]) or bool(body.get("force")),
                 dirty=body.get("dirty") if isinstance(body.get("dirty"), dict) else None,
+                stay=_stay_flag(body.get("stay")),
             )
 
     if path == "/v1/guard":
@@ -1306,3 +1307,12 @@ def _one(path: str, prefix: str) -> str:
 
 def _flag(value: str) -> bool:
     return str(value).lower() in {"1", "true", "yes"}
+
+
+def _stay_flag(value) -> bool:
+    """body.stay：JSON 布尔，或 1/true/yes。缺省＝普通续期。"""
+    if isinstance(value, bool):
+        return value
+    if value is None or value == "":
+        return False
+    return _flag(str(value))

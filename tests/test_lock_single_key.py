@@ -85,6 +85,7 @@ class SingleKeyTest(unittest.TestCase):
         other.write_text("y\n", encoding="utf-8")
         self.store.lock_acquire("cursor", [str(other)], ttl=600)
         self.store.lock_acquire("opencode", [str(self.target)], ttl=600)
+        os.utime(self.target, None)  # 有写入痕迹才是续期，不是第二把白给
         self.store.lock_acquire("opencode", [str(self.target)], ttl=600)  # 再拿一次（续期）
         holders = {row["path"]: row["agent"] for row in self.store.lock_list()["locks"]}
         self.assertEqual(holders.get(str(other.resolve())), "cursor", "别人的钥匙不能被顺手清掉")
@@ -102,6 +103,7 @@ class SingleKeyTest(unittest.TestCase):
         con.execute("UPDATE locks SET agent = 'opencode' WHERE path = ?", (str(hard.resolve()),))
         con.commit()
         con.close()
+        os.utime(self.target, None)
         self.store.lock_acquire("opencode", [str(self.target)], ttl=600)
         paths = self._paths()
         self.assertNotIn(str(hard.resolve()), paths, "旧写法的钥匙要被换掉")

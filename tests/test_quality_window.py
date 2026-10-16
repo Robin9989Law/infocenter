@@ -255,12 +255,15 @@ class WindowAndCaseQualityTest(unittest.TestCase):
         self.assertEqual(c["waiting_for"], "opencode")
         self.assertEqual(c["last_note"], "已提交 PR，等待 opencode 审阅")
 
-        # 办结案卷
+        # 办结案卷。没写「怎样算完」会被 409 拦住。
+        self.store.case_acceptance_set(cid, "cursor", "验收通过，归档结案")
         c = self.store.close_case(cid, agent="opencode", note="验收通过，归档结案")
         self.assertEqual(c["status"], "done")
         self.assertIsNotNone(c["closed_at"])
         self.assertIsNone(c["owner_window"])
-        self.assertEqual(len(c["nodes"]), 3)
+        # 认领、waiting、怎样算完、办结，四条节点。
+        self.assertEqual(len(c["nodes"]), 4)
+        self.assertEqual(c["nodes"][-1]["note"], "验收通过，归档结案")
 
     # 7. 暂停与恢复：pause 后状态为 paused，保留 owner_window，不推新提醒，可 resume 回 open
     def test_07_pause_and_resume_case(self):
@@ -354,6 +357,7 @@ class WindowAndCaseQualityTest(unittest.TestCase):
         self.store.mark("cursor", msg["id"], "read", window_id="w-1")
         cid = msg["thread_id"]
 
+        self.store.case_acceptance_set(cid, "cursor", "全部测试绿灯")
         closed = self.store.close_case(cid, agent="cursor", window_id="w-1", note="全部测试绿灯")
         self.assertEqual(closed["status"], "done")
         self.assertIsNone(closed["owner_window"])
@@ -413,6 +417,7 @@ class WindowAndCaseQualityTest(unittest.TestCase):
 
             _, c_b1 = _http_json(url, "POST", "/v1/cases", agent="opencode", body={
                 "title": "B1直接立案", "workspace": ws_b, "owner_agent": "grok", "owner_window": "w-b1",
+                "acceptance": "项目 B 办结计数",
             })
             _http_json(url, "POST", f"/v1/cases/{c_b1['id']}/close", body={"note": "B1完成"})
 

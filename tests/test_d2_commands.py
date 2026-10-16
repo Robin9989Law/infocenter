@@ -213,6 +213,7 @@ class D2CommandTest(unittest.TestCase):
             workspace=str(self.project),
             owner_agent="grok",
             owner_window="w-333333",
+            acceptance="crew close 前已写怎样算完",
         )
         subprocess.run(
             [sys.executable, IC, "--home", str(self.home), "--url", self.url,

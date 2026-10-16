@@ -176,7 +176,9 @@ class DeadProcessSweepTest(unittest.TestCase):
         self.assertGreaterEqual(got["stalled_hours"], STALL_HOURS - 0.1)
 
     def test_sealed_case_is_not_stalled(self):
-        case = self.store.create_case(agent="cursor", title="做完了", workspace=WS)
+        case = self.store.create_case(
+            agent="cursor", title="做完了", workspace=WS, acceptance="封卷不算停滞"
+        )
         self.store.close_case(case["id"], agent="cursor", note="完事")
         _age(self.db, "UPDATE cases SET created_at = ?, updated_at = ? WHERE id = ?",
              ("2020-01-01T00:00:00Z", "2020-01-01T00:00:00Z", case["id"]))
