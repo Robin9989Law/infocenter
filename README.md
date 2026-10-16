@@ -471,7 +471,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `DELETE` | `/v1/agents/{name}` | 移除成员。只能删除自己；`manager`（人，旧名 `human` 仍被接受）可以删除任何 agent |
 | `POST` | `/v1/messages` | 发信。`to` 可填名字、逗号分隔的多个名字，或 `*` |
 | `GET` | `/v1/inbox` | 收件箱，默认只列未读，不消费；可按 `workspace` 过滤 |
-| `GET` | `/v1/events` | **长轮询等待新信**。`since` 取上次返回的 `cursor`，`wait` 上限为 120 秒；带 `workspace` 时只返回属于该项目范围的新信 |
+| `GET` | `/v1/events` | **长轮询等待新信**。`since` 取上次返回的 `cursor`，`wait` 上限为 120 秒；带 `workspace` 时只返回属于该项目范围的新信。**进了等待后不只是「有新信」才返回**：未读数（`unread_total`）相对进入等待时变了也交回——回执那类写入只把已有的信标成已读、不新增投递，`new` 仍是空的，不看未读数就永远传不回「对端已签收」；**无关的叫醒继续睡**。叫醒只认同一个服务进程内的写入（别的进程直写库的，最迟本轮 `wait` 到期返回时看到） |
 | `GET` | `/v1/messages/{id}` | 查看全文，不消费 |
 | `POST` | `/v1/messages/{id}/read` | 签收自己的那一份（**封卷线程里的信仍可签收**——只标已读、不认领、不动案卷） |
 | `POST` | `/v1/messages/{id}/archive` | 归档自己的那一份 |
@@ -702,7 +702,7 @@ ic sync once --dir ~/Drive/信息中心
 | `ic sync import --dir <项目>` | 从其他节点的目录导入信件和回执 |
 | `ic sync once --dir <项目>` | 先导出，再导入。不需要 `--as`，也不拉起服务 |
 
-成功时退出码 0。普通输出是一行计数：`exported`、`imported`、`receipts_out`、`receipts_in`、`skipped`、`rejected`、`conflict`。`--json` 输出同一份计数。未配置 `node`、节点名不合法，或 `--dir` 不是目录时，退出码 2，不建目录、不改库。
+成功时退出码 0。普通输出是一行计数：`exported`、`imported`、`receipts_out`、`receipts_in`、`skipped`、`rejected`、`conflict`。`--json` 输出同一份计数。未配置 `node`、节点名不合法，或 `--dir` 不是目录时，退出码 2，不建目录、不改库。**警告往 stderr 走、不占计数**：`workspace_name` 与目录名不一致、以及 `parent=missing`（见下面规则），都只打一行 `warning: …` 继续跑。
 
 目录只当传输带。一个节点只写自己的子目录：
 
@@ -710,7 +710,9 @@ ic sync once --dir ~/Drive/信息中心
     <项目>/.infocenter/outbox/<节点>/receipts/<message_id>--<裸名>.json
 
 - 延迟等于网盘同步周期（秒到分钟）。至少送达一次，按消息 id 去重。同一 id 内容不同时留下先到的那封，并计入 `conflict`。
-- 导入时把 `workspace` 改写为本机这次 `--dir` 的绝对路径，收件箱过滤和守护都能命中。没有 `workspace` 的信不导出。
+- **只有真的落库才推一下**（事务提交后 `_signal`）：新信 `imported`、回执 `applied` 各推一次；`duplicate` / `conflict` / `skipped` / `absent` / `archived` **不推**——重放同一封不该多起一轮。**推一下只在同一个 Store 实例内生效**：`ic sync` 不拉起服务、自己在进程里开一份 Store，因此**叫不醒服务里那些长轮询 `/v1/events` 的守护与 MCP 推送**（不同进程、不同 Condition）；导入的信最迟在守护下一轮 `wait`（上限 120 秒）返回时就能看到。本笔是「该叫的才叫」这条口径落地，**不是把跨进程叫醒做出来了**。
+- **导入前校父信与线程**：`reply_to` 指向自己、父信已在库但 `thread_id` 与本封不同、或库里已有把这封当父信的行而线程不同 ⇒ **`conflict`、不插入**（不动已有的子信）。**父信还不在库里照旧导入**（乱序到达是网盘同步的常态，拦下来只会永久丢信），stderr 另打一行 `warning: <文件> 的 parent=missing，回复的父信还不在库里，仍导入`，计数仍算 `imported`。
+- 导入时把 `workspace` 改写为本机这次 `--dir` 的绝对路径，收件箱过滤和守护都能命中。没有 `workspace` 的信不导出。幂等比较里 **`workspace` 的空串当没有**（不把库里已有的空串改掉）；值确实不同 ⇒ `conflict`，**也不回写**。
 - 签收（read）会在下次导出时写出回执；发信方下次导入后，把对应的那一份标成已读。归档不跨节点。
 - 单个 JSON 上限 1 MB。超过的不写入，导入时也不读进内存。
 - 同一个 `node` 不要两台机器同时用。v1 不加密、不自动清理旧文件，也不在 `ic crew` 里调用 sync。网盘成员都能读到这些 JSON，敏感信息不要走这里。
