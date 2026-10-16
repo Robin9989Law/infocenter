@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- **重复实体收尾（L6）+ 一条纪律落地（L7）**：
+  - **`crew._parse_utc` 与 `store._parse_utc` 是「同名两义」**（一个返回 `datetime`、一个返回 epoch 秒），
+    而且**两边各抄了一遍时间格式串** `%Y-%m-%dT%H:%M:%SZ`——正是「改一处忘一处」那种。现在合并：
+    `crew._started_at_epoch()` 只做换算，**解析只有一个真相**（`store._parse_utc`），顺带删掉没人用的 `calendar` import。
+  - **机器扫全仓**（零引用函数 / 同名函数 / 重复长字面量）：零引用只剩 5 个 `BaseHTTPRequestHandler` 框架钩子；
+    `server.stop`（模块级）与 `serve` 内的信号闭包是**误报**（不同作用域，不是重复）；
+    store 里那些 SQL 字面量重复（`SELECT * FROM windows…` ×12、deliveries ×4 等）**判定不抽**——
+    抽成 helper 等于每个查询加一个函数、行数并不省（跟减法轮当时的结论一致，这次复核仍然成立）。
+  - README 立**第四条纪律：动手 / 删除前先读台账**——删掉的东西对后来的人是不可见的，不读台账就容易
+    把别人刚删的又加回来（减法轮那晚的经验）。
+
+
+### Changed
 - **coordinator 分两层：全局叫 `manager`，每个项目的叫 `coordinator`（由 human 指定）**（human 2026-10-16 拍，四条裁定逐条落码）。以前 `coordinator` 是**一个全局角色**（config/库里 `role=coordinator`），一个身份管所有项目——**一个词管两个范围**，正是这一晚一直在打的病（一个概念两套口径）。现在：
   - **`manager`**（旧名 coordinator，配置里写旧值也认，读进来一律记成 `manager`）：**全局**管理者，管名册与 hub 级；**不再自动拥有某个项目里的权**。
   - **`coordinator`**：**某个项目**的那个人，落在 `projects.coordinator`（新列，在线迁移自愈）。管这个项目的里程碑 / WBS / 建任务 / 任务的 done·stopped / 抢锁与替成员落地。**由 human 指定**（只有 human 能设：`ic --as human projects --project <路径> --coordinator <身份>`，或控制台 → 项目设置 → 协调者；空值＝清空）。

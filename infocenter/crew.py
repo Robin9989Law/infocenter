@@ -15,7 +15,6 @@ pause / resume / abort / close
 watch    守护进程本体（由 up 派生，不面向用户）。启动时生成窗口号，退出时上报离场
 """
 
-import calendar
 import json
 import hashlib
 import os
@@ -31,6 +30,7 @@ from infocenter import config
 from infocenter.client import NO_PID_ENV, ApiError, request, request_mail
 from infocenter.store import (
     MailError,
+    _parse_utc as parse_utc,   # 时间格式的唯一真相；本文件 `_started_at_epoch` 只做换算
     _workspace_scope,
     atomic_replace,
     beijing_stamp,
@@ -351,12 +351,14 @@ def _process_start_epoch(pid: int) -> float | None:
     return time.time() - elapsed
 
 
-def _parse_utc(value: str) -> float | None:
-    try:
-        moment = time.strptime(value, "%Y-%m-%dT%H:%M:%SZ")
-    except (TypeError, ValueError):
-        return None
-    return float(calendar.timegm(moment))
+def _started_at_epoch(value: str) -> float | None:
+    """`<ISO Z>` 字符串 → epoch 秒（跟 `ps` 报的启动时刻比大小用）。
+
+    格式**只有一个真相**：解析在 `store._parse_utc`，这里只做一次换算。
+    以前本文件另抄了一份 `%Y-%m-%dT%H:%M:%SZ`——两处各写一遍，正是"改一处忘一处"那种。
+    """
+    moment = parse_utc(value)
+    return moment.timestamp() if moment is not None else None
 
 
 def _daemon_identity_ok(pid: int, started_at: str) -> bool:
@@ -365,7 +367,7 @@ def _daemon_identity_ok(pid: int, started_at: str) -> bool:
     if not cmdline or "infocenter" not in cmdline or "watch" not in cmdline:
         return False
     proc_start = _process_start_epoch(pid)
-    recorded = _parse_utc(started_at)
+    recorded = _started_at_epoch(started_at)
     if proc_start is None or recorded is None:
         return False
     return abs(proc_start - recorded) <= _PID_START_SLACK
