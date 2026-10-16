@@ -1965,6 +1965,24 @@ def _sync(args, home: Path) -> int:
     return 0
 
 
+def _inbox_alias_mark(message, viewer: str) -> str:
+    """合并来的信：实际收件名与调用者不同，才在列表行末标一小段。
+
+    只读 store 给的 `delivered_to`。字段不在、不是字符串、空、或与调用者相同：不标。
+    不读 `to`，不调用 `is_person`，不自己判断哪个名字是旧名。
+    """
+    if not isinstance(message, dict) or "delivered_to" not in message:
+        return ""
+    delivered = message.get("delivered_to")
+    if not isinstance(delivered, str):
+        return ""
+    name = delivered.strip()
+    who = viewer.strip() if isinstance(viewer, str) else ""
+    if not name or not who or name == who:
+        return ""
+    return f"（旧名 {name}）"
+
+
 def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) -> None:
     if cmd == "agents" and isinstance(payload, dict) and "agents" not in payload:
         if "config_removed" in payload:
@@ -2006,9 +2024,15 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
     if cmd == "inbox":
         label = {"unread": "未读", "read": "已读", "archived": "归档", "all": "全部"}[payload["status"]]
         print(f"{payload['agent']} 的{label} {payload['count']} 封")
+        viewer = payload["agent"]
         for message in payload["messages"]:
             mark = "!" if message["priority"] == "high" else " "
-            print(f"{mark} {message['id']}  {message.get('created_at_beijing') or message['created_at']}  来自 {message['from']}")
+            alias = _inbox_alias_mark(message, viewer)
+            tail = f"  {alias}" if alias else ""
+            print(
+                f"{mark} {message['id']}  {message.get('created_at_beijing') or message['created_at']}  "
+                f"来自 {message['from']}{tail}"
+            )
             print(f"  {message['subject']}")
             if message.get("preview"):
                 print(f"  {message['preview']}")
