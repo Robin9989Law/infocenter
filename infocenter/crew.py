@@ -5,7 +5,7 @@ up       按 ~/.infocenter/config.json 逐 agent 拉起：
          app    → `open -a <app> <项目目录>`
          headless → 启动收信守护（watch）：状态键 = 身份 × 项目，同一身份可在多个项目各跑一个守护；
                     守护长轮询 /v1/events（带 workspace 范围），只处理属于本项目的信
-kickoff  以 coordinator（或 --from 指定身份）向其他所有 agent 发 high 启动信（分工 + 合作约定），
+kickoff  以 manager（或 --from 指定身份）向其他所有 agent 发 high 启动信（分工 + 合作约定），
          workspace 记项目目录
 status   查看守护进程、tmux 会话、config 启动方式（--dir 只看某个项目）
 down     杀守护进程、关 tmux 会话（--dir 只清某个项目，--only 只停点名的身份）
@@ -49,7 +49,7 @@ RUNS_KEEP = 60
 
 CONVENTIONS = """---
 合作约定（kickoff 自动附加）：
-1. 本信由 coordinator {coordinator} 发出。coordinator 的分工裁定优先执行；有异议只回一条针对冲突点的信，不要并行改文件。
+1. 本信由**全局 manager**（{coordinator}）发出。**项目里的 coordinator 由 human 指定**，它在该项目里的分工裁定优先执行；有异议只回一条针对冲突点的信，不要并行改文件。
 2. 单一写者原则：每个文件/文档只有一个 owner agent 可写；其他人只以留言发 diff 建议，由 owner 合入。
 3. 规划纪律：PLAN.md（任务分解）由 coordinator 独家产出和维护，每项任务带 owner、交付物、验收标准、依赖；各成员只把进展写进自己的 TODO-<名字>.md；要调整计划就给 coordinator 发信，不要直接改 PLAN.md。
 4. 状态自报：开始/切换/完成任务时更新自己的 activity（MCP 调 ic_activity，CLI 用 ic register --activity "一句话状态"）。coordinator 想知道各家在做什么，直接看 `ic agents`，**不要发问询信**；要干预、要调配才发信。
@@ -519,7 +519,7 @@ def manager_misconfig(item: dict) -> str:
         "launch": "crew up 会另起一个会抢活的前台 actor",
     }
     detail = "；".join(f"{key} ⇒ {reasons[key]}" for key in bad)
-    return f"coordinator 不应配 {'/'.join(bad)}（{detail}）；coordinator 的前台由人驱动"
+    return f"manager 不应配 {'/'.join(bad)}（{detail}）；manager 的前台由人驱动"
 
 
 def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
@@ -719,7 +719,7 @@ def kickoff(
         raise MailError("empty_plan", f"{plan_path} 是空的")
     others = [item["name"] for item in config.load(home)["agents"] if item["name"] != coordinator]
     if not others:
-        raise MailError("nobody_to_kickoff", "除了 coordinator 没有别的 agent 可通知")
+        raise MailError("nobody_to_kickoff", "除了 manager 没有别的 agent 可通知")
     body = plan.rstrip() + "\n\n" + CONVENTIONS.format(coordinator=coordinator)
     payload = request(url, "POST", "/v1/messages", coordinator, {
         "to": ",".join(others),
@@ -729,7 +729,7 @@ def kickoff(
         "workspace": project,
     })
     lines = [
-        f"已以 {coordinator}（coordinator）身份发出 {payload['id']}",
+        f"已以 {coordinator} 身份发出 {payload['id']}（启动信；默认以全局 manager 名义）",
         f"给: {', '.join(payload['to'])}",
         f"主题: {payload['subject']}（high，workspace {project}）",
     ]
@@ -1231,7 +1231,31 @@ def _api(url: str, method: str, path: str, agent: str, body=None, query=None):
     return request_mail(url, method, path, agent, body, query)
 
 
-def build_prompt(agent: str, project: str, fresh: list[dict], unread_total: int) -> str:
+def _waiting_count(url: str, agent: str) -> int:
+    """**有 N 卷在等你**（状态「待你」、未封卷）。给提示词用——这是共享状态里现成的一个数，
+    和「未读数」同类；**不是通知、不是点名、不发信**（`--wait-for` 那一半缺的就是它）。"""
+    try:
+        payload = _api(url, "GET", "/v1/cases", agent,
+                       query={"status": "waiting", "waiting_for": agent, "limit": "50"})
+    except (MailError, SystemExit, OSError, ValueError, KeyError):
+        # **一个数而已，绝不能把守护弄崩**（2026-10-16 实测踩到：连不上时 request 抛的不是 MailError，
+        # 异常冒出循环 ⇒ 守护不再响应 ⇒ 两个"热加载"测试红）。跟别处同口径：拿不到就说"没有"。
+        return 0
+    return sum(1 for row in (payload or {}).get("cases") or [] if not row.get("sealed"))
+
+
+def _waiting_line(agent: str, waiting: int) -> str:
+    """一行提示（塞进已经在跑的提示词里；没有等你的卷就一个字符都不加）。"""
+    if not waiting:
+        return ""
+    return (
+        f"另外有 {waiting} 卷在等你（状态「待你」）：`ic --as {agent} cases --wait-for {agent}` 看是哪些；"
+        f"要么接着办，要么转出去：`ic --as {agent} case <id> --note \"为什么\" --wait-for <别人>`。\n"
+    )
+
+
+def build_prompt(agent: str, project: str, fresh: list[dict], unread_total: int,
+                 waiting: int = 0) -> str:
     listing = "\n".join(
         f"- [{item['id']}] 来自 {item['from']}《{item['subject']}》"
         + ("（high）" if item.get("priority") == "high" else "")
@@ -1239,7 +1263,8 @@ def build_prompt(agent: str, project: str, fresh: list[dict], unread_total: int)
         for item in fresh
     )
     return (
-        f"你是 {agent}，项目目录 {project}。信息中心有 {unread_total} 封属于本项目的未读留言，最新 {len(fresh)} 封：\n"
+        _waiting_line(agent, waiting)
+        + f"你是 {agent}，项目目录 {project}。信息中心有 {unread_total} 封属于本项目的未读留言，最新 {len(fresh)} 封：\n"
         f"{listing}\n"
         f"本轮动作固定为：读案卷 → 干活 → 写回一行节点。\n"
         f"**改文件前先拿写锁**：`ic --as {agent} lock <路径>`（可一次给多个）；拿不到（已被别人锁）就"
@@ -1261,17 +1286,21 @@ def build_heartbeat_prompt(
     coordinator: bool = False,
     custom_prompt: str | None = None,
     coordinator_name: str | None = None,
+    waiting: int = 0,
 ) -> str:
+    wait_line = _waiting_line(agent, waiting)
     if custom_prompt and str(custom_prompt).strip():
         return (
-            str(custom_prompt)
+            wait_line
+            + str(custom_prompt)
             .strip()
             .replace("{agent}", agent)
             .replace("{project}", project)
         )
     if coordinator:
         return (
-            f"你是 {agent}（coordinator），项目目录 {project}。心跳检查（没有新信件）："
+            wait_line
+            + f"你是 {agent}（manager），项目目录 {project}。心跳检查（没有新信件）："
             f"1）维护 {project}/PLAN.md：吸收新需求、更新任务状态、勾掉完成项、拆解停滞项；"
             f"2）调配资源：用 `ic --as {agent} agents` 看各家的 activity 状态和未读数，对照成员 TODO-<名字>.md 进展；"
             f"发现谁停滞、跑偏或闲下来，就重排任务（更新 PLAN.md 并发信通知相关方）或发信催办；"
@@ -1281,9 +1310,9 @@ def build_heartbeat_prompt(
             f"确实无可推进就直接结束本次运行，不要发客套信、不要 +1。"
         )
     coord_target = (
-        f"主协调 agent `{coordinator_name.strip()}`（`ic agents` 里 role=coordinator 的那位）"
+        f"主协调 agent `{coordinator_name.strip()}`（`ic agents` 里 role=manager 的那位）"
         if coordinator_name and str(coordinator_name).strip()
-        else "主协调 agent（`ic agents` 里 role=coordinator 的那位）"
+        else "主协调 agent（`ic agents` 里 role=manager 的那位）"
     )
     return (
         f"你是 {agent}，项目目录 {project}。心跳检查（没有新信件）："
@@ -1489,7 +1518,11 @@ def watch(
                     continue
                 new_cursor = max(cursor, int(payload.get("cursor") or 0))
                 if fresh:
-                    prompt = build_prompt(agent, project, fresh, int(payload.get("unread_total") or len(fresh)))
+                    prompt = build_prompt(
+                        agent, project, fresh,
+                        int(payload.get("unread_total") or len(fresh)),
+                        waiting=_waiting_count(url, agent),
+                    )
                     print(f"[{beijing_stamp()}] 本项目新信 {len(fresh)} 封，触发 headless", flush=True)
                     outcome = _run_headless(template, prompt, project, agent=agent, timeout=htimeout)
                     # 子进程一退出，它的 pid 就是死的。补中断节点会走案卷对账，必须先把 pid 写回。
@@ -1538,7 +1571,10 @@ def watch(
                     before = _progress_snapshot(progress_paths)
                     h_outcome = _run_headless(
                         template,
-                        build_heartbeat_prompt(agent, project, is_coord, custom_prompt, coordinator_name=coord_name),
+                        build_heartbeat_prompt(
+                            agent, project, is_coord, custom_prompt,
+                            coordinator_name=coord_name, waiting=_waiting_count(url, agent),
+                        ),
                         project,
                         agent=agent,
                         timeout=htimeout,

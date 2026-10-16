@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img alt="version" src="https://img.shields.io/badge/version-0.5.0-22d3ee?style=flat-square">
+  <img alt="version" src="https://img.shields.io/badge/version-0.6.0-22d3ee?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-%E2%89%A53.10-34d399?style=flat-square">
   <img alt="platform" src="https://img.shields.io/badge/platform-macOS-f59e0b?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-a78bfa?style=flat-square">
@@ -66,7 +66,7 @@ flowchart LR
 
 - **信是异步的**：先发出去，对方下次上线时再读；即使 agent 崩溃或关机，信也不会丢。
 - **到信是即时的**：对方在线时，新信会在秒级内推送给模型，不必等它「想起来查邮箱」。
-- **团队是一键的**：`ic crew` 把所有 agent 拉进同一个项目，配好收信守护进程，并以 coordinator 身份群发分工信。
+- **团队是一键的**：`ic crew` 把所有 agent 拉进同一个项目，配好收信守护进程，并以 **manager** 身份群发分工信（项目里的活交给该项目的 coordinator）。
 - **数据是你的**：只有一个 SQLite 文件和一个 JSON 配置，服务只监听 `127.0.0.1`，没有账号，也没有云。
 
 ## 核心概念
@@ -83,11 +83,11 @@ flowchart LR
 | **human** | 人自己的身份（不是 agent，**也不同于上面两个角色**） | 人的意图/拍板以 `human` 名义下发；它还是 CLI/接口的**默认身份**、唯一能移除其他成员、**唯一能指定项目 coordinator** 的身份；它**天然**能行使上面两种角色的权（它是定这两个角色的人），别混 |
 | **收信守护进程** | `ic crew up` 派生的后台进程 | 长轮询等待新信，一有新信就触发一次 headless 运行 |
 | **心跳（heartbeat）** | 收信守护进程在无信时使用的定时器 | 没信也会定期触发一次「规划运行」，推进任务 |
-| **activity** | 每个 agent 的一句话状态 | agent 自报「我在做什么」的字段，coordinator 据此调配，无需发问询信 |
+| **activity** | 每个 agent 的一句话状态 | agent 自报「我在做什么」的字段，manager / 本项目的 coordinator 据此调配，无需发问询信 |
 | **窗口（window）** | 一个会话的内部编号，如 `w-3f9a1c` | 走 `X-Window` 请求头透传；同一身份开多个会话时用它区分「哪个会话」，**不动名字空间** |
 | **办公室（office）** | 窗口在服务端的登记行 | 记录窗口属于谁、哪个项目、最近活动；同一身份的多个窗口各自登记 |
 | **案卷（case）** | 一个 thread 的「办事追踪」 | 由若干**一行一节点**的进展组成，有主办窗口与状态（见[窗口 · 案卷 · 管理台](#窗口--案卷--管理台ui)）；可打 **WBS 路径**与**里程碑**（只 coordinator 能改） |
-| **任务（task）** | coordinator 建的工作包 | 状态机 `todo/doing/blocked/done/stopped`；`done`/`stopped` **终态不可逆**；停任务必须带交接段；`supersedes` 单值成链不成树 |
+| **任务（task）** | 本项目的 coordinator 建的工作包 | 状态机 `todo/doing/blocked/done/stopped`；`done`/`stopped` **终态不可逆**；停任务必须带交接段；`supersedes` 单值成链不成树 |
 | **写锁（lock）** | "同一时间只有一个 agent 能改这个路径" | `ic lock` 拿、`ic unlock` 放、TTL 兜底；`ic guard` 是提交闸，git 钩子每次提交都拦 |
 | **留痕（task_events）** | 程序自己写的**只增**痕迹 | 与业务改动**同一事务** ⇒ 改成功必有痕；带哈希链 + 重放校验 + 库外锚，`ic audit` 机器验证 |
 
@@ -150,10 +150,10 @@ kimi 的未读 2 封
   POST /v1/orders 的入参改了，帮忙核对客户端
 ```
 
-`ic agents` 的输出如下，其中 `正在:` 一行是 agent 状态自报的 activity，`[coordinator]` 标明角色：
+`ic agents` 的输出如下，其中 `正在:` 一行是 agent 状态自报的 activity，`[manager]` 标明全局管理者的角色：
 
 ```
-opencode [coordinator]  未读 0  最后活动 2026-10-14 03:31:48 +0800（OpenCode）
+opencode [manager]  未读 0  最后活动 2026-10-14 03:31:48 +0800（OpenCode）
     正在: 04 v1.6 staging 预核对已裁定落盘；等待 cursor F4 快过  [2026-10-14 03:21:47 +0800]
 kimi  未读 2  最后活动 2026-10-14 03:31:51 +0800（Kimi Code）
 ```
@@ -181,7 +181,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic stop` | 停止后台服务 |
 | `ic status` | 显示服务地址、pid、你的未读数和**各家未读数**；另带三盏黄灯：**有人在这卷里等你**（未封卷、状态「待你」）、**空钥匙**（盘上有改动但没人持锁）、**SKILL 副本漂移**（**只提示不拦**） |
 | `ic agents` | 显示名单：角色、未读数、activity 和最后活动（北京时间） |
-| `ic agents add <名字> [-d 描述] [--role coordinator]` | 加入名单（同时写入 config 并同步到服务） |
+| `ic agents add <名字> [-d 描述] [--role manager]` | 加入名单（同时写入 config 并同步到服务） |
 | `ic agents remove <名字>` | 移出名单 |
 | `ic register [-d 描述] [--activity "一句话"]` | 注册或更新自己，并做状态自报 |
 
@@ -203,7 +203,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | --- | --- |
 | `ic case <案卷或线程 id> [--note "一行进展"] [--status 状态]` | 查看一份案卷；`--note` 追加一行节点，`--status` 顺手改状态。**`--status` 必须和 `--note` 一起给**：状态变更天生要留一行节点，单独给会直接报 `status_needs_note`（不再"看着像改了"），和 `--milestone-*` / `--acceptance` 同给也一样拒。列表侧 `ic cases --status` 是筛选，不受此限。封卷（`办结` / `中止`）前会**先把没勾的里程碑逐个念出来**（封卷之后里程碑改不动了；**只提示、不拦**）。控制台点「办结 / 中止」也是同一盏灯（弹出确认，可取消） |
 | `ic case <id> --note "…" --wait-for <身份>` | **接活钩子**：把「我在等谁」落到案卷上（状态同时转成「待 <身份>」）——被等的人敲 `ic status` 能看到「有 N 卷在等你」。**必须带 `--note`**（说清在等什么），单独给会被拒 |
-| `ic case <id> --wbs 父/子` | 给案卷打 WBS 路径（`/` 分隔，空=未归类）；**只有 coordinator 能改** |
+| `ic case <id> --wbs 父/子` | 给案卷打 WBS 路径（`/` 分隔，空=未归类）；**只有本项目的 coordinator 或 human 能改** |
 | `ic case <id> --milestone-add "名字" [--milestone-owner 身份]` / `--milestone-done N` | 加一条里程碑 / 勾掉第 N 条（下标从 0 起，`!N` 撤回完成）；**只有 coordinator 能改** |
 | `ic cases [--workspace X] [--status 状态] [--owner 身份] [--wait-for 身份] [--wbs 前缀] [--limit N] [--all]` | 列出案卷（**默认只列未封卷**；没实质内容的（验收/里程碑/WBS 都没有）打 `[信]` 标、**不藏**——实测那堆里有真活；已封卷的折成一行，`--all` 看全）；`--wbs` 前缀匹配（给 `防混写` 会带出 `防混写/锁与闸` 下面的） |
 | `ic projects [--project <路径> --coordinator <身份>]` | 列出项目（名字 / 路径 / **该项目的 coordinator**）；带 `--coordinator` 就是指定或更换它（**只有 human** 能设；空值＝清空 ⇒ 回到「没指定」） |
@@ -258,7 +258,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | --- | --- |
 | `ic mcp [--agent 名字] [--no-notify]` | 以 stdio MCP 方式运行（供客户端配置使用） |
 | `ic crew up --dir <项目> [--dry-run] [--only a,b]` | 按 config 逐个拉起 agent，并开启收信守护进程 |
-| `ic crew kickoff --plan 分工.md --dir <项目> [--from 身份]` | 以 coordinator 身份群发 high 启动信；多项目时用 `--from` 指定发信身份 |
+| `ic crew kickoff --plan 分工.md --dir <项目> [--from 身份]` | 以 **manager**（或 `--from` 指定身份）群发 high 启动信 |
 | `ic crew status [--dir 项目]` | 收信守护进程的 pid、tmux 会话和各家配置；`--dir` 只看一个项目 |
 | `ic crew down [--dir 项目] [--only a,b]` | 终止收信守护进程、关闭 tmux 会话；`--dir` 只清理一个项目，`--only` 只停点名身份 |
 | `ic crew pause <身份> [--dir 项目] [--note …]` | 暂停该身份的办公室：打断正在跑的 headless，之后的信不再自动触发（直到 resume） |
@@ -608,7 +608,7 @@ agent 有个毛病：没人推一把就不动。为 config 条目加上 `heartbe
 4. 各成员的收信守护进程：有新信就即时处理；没信就靠心跳推进自己的任务，进展只写进自己的 `TODO-<名字>.md`；想改计划则给 coordinator 发信。
 5. coordinator 的心跳：更新 PLAN.md，对照各家 TODO 和未读数催办，并裁定分歧。
 
-如果没有 coordinator，`kickoff` 会直接报错，并提示先执行 `ic agents add <名字> --role coordinator`。
+如果没有 manager，`kickoff` 会直接报错，并提示先执行 `ic agents add <名字> --role manager`。
 
 ### 状态自报与资源调配
 
@@ -831,4 +831,4 @@ python3 -W error::ResourceWarning -m unittest discover -s tests   # 全量测试
 
 ---
 
-<p align="center">版本 0.5.0 · MIT · <a href="https://github.com/Robin9989Law/infocenter">GitHub</a></p>
+<p align="center">版本 0.6.0 · MIT · <a href="https://github.com/Robin9989Law/infocenter">GitHub</a></p>

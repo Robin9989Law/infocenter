@@ -117,7 +117,7 @@ class IdleGuardUnitTest(unittest.TestCase):
         self.assertIn("立即结束本次运行", prompt)
         self.assertIn("禁止把整份 PLAN.md 读进来", prompt)
         self.assertNotIn("给 coordinator", prompt)
-        self.assertIn("主协调 agent（`ic agents` 里 role=coordinator 的那位）", prompt)
+        self.assertIn("主协调 agent（`ic agents` 里 role=manager 的那位）", prompt)
 
 
 class IdleGuardWatchTest(unittest.TestCase):

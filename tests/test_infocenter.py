@@ -398,7 +398,7 @@ class HubTest(unittest.TestCase):
         home = self.home / "crew"
         home.mkdir()
         (home / "config.json").write_text(json.dumps({"agents": [
-            {"name": "opencode", "description": "OpenCode", "role": "coordinator"},
+            {"name": "opencode", "description": "OpenCode", "role": "manager"},
             {"name": "fakebot", "description": "测试", "headless": "/usr/bin/tee -a triggered.txt"},
             {"name": "clibot", "launch": "echo hi"},
             {"name": "deskbot", "app": "Safari"},
@@ -406,7 +406,7 @@ class HubTest(unittest.TestCase):
         # 服务端的名册才是判「这个身份在不在」的准绳（第 5 道兜底：死信拒收）。
         # 这个测试故意让 CLI 用一个独立 home，所以得让服务端也认识这几个名字。
         (self.home / "config.json").write_text(json.dumps({"agents": [
-            {"name": "opencode", "role": "coordinator"},
+            {"name": "opencode", "role": "manager"},
             {"name": "fakebot"}, {"name": "clibot"}, {"name": "deskbot"},
         ]}), encoding="utf-8")
         project = Path(tempfile.mkdtemp(dir=str(self.home))).resolve()
@@ -612,13 +612,13 @@ class HubTest(unittest.TestCase):
         home = self.home / "kf"
         home.mkdir()
         (home / "config.json").write_text(json.dumps({"agents": [
-            {"name": "opencode", "role": "coordinator"},
+            {"name": "opencode", "role": "manager"},
             {"name": "kimi"},
             {"name": "fakebot"},
         ]}), encoding="utf-8")
         # 服务端名册同上（死信拒收以服务端名册为准）。
         (self.home / "config.json").write_text(json.dumps({"agents": [
-            {"name": "opencode", "role": "coordinator"},
+            {"name": "opencode", "role": "manager"},
             {"name": "kimi"}, {"name": "fakebot"},
         ]}), encoding="utf-8")
         project = Path(tempfile.mkdtemp(dir=str(self.home))).resolve()

@@ -211,7 +211,7 @@ def _tools(locked: str | None) -> list[dict]:
         },
         {
             "name": "ic_activity",
-            "description": "自报当前状态（一句话：你在做什么）。开始/切换/完成任务时调用；coordinator 靠它调配资源，不用发信问询。" + who,
+            "description": "自报当前状态（一句话：你在做什么）。开始/切换/完成任务时调用；manager / 本项目的 coordinator 靠它调配资源，不用发信问询。" + who,
             "inputSchema": schema({
                 "activity": {"type": "string", "description": "一句话状态，如：在重构 store.py 索引，已完成一半"},
             }, ["activity"]),

@@ -98,7 +98,7 @@ class CrewQualityTest(unittest.TestCase):
         self.assertNotIn("心跳检查（没有新信件）", unit_custom)
 
         unit_fallback = crew.build_heartbeat_prompt("opencode", "/tmp/demo", coordinator=True, custom_prompt="")
-        self.assertIn("你是 opencode（coordinator）", unit_fallback)
+        self.assertIn("你是 opencode（manager）", unit_fallback)
 
         home = self.home / "custom_beat"
         home.mkdir()
@@ -184,13 +184,13 @@ class CrewQualityTest(unittest.TestCase):
         prompt_default = crew.build_heartbeat_prompt("kimi", "/tmp/demo", coordinator=False)
         self.assertNotIn("给 coordinator", prompt_default)
         self.assertNotIn("coordinator 靠它", prompt_default)
-        self.assertIn("主协调 agent（`ic agents` 里 role=coordinator 的那位）", prompt_default)
+        self.assertIn("主协调 agent（`ic agents` 里 role=manager 的那位）", prompt_default)
 
         prompt_with_coord = crew.build_heartbeat_prompt(
             "kimi", "/tmp/demo", coordinator=False, coordinator_name="opencode",
         )
         self.assertNotIn("给 coordinator", prompt_with_coord)
-        self.assertIn("主协调 agent `opencode`（`ic agents` 里 role=coordinator 的那位）", prompt_with_coord)
+        self.assertIn("主协调 agent `opencode`（`ic agents` 里 role=manager 的那位）", prompt_with_coord)
 
     def test_status_marks_manual_coordinator(self):
         # coordinator 的前台由人驱动：不配 launch/headless 时不应显示成「未配置启动方式」。
@@ -199,7 +199,7 @@ class CrewQualityTest(unittest.TestCase):
         (home / "config.json").write_text(
             json.dumps({
                 "agents": [
-                    {"name": "opencode", "role": "coordinator"},
+                    {"name": "opencode", "role": "manager"},
                     {"name": "grok"},
                 ]
             }),
@@ -212,17 +212,20 @@ class CrewQualityTest(unittest.TestCase):
     def test_manager_misconfig_detection(self):
         # 只对「coordinator 且配了 headless/launch」告警；成员配 headless 属正常。
         self.assertEqual(crew.manager_misconfig({"name": "grok", "headless": "x"}), "")
-        self.assertEqual(crew.manager_misconfig({"name": "o", "role": "coordinator"}), "")
+        self.assertEqual(crew.manager_misconfig({"name": "o", "role": "manager"}), "")
         only_headless = crew.manager_misconfig(
-            {"name": "o", "role": "coordinator", "headless": "x"}
+            {"name": "o", "role": "manager", "headless": "x"}
         )
         self.assertIn("headless", only_headless)
         self.assertNotIn("launch ⇒", only_headless)
         only_launch = crew.manager_misconfig(
-            {"name": "o", "role": "coordinator", "launch": "opencode"}
+            {"name": "o", "role": "manager", "launch": "opencode"}
         )
         self.assertIn("launch", only_launch)
         self.assertNotIn("headless ⇒", only_launch)
+        # **旧值 coordinator 也认**（改名兼容）：专门钉别名，别删
+        legacy = crew.manager_misconfig({"name": "o", "role": "coordinator", "headless": "x"})
+        self.assertIn("headless", legacy)
 
     def test_plan_up_and_status_warn_manager_misconfig(self):
         home = self.home / "misconfig"
@@ -231,7 +234,7 @@ class CrewQualityTest(unittest.TestCase):
         (home / "config.json").write_text(
             json.dumps({
                 "agents": [
-                    {"name": "opencode", "role": "coordinator", "headless": "echo ok"},
+                    {"name": "opencode", "role": "manager", "headless": "echo ok"},
                     {"name": "grok", "headless": "echo ok"},
                 ]
             }),
@@ -259,7 +262,7 @@ class CrewQualityTest(unittest.TestCase):
         (home / "config.json").write_text(
             json.dumps({
                 "agents": [
-                    {"name": "opencode", "role": "coordinator"},
+                    {"name": "opencode", "role": "manager"},
                     {
                         "name": "cursor",
                         "headless": "echo ok",
@@ -332,7 +335,7 @@ class CrewQualityTest(unittest.TestCase):
         (home / "config.json").write_text(
             json.dumps({
                 "agents": [
-                    {"name": "opencode", "role": "coordinator"},
+                    {"name": "opencode", "role": "manager"},
                     {
                         "name": "cursor",
                         "headless": "echo ok",

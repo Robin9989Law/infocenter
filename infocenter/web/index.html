@@ -552,8 +552,8 @@ function render() {
     agEl.innerHTML = ordered.map(a => {
       const isHuman = a.name === "human";
       const hd = state.headless.some(h => h.agent === a.name && h.alive);
-      return `<span class="chip ${a.role === "coordinator" ? "coord" : ""} ${isHuman ? "human" : ""}" data-agent="${escapeHtml(a.name)}" title="${escapeHtml(a.activity || "")}">
-        <b>${escapeHtml(a.name)}</b>${a.role === "coordinator" ? '<span class="role">coord</span>' : ""}${hd ? ' <span class="hd" title="headless 正在跑">&#9889;</span>' : ""}<span class="unread">未读 ${a.unread || 0}</span>${a.probe ? `<span class="${a.probe.verdict === 'ok' || a.probe.verdict === 'quiet' ? 'unread' : 'stale'}" title="${escapeHtml(a.probe.why || '')}——最近 ${a.probe.minutes} 分钟的 headless 触发数 / 产出（机械动作 ${a.probe.machinery} 次不算产出）${a.probe.truncated ? '；触发数只是下限' : ''}">触发 ${a.probe.triggers}/产出 ${a.probe.produced}</span>` : ""}
+      return `<span class="chip ${["manager", "coordinator"].includes(a.role) ? "coord" : ""} ${isHuman ? "human" : ""}" data-agent="${escapeHtml(a.name)}" title="${escapeHtml(a.activity || "")}">
+        <b>${escapeHtml(a.name)}</b>${["manager", "coordinator"].includes(a.role) ? '<span class="role">coord</span>' : ""}${hd ? ' <span class="hd" title="headless 正在跑">&#9889;</span>' : ""}<span class="unread">未读 ${a.unread || 0}</span>${a.probe ? `<span class="${a.probe.verdict === 'ok' || a.probe.verdict === 'quiet' ? 'unread' : 'stale'}" title="${escapeHtml(a.probe.why || '')}——最近 ${a.probe.minutes} 分钟的 headless 触发数 / 产出（机械动作 ${a.probe.machinery} 次不算产出）${a.probe.truncated ? '；触发数只是下限' : ''}">触发 ${a.probe.triggers}/产出 ${a.probe.produced}</span>` : ""}
       </span>`;
     }).join("");
     agEl.querySelectorAll(".chip[data-agent]").forEach(c => c.addEventListener("click", () => openSettings(c.dataset.agent === "human" ? "human" : "agent", c.dataset.agent)));
@@ -627,7 +627,7 @@ function openSettings(kind, id) {
       <div class="form-row"><label>指派给（选了就同时发一封始信，触发对方开工）</label>
         <select id="s-case-assign">
           <option value="">不指派（只建案卷，不发信）</option>
-          ${state.agents.filter(a => a.name !== "human").map(a => `<option value="${escapeHtml(a.name)}">${escapeHtml(a.name)}${a.role === "coordinator" ? "（coordinator）" : ""}</option>`).join("")}
+          ${state.agents.filter(a => a.name !== "human").map(a => `<option value="${escapeHtml(a.name)}">${escapeHtml(a.name)}${["manager", "coordinator"].includes(a.role) ? "（coordinator）" : ""}</option>`).join("")}
         </select>
       </div>
       <div class="form-row"><label>说明 / 始信正文（可选）</label><textarea id="s-case-body" placeholder="不指派 → 作为案卷开篇节点；指派 → 作为始信正文（留空则用标题）"></textarea></div>

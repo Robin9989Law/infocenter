@@ -5,10 +5,52 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-10-16
+
+> **这一版把「谁说了算」分清了**：全局叫 **manager**，**每个项目**另有自己的 **coordinator**（由 human 指定）。
+> 另外补了一个「接活钩子」（`--wait-for`：触发条件不许只写在信里）、`ic status` 的空钥匙灯、
+> 看板减噪（默认只列未封卷）、发布卫生（真打一个包再打开看），以及一批重复实体收尾。
+> 上一版（0.5.0）是首个公开版。
+
+### Fixed
+- **协调者分层那晚的漏网（kimi 追审：阻断 4 条，全部落修）**：
+  ① **`_human_voices()` 是 SQL 里的角色比较**（`WHERE role = 'coordinator'`）——迁移把 role 改写成 `manager` 之后
+  这个查询**永久落空**，看板第 1 条线（「人话 / 人话过期」）**静默退化成只有 human**；
+  ② **`seed()` 裸插原始 role** ⇒ **测试库与生产库口径不一致**，绿灯是**假象**（正是它把 ① 盖住的）——现在 seed 也走
+  `_role()` 归一，并补一条**走归一化路径**的回归测试（`test_coordinator_scope`：人话判定认 manager）；
+  ③ 控制台 3 处 `a.role === "coordinator"`（coord 角标、立案指派下拉的标注）⇒ 改名后**永远不显示**；
+  ④ 心跳提示词里那句「`ic agents` 里 role=coordinator 的那位」+ **三处把旧词断言锁死的测试**
+  （`test_quality_crew` ×2、`test_idle_guard` ×1）⇒ 成员按提示**找不到主协调**（"自己的测试在护旧词"）。
+  另修文案 / 语义四组：kickoff 一串（docstring / 报错 / 回执）、`manager_misconfig` 的返回串、README 8 处、
+  `mcp_server` / `httpapi` 注释；以及**启动信的语义问题**——全局 manager 不该在启动信里自称 coordinator
+  （项目里的 coordinator 由 human 指定，权源不同）。**教训再记一遍：扫角色比较要连 SQL 谓词一起扫。**
+- **提示词里补上「有 N 卷在等你」**（cursor 追审的建议：补进**已经会跑**的收信 / 心跳提示词，和「未读数」同类；
+  **不做成通知、不发信、不点名**）。来源：`--wait-for` 那盏灯只在"有人看 `ic status`"时起作用——
+  成员的心跳提示词里不提它，那盏灯在守护路径上就永远看不到（当初那个"不会响的触发"在心跳上还在）。
+  现在 `crew._waiting_count()` 查一次共享状态，收信提示词与心跳提示词（含自定义模板）都会带一行
+  `有 N 卷在等你：ic cases --wait-for <我> 看是哪些——要么接着办，要么转出去`。
+
+> **这一版把「谁说了算」分清了**：全局叫 **manager**，**每个项目**另有自己的 **coordinator**（由 human 指定）。
+> 另外补了一个「接活钩子」（`--wait-for`：触发条件不许只写在信里）、`ic status` 的空钥匙灯、
+> 看板减噪（默认只列未封卷）、发布卫生（真打一个包再打开看），以及一批重复实体收尾。
+> 上一版（0.5.0）是首个公开版。
+
+- **`pyproject.toml` 的 `license` 改成 SPDX 字符串，清掉打包弃用告警**：原先写 `license = { text = "MIT" }`（表形式），每次构建都刷
+  `SetuptoolsDeprecationWarning: project.license as a TOML table is deprecated`，setuptools 给的期限是 **2027-02-18**；更要紧的是它把 wheel 元数据落成旧的自由文本字段
+  `License: MIT`。现在写 `license = "MIT"`（PEP 639），元数据变成规范字段 `License-Expression: MIT`，`LICENSE` 文件照旧进 `dist-info/licenses/`。
+  这条写法要求 **setuptools>=77**，故 `[build-system] requires` 一并从 `setuptools>=68` 提到 `setuptools>=77`（构建走隔离环境，本地无需装）。
+  改前/改后各构建一次对照验证：改前那次告警两条、改后那次告警为零（`Metadata-Version` 两版都是 2.4，差别只在 license 字段本身）。
+  顺手记一笔**没动的既有告警**：`Package 'infocenter.web' is absent from the packages configuration`——改前就有，wheel 里 `web/index.html` 靠
+  `[tool.setuptools.package-data]` 正常带上，功能不受影响；要清它得碰 `[tool.setuptools]` 的包发现配置，属另一笔，不夹在这里。
 
 ### Added
 - **治理动作留痕：指定/更换项目的 coordinator 进哈希链**（2026-10-16，晚于分层落地的自查）。分层做完才发现：**「谁是协调者」这件事改起来没留痕**——痕迹（`task_events`）只覆盖任务 / 案卷 / 锁，项目不在内。指定协调者是**治理**动作（它决定谁能改里程碑、谁抢得了锁），查不出来不行。现在 `add_project(coordinator=…)` 在同一事务里追加一行 `project_coordinator`（`from → to` + 工作目录 + 署名），**空 task_id 与案卷的 `acceptance` 事件同例**；`ic audit` 的重放与哈希链照旧认（现场换了一次人复验：链完整、重放一致）。+ `tests/test_coordinator_scope.py` 1 项。
+
+- **发布卫生：真打一个包再打开看**（2026-10-16 定，PLAN §14.4 的 L5）。现场：v0.5.0 发布前 `pip wheel .` 出来的 wheel 只有 18 个文件、**没有 `infocenter/web/index.html`** ⇒ 外人 `pip install` 完能起服务、但**控制台 `/ui` 404**；而这一条**内部跑一万次测试都发现不了**（测试全从源码树读文件，只有"装出来的那份"才有这问题）。现在 `tests/test_packaging.py` 不查配置、**真的打个 wheel 再打开看**：控制台单页在不在、版本号一不一致、`ic = infocenter.cli:main` 入口在不在、六个关键模块齐不齐（构建不了就跳过并说明，不假装绿）。README 的收尾判据另加一句：**发布前真装一遍**（venv 装 wheel → `ic --version` → `/ui` 要 200）。
+- **接活钩子：`--wait-for`——「触发条件不许只写在信里」**（2026-10-16 定，PLAN §14.4 的 L4）。`ic case <id> --note "为什么" --wait-for <身份>` 把「我在等谁」落成案卷状态「待 X」（`waiting_for` 这一列**本来就有**——回复时还会自动维护——缺的只是"人怎么设、被等的人怎么看"）；**必须带 `--note`**（同 `--status` 的口径：状态变更要留一行，不许静默）。被等的人敲 **`ic status` 多一盏灯**：`⚠ 有 N 卷在等你：<卷号> <标题>…`，只算**未封卷**的（封卷＝归档，不该再催人），`--json` 带 `waiting_on_you`；`ic cases --wait-for <身份>` 可以只看等他的。来源是实测：SKILL 那卷的验收写着「触发 = kimi 宣布修订冻结」，而 **kimi 的 TODO 里没有这一项** ⇒ 那是个**永远不会响的触发**，事就那么悬着。现场验过：给 SKILL 那卷写上 `--wait-for kimi` 后，kimi 敲 `ic status` 立刻看到那一行。+ `tests/test_wait_for.py`（10 项）。
+- **CLI 表面对账（`tests/test_cli_surface.py`）**：①**静态**——每个 `add_argument` 定义的开关都要在 `cli.py` 里被 `args.<dest>` 读到（白名单写明理由，目前只有 argparse 自己消化的 `--version`）；②**冒烟矩阵**——每个子命令一条最小 argv，桩掉 HTTP 客户端后必须**真的打到**那条路（HTTP 类打到 `call`，`serve/stop/status/probe/mcp/crew/sync` 打到各自入口），不许抛非 `MailError` 异常；新加子命令忘了进表会红。**拦不住的那类**（开关只在某个分支里被读，`--status` 正是这种）已登记：要机器化得先把 parser 抽成可构造的，单开一笔。
+- **`ic status` 空钥匙灯**：盘上有改动、却没有任何未过期写锁覆盖它 ⇒ 一行 `⚠ 盘上有改动没人持钥匙：…（要么提交，要么 ic lock 再动。只提示，不拦）`，`--json` 带 `unlocked_dirty`。来源：实测两次——写了文档/测试、放了钥匙、**忘了提交**，那几行躺在工作区里，别人又不能替你提交 ⇒ 收口卡住。读不到 git / 读不到锁就闭嘴（灯不挡看状态）。
+- **看板减噪：默认只列未封卷的，没实质内容的打 `[信]` 标（不藏）**。任何 thread 都能当案卷 ⇒ 每封派单/回信/报告都长成"卷"、还各自挂着「⚠ 没写怎样算完」（实测 148 条里大半是**已封卷的历史**，混在一起才显得吵）。现在：`_case_view` 出一个**派生标记** `substantive`（验收 / 里程碑 / WBS 三选一，**不给信加字段、不建表**）；`ic cases` 默认只列未封卷、把没实质内容的打 `[信]` 标、封卷的折成一行（`--all` 看全；`--json` 不动），控制台的案卷栏同一口径（折已封卷、给信打标签）。**判据被真数据修正过两次**，两次都记在案：①第一版按 `substantive` 过滤——查数据发现【触发 S6】那类**派单线程是活**（在办、5 封信，却啥也没有）⇒ 改成不藏；②"92% 是信"这个数我一开始读错了（里面大半是已封卷的历史，不是活）⇒ 才有"默认只列未封卷"。**已知缺口（登记）**：展示层没法可靠区分"真案卷 vs 派单线程"（三条立案路径的列完全一样）⇒ 要么立案时留显式标记、要么给派单线程一等公民身份，属改数据模型，**单开一笔**。
 
 ### Changed
 - **重复实体收尾（L6）+ 一条纪律落地（L7）**：
@@ -23,7 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     把别人刚删的又加回来（减法轮那晚的经验）。
 
 
-### Changed
 - **coordinator 分两层：全局叫 `manager`，每个项目的叫 `coordinator`（由 human 指定）**（human 2026-10-16 拍，四条裁定逐条落码）。以前 `coordinator` 是**一个全局角色**（config/库里 `role=coordinator`），一个身份管所有项目——**一个词管两个范围**，正是这一晚一直在打的病（一个概念两套口径）。现在：
   - **`manager`**（旧名 coordinator，配置里写旧值也认，读进来一律记成 `manager`）：**全局**管理者，管名册与 hub 级；**不再自动拥有某个项目里的权**。
   - **`coordinator`**：**某个项目**的那个人，落在 `projects.coordinator`（新列，在线迁移自愈）。管这个项目的里程碑 / WBS / 建任务 / 任务的 done·stopped / 抢锁与替成员落地。**由 human 指定**（只有 human 能设：`ic --as human projects --project <路径> --coordinator <身份>`，或控制台 → 项目设置 → 协调者；空值＝清空）。
@@ -33,22 +74,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **顺带补上一条旧账**：`agents remove` 的「只有 human 能移除成员」以前**只在文档里**、机器没兜（CLI 直接调删除、不查身份）——现在 `_must_human` 是真护栏（新口径的两条 human-only 也用它）。
   - 面：`projects` 表新列 + `PUT /v1/projects` 收 `coordinator`（按调用者判 human）+ CLI `ic projects`（列项目、指定协调者）+ 控制台项目设置一个下拉；README 术语表/mermaid/kickoff/WBS 负责人/`human ≠ coordinator` 那几处、`config.py` 字段说明、`SKILL.md` 8 处一并改齐（**改了行为就必须改说法**——这一晚最大的教训）。
   - + `tests/test_coordinator_scope.py`（**12 项**：没指定就拒 / 指定后能做 / 别人项目不能插手 / **manager 不再自动有项目权** / human 天然算 / 清空＝回到没指定 / 无项目回落 manager / 只有 human 能指定 / 名册里没有的名字拒 / 锁按路径判 3×3 / 旧值兼容）。
-
-### Added
-- **发布卫生：真打一个包再打开看**（2026-10-16 定，PLAN §14.4 的 L5）。现场：v0.5.0 发布前 `pip wheel .` 出来的 wheel 只有 18 个文件、**没有 `infocenter/web/index.html`** ⇒ 外人 `pip install` 完能起服务、但**控制台 `/ui` 404**；而这一条**内部跑一万次测试都发现不了**（测试全从源码树读文件，只有"装出来的那份"才有这问题）。现在 `tests/test_packaging.py` 不查配置、**真的打个 wheel 再打开看**：控制台单页在不在、版本号一不一致、`ic = infocenter.cli:main` 入口在不在、六个关键模块齐不齐（构建不了就跳过并说明，不假装绿）。README 的收尾判据另加一句：**发布前真装一遍**（venv 装 wheel → `ic --version` → `/ui` 要 200）。
-- **接活钩子：`--wait-for`——「触发条件不许只写在信里」**（2026-10-16 定，PLAN §14.4 的 L4）。`ic case <id> --note "为什么" --wait-for <身份>` 把「我在等谁」落成案卷状态「待 X」（`waiting_for` 这一列**本来就有**——回复时还会自动维护——缺的只是"人怎么设、被等的人怎么看"）；**必须带 `--note`**（同 `--status` 的口径：状态变更要留一行，不许静默）。被等的人敲 **`ic status` 多一盏灯**：`⚠ 有 N 卷在等你：<卷号> <标题>…`，只算**未封卷**的（封卷＝归档，不该再催人），`--json` 带 `waiting_on_you`；`ic cases --wait-for <身份>` 可以只看等他的。来源是实测：SKILL 那卷的验收写着「触发 = kimi 宣布修订冻结」，而 **kimi 的 TODO 里没有这一项** ⇒ 那是个**永远不会响的触发**，事就那么悬着。现场验过：给 SKILL 那卷写上 `--wait-for kimi` 后，kimi 敲 `ic status` 立刻看到那一行。+ `tests/test_wait_for.py`（10 项）。
-- **CLI 表面对账（`tests/test_cli_surface.py`）**：①**静态**——每个 `add_argument` 定义的开关都要在 `cli.py` 里被 `args.<dest>` 读到（白名单写明理由，目前只有 argparse 自己消化的 `--version`）；②**冒烟矩阵**——每个子命令一条最小 argv，桩掉 HTTP 客户端后必须**真的打到**那条路（HTTP 类打到 `call`，`serve/stop/status/probe/mcp/crew/sync` 打到各自入口），不许抛非 `MailError` 异常；新加子命令忘了进表会红。**拦不住的那类**（开关只在某个分支里被读，`--status` 正是这种）已登记：要机器化得先把 parser 抽成可构造的，单开一笔。
-- **`ic status` 空钥匙灯**：盘上有改动、却没有任何未过期写锁覆盖它 ⇒ 一行 `⚠ 盘上有改动没人持钥匙：…（要么提交，要么 ic lock 再动。只提示，不拦）`，`--json` 带 `unlocked_dirty`。来源：实测两次——写了文档/测试、放了钥匙、**忘了提交**，那几行躺在工作区里，别人又不能替你提交 ⇒ 收口卡住。读不到 git / 读不到锁就闭嘴（灯不挡看状态）。
-- **看板减噪：默认只列未封卷的，没实质内容的打 `[信]` 标（不藏）**。任何 thread 都能当案卷 ⇒ 每封派单/回信/报告都长成"卷"、还各自挂着「⚠ 没写怎样算完」（实测 148 条里大半是**已封卷的历史**，混在一起才显得吵）。现在：`_case_view` 出一个**派生标记** `substantive`（验收 / 里程碑 / WBS 三选一，**不给信加字段、不建表**）；`ic cases` 默认只列未封卷、把没实质内容的打 `[信]` 标、封卷的折成一行（`--all` 看全；`--json` 不动），控制台的案卷栏同一口径（折已封卷、给信打标签）。**判据被真数据修正过两次**，两次都记在案：①第一版按 `substantive` 过滤——查数据发现【触发 S6】那类**派单线程是活**（在办、5 封信，却啥也没有）⇒ 改成不藏；②"92% 是信"这个数我一开始读错了（里面大半是已封卷的历史，不是活）⇒ 才有"默认只列未封卷"。**已知缺口（登记）**：展示层没法可靠区分"真案卷 vs 派单线程"（三条立案路径的列完全一样）⇒ 要么立案时留显式标记、要么给派单线程一等公民身份，属改数据模型，**单开一笔**。
-
-### Fixed
-- **`pyproject.toml` 的 `license` 改成 SPDX 字符串，清掉打包弃用告警**：原先写 `license = { text = "MIT" }`（表形式），每次构建都刷
-  `SetuptoolsDeprecationWarning: project.license as a TOML table is deprecated`，setuptools 给的期限是 **2027-02-18**；更要紧的是它把 wheel 元数据落成旧的自由文本字段
-  `License: MIT`。现在写 `license = "MIT"`（PEP 639），元数据变成规范字段 `License-Expression: MIT`，`LICENSE` 文件照旧进 `dist-info/licenses/`。
-  这条写法要求 **setuptools>=77**，故 `[build-system] requires` 一并从 `setuptools>=68` 提到 `setuptools>=77`（构建走隔离环境，本地无需装）。
-  改前/改后各构建一次对照验证：改前那次告警两条、改后那次告警为零（`Metadata-Version` 两版都是 2.4，差别只在 license 字段本身）。
-  顺手记一笔**没动的既有告警**：`Package 'infocenter.web' is absent from the packages configuration`——改前就有，wheel 里 `web/index.html` 靠
-  `[tool.setuptools.package-data]` 正常带上，功能不受影响；要清它得碰 `[tool.setuptools]` 的包发现配置，属另一笔，不夹在这里。
 
 ## [0.5.0] - 2026-10-16
 
@@ -201,7 +226,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-[Unreleased]: https://github.com/Robin9989Law/infocenter/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/Robin9989Law/infocenter/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/Robin9989Law/infocenter/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/Robin9989Law/infocenter/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/Robin9989Law/infocenter/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Robin9989Law/infocenter/compare/v0.2.0...v0.3.0

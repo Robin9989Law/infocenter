@@ -432,7 +432,9 @@ class Store:
                 INSERT OR IGNORE INTO agents(name, description, role, created_at, last_seen_at)
                 VALUES (?, ?, ?, ?, ?)
                 """,
-                [(name, description, role, now, now) for name, description, role in self._seeds],
+                # role 也走归一化：不然**测试库与真实库口径不一样**（迁移把真实库改成 manager，
+                # 这里裸插旧值 ⇒ 假绿。2026-10-16 的 `_human_voices` 阻断就是这么被遮住的）。
+                [(name, description, _role(role), now, now) for name, description, role in self._seeds],
             )
 
     def touch(
@@ -515,9 +517,10 @@ class Store:
         return [_agent(row, unread.get(row["name"], 0), by_agent.get(row["name"], [])) for row in rows]
 
     def remove_agent(self, agent: str, name: str) -> dict:
-        """从名册移除。**只有 human**（README 一直这么写；2026-10-16 起有机器兜底，不再是文档级）。"""
-        _must_human(agent)
+        """从名册移除：**自己退自己**可以；移除**别人**只有 human 能（README 一直这么写，现在是机器护栏）。"""
         name = normalize_name(name)
+        if normalize_name(agent) != name:
+            _must_human(agent)
         with self._session(immediate=True) as conn:
             removed = conn.execute("DELETE FROM agents WHERE name = ?", (name,)).rowcount > 0
         return {"name": name, "removed": removed}
@@ -2326,7 +2329,9 @@ class Store:
                 )
             if st in ("done", "stopped"):
                 if not is_coord:
-                    raise MailError("not_coordinator", f"只有 coordinator 能把任务置为 {st}", 403)
+                    raise MailError(
+                        "not_coordinator", f"只有本项目的 coordinator（或 human）能把任务置为 {st}", 403
+                    )
             elif not (mine or is_coord):
                 raise MailError("not_yours", "只有该任务的 owner 或 coordinator 能改 doing/blocked", 403)
             if st == "blocked" and not (reason or "").strip():
@@ -5049,13 +5054,19 @@ def _replay_task_state(conn: sqlite3.Connection, task_id: str) -> dict:
 
 
 def _human_voices(conn: sqlite3.Connection) -> set[str]:
-    """谁有资格代表"人话"：role=coordinator 的身份 + human。
+    """谁有资格代表「人话」：**manager**（及旧值 coordinator）这些身份 + human。
 
-    看板（第 1 条线）上的文字必须由 coordinator 用人话重写；agent 之间的信不直接给人看。
+    看板（第 1 条线）上的文字必须由它们用人话重写；agent 之间的信不直接给人看。
+
+    ⚠️ 这是 **SQL 里的**角色比较（不是 Python 的 `==`）——2026-10-16 协调者分层那次改名就漏了它：
+    迁移把 role 改写成 `manager` 之后 `WHERE role = 'coordinator'` **永久落空**，而测试还是绿的
+    （`seed` 当时裸插旧值、绕过归一化）⇒ 看板的「人话 / 人话过期」判定**静默退化成只有 human**。
+    教训：扫角色比较要连 **SQL 谓词**一起扫。
     """
     voices = {"human"}
     voices.update(
-        row["name"] for row in conn.execute("SELECT name FROM agents WHERE role = 'coordinator'")
+        row["name"]
+        for row in conn.execute("SELECT name FROM agents WHERE role IN ('manager', 'coordinator')")
     )
     return voices
 

@@ -173,6 +173,29 @@ class CoordinatorScopeTest(unittest.TestCase):
         self.assertEqual({r["agent"] for r in rows}, {"human"})
         self.assertIn(WS_A, rows[0]["detail"])
 
+    def test_人话判定认归一化后的_manager(self):
+        """kimi 2026-10-16 阻断：`_human_voices` 是 **SQL 里的**角色比较 ⇒ 改名后 `WHERE role='coordinator'`
+        永久落空，而测试绿是假象（`seed` 当时裸插旧值、绕过归一化）。这条测试**走归一化路径**，才盯得住它。"""
+        import sqlite3
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            # seed 里故意写**旧值**：落库必须是 manager（归一化），否则真实库/测试库口径不一致
+            store = Store(home / "m.db", seeds=[("human", "人", ""), ("opencode", "OpenCode", "coordinator")])
+            con = sqlite3.connect(store.path)
+            try:
+                role = con.execute("SELECT role FROM agents WHERE name = 'opencode'").fetchone()[0]
+            finally:
+                con.close()
+            self.assertEqual(role, "manager", "seed 的旧值必须归一化成 manager（否则测试绿是假象）")
+
+            cid = store.create_case(agent="opencode", title="卷")["id"]
+            store.append_case_node(cid, agent="opencode", note="manager 写的一行")
+            view = [c for c in store.list_cases(limit=20) if c["id"] == cid][0]
+            self.assertEqual(view.get("human_note"), "manager 写的一行")   # 「人话」判定认得 manager
+            self.assertFalse(view.get("human_stale"))
+
     # ── ⑤ 旧名兼容    # ── ⑤ 旧名兼容 ───────────────────────────────────────────────────────
 
     def test_旧的_role值当_manager_认(self):

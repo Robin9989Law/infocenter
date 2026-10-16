@@ -181,7 +181,7 @@ class WatchConfigHotReloadTest(unittest.TestCase):
         self.cfg.write_text(
             json.dumps({
                 "agents": [
-                    {"name": "opencode", "role": "coordinator"},
+                    {"name": "opencode", "role": "manager"},
                     {"name": "cursor", "headless": headless, "poll": 5, "heartbeat": 0},
                 ]
             }, ensure_ascii=False),
