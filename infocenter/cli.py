@@ -9,7 +9,15 @@ from infocenter import DEFAULT_HOST, DEFAULT_PORT, __version__, config
 from infocenter.client import ApiError, call, ensure_server, healthy, request, resolve_url
 from infocenter.paths import home_dir
 from infocenter.server import read_meta, serve, stop
-from infocenter.store import MailError, _parse_utc, _same_file, beijing_stamp, normalize_name
+from infocenter.store import (
+    LOCK_TTL,
+    MailError,
+    _parse_utc,
+    _same_file,
+    beijing_stamp,
+    beijing_time,
+    normalize_name,
+)
 
 # 各 agent 实际加载的 SKILL 安装位点（交互会话读的是这些副本，不是仓库里那份）。
 # 约定：优先做成软链（安装副本 → 仓库副本，一份真相）；不能软链的，由 `ic status` /
@@ -254,6 +262,8 @@ def build_parser() -> argparse.ArgumentParser:
     lock.add_argument("--force", action="store_true", help="强制抢占：项目内的路径要那个项目的 coordinator，项目外要 manager（manager＝用户本人，天然算；旧名 human 仍被接受）")
     lock.add_argument("--changed", action="store_true",
                       help="锁住 git 工作区里所有改动文件（可与显式路径并用，取并集）")
+    lock.add_argument("--stay", action="store_true",
+                      help="盘上没动过时，显式再要一段租约；不刷新计时，最多到拿锁后 1 小时")
 
     unlock = sub.add_parser("unlock", help="放写锁（默认只放自己的）")
     unlock.add_argument("paths", nargs="*", help="要放的路径；不填 = 放掉自己的全部锁")
@@ -574,6 +584,8 @@ def main(argv=None) -> int:
                     "dirty": dirty,
                     # --changed 的语义是"锁我这批脏文件"：别人锁着的脏文件不是我该拿的，跳过并报告
                     "skip_locked": bool(args.changed),
+                    # 盘上没动过时，显式再要一段租约。服务端决定给不给；这里只把开关交过去。
+                    "stay": bool(args.stay),
                 },
                 home=home,
             )
@@ -627,7 +639,10 @@ def main(argv=None) -> int:
                     query={"path": args.path}, home=home,
                 )
         elif args.cmd == "locks":
-            payload = call(args.url, agent, "GET", "/v1/locks", home=home)
+            payload = _attach_lock_lights(
+                call(args.url, agent, "GET", "/v1/locks", home=home),
+                args.url, agent, home,
+            )
         elif args.cmd == "task":
             if args.action == "add":
                 body = {
@@ -722,7 +737,7 @@ def main(argv=None) -> int:
             parser.error("未知命令")
             return 2
     except MailError as exc:
-        sys.stderr.write(f"{exc.code}: {exc.message}\n")
+        sys.stderr.write(_format_mail_error(exc))
         return 1
     if args.cmd == "audit" and getattr(args, "quiet", False):
         # 给 git 钩子用：一个字都不打，只给退出码
@@ -1468,6 +1483,237 @@ def _probe(args, home: Path, agent: str) -> int:
     return 0
 
 
+# 无进度续期 / 办结门槛的三句人话。服务端只回错误码时，补上现有 409 那套：
+# 别硬写 / 记进自己待办 / 先做别的 / 到期自然回到可拿。
+_LEASE_ADVICE = (
+    "别硬写。把要改的事记下来（`ic queue <路径> --note \"我要改什么\"`，会写进你自己的 TODO）。"
+    "先做别的；到期自然回到可拿。不要发信、不要干等"
+)
+_LEASE_COPY = {
+    "no_progress": "盘上没动过，不给第二把租约。" + _LEASE_ADVICE,
+    "stay_exhausted": "延过一次了，要再拿请先 `ic unlock` 放一次再拿。" + _LEASE_ADVICE,
+    "no_acceptance": (
+        "办结前要先写「怎样算完」，写成第三个人能照着复跑的命令或测试名，形容词不算。"
+        + _LEASE_ADVICE
+    ),
+}
+# 服务端若已经把这套人话写全，就原样印，避免两句叠在一起。
+_LEASE_MARK = {
+    "no_progress": ("不给第二把", "盘上没动过"),
+    "stay_exhausted": ("放一次再拿", "延过一次"),
+    "no_acceptance": ("怎样算完",),
+}
+
+
+def _has_lease_advice(text: str) -> bool:
+    """服务端这句是不是已经带了现有 409 那套。带了就原样印，不叠第二遍。"""
+    return (
+        "别硬写" in text
+        and ("TODO" in text or "待办" in text)
+        and ("回到可拿" in text or "先做别的" in text)
+    )
+
+
+def _format_mail_error(exc: MailError) -> str:
+    """人话出口。三个新错误码在服务端没写人话时，用上面那套 409 文案。
+
+    服务端若已经写了事由（路径、案卷号），人话没接上就接在后面，不把事由盖掉。
+    """
+    text = (exc.message or "").strip()
+    canon = _LEASE_COPY.get(exc.code)
+    if canon is None:
+        return f"{exc.code}: {text}\n"
+    marks = _LEASE_MARK.get(exc.code) or ()
+    if text and any(mark in text for mark in marks):
+        if _has_lease_advice(text):
+            return f"{exc.code}: {text}\n"
+        joiner = "" if text.endswith(("。", "，")) else "。"
+        return f"{exc.code}: {text}{joiner}{_LEASE_ADVICE}\n"
+    return f"{exc.code}: {canon}\n"
+
+
+def _touched_since(path: str, acquired_at: str) -> bool:
+    """自 `acquired_at` 起盘上有没有写入痕迹。
+
+    秒级比较：`st_mtime >= acquired_at`。文件不存在＝无痕迹。
+    时间读不懂就当有痕迹（宁松勿误杀，别把还在写的人标成无进度）。
+    """
+    moment = _parse_utc(acquired_at)
+    if moment is None:
+        return True
+    try:
+        mtime = int(os.stat(path).st_mtime)
+    except OSError:
+        return False
+    # 比到秒，和 store._lock_has_progress 同一句：同一秒算有痕迹。
+    return mtime >= int(moment.timestamp())
+
+
+def _mark_no_progress(locks) -> None:
+    """服务端没给 `no_progress` 时，按同一口径补黄灯。已给的不改。
+
+    口径：拿满一把租约（`LOCK_TTL`）且自 `acquired_at` 起盘上没变，才亮。
+    刚拿到的锁不亮。
+    """
+    if not isinstance(locks, list):
+        return
+    now = datetime.now(timezone.utc)
+    for item in locks:
+        if not isinstance(item, dict) or "no_progress" in item:
+            continue
+        path = str(item.get("path") or "")
+        acquired = str(item.get("acquired_at") or "")
+        moment = _parse_utc(acquired) if acquired else None
+        if not path or moment is None:
+            continue
+        held_long = (now - moment).total_seconds() >= LOCK_TTL
+        item["no_progress"] = bool(held_long and not _touched_since(path, acquired))
+
+
+def _wait_hours(at: str, now: datetime | None = None) -> float | None:
+    moment = _parse_utc(at)
+    if moment is None:
+        return None
+    current = now or datetime.now(timezone.utc)
+    return max(0.0, (current - moment).total_seconds() / 3600)
+
+
+def _hours_text(hours: float) -> str:
+    """「最久 X 小时」。不足 6 分钟写成「不到 0.1 小时」，避免排队刚写下却显示 0。"""
+    try:
+        hours = float(hours)
+    except (TypeError, ValueError):
+        return "不到 0.1 小时"
+    if hours < 0.1:
+        return "不到 0.1 小时"
+    rounded = round(hours, 1)
+    if abs(rounded - round(rounded)) < 1e-9:
+        return f"{int(round(rounded))} 小时"
+    return f"{rounded:.1f} 小时"
+
+
+def _wait_phrase(at: str, hours: float | None = None) -> str:
+    if hours is None:
+        hours = _wait_hours(at)
+    if hours is None:
+        return "多久不详"
+    if hours < 1 / 60:
+        return "不到 1 分"
+    if hours < 1:
+        return f"{max(1, int(hours * 60))} 分"
+    return _hours_text(hours)
+
+
+def _key_held(path: str, locks) -> bool:
+    for item in locks or []:
+        held = item.get("path") if isinstance(item, dict) else ""
+        if held and (held == path or _same_file(held, path)):
+            return True
+    return False
+
+
+def _derive_orphan_queue(pending, locks) -> list[dict]:
+    """钥匙空着、队列里还有人等的路径。一条路径一行，谁等得最久记谁。"""
+    buckets: dict[str, list] = {}
+    for item in pending or []:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "")
+        if not path or item.get("held_by") or _key_held(path, locks):
+            continue
+        buckets.setdefault(path, []).append(item)
+    out = []
+    for path, items in buckets.items():
+        ranked = sorted(
+            items,
+            key=lambda row: _wait_hours(str(row.get("at") or "")) or -1,
+            reverse=True,
+        )
+        longest = ranked[0]
+        names = []
+        for row in ranked:
+            name = str(row.get("agent") or "").strip()
+            if name and name not in names:
+                names.append(name)
+        at = str(longest.get("at") or "")
+        hours = _wait_hours(at)
+        out.append({
+            "path": path,
+            "agent": "、".join(names) if names else "?",
+            "at": at,
+            "hours": 0.0 if hours is None else hours,
+            "wait": _wait_phrase(at, hours),
+        })
+    out.sort(key=lambda row: row["hours"], reverse=True)
+    return out
+
+
+def _orphan_rows(raw) -> list[dict]:
+    """把服务端的 `orphan_queue` 收成同一形状。缺时长时用 `at` 现算。"""
+    rows = []
+    for item in raw or []:
+        if isinstance(item, str):
+            rows.append({"path": item, "agent": "?", "hours": 0.0, "wait": "多久不详"})
+            continue
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "")
+        if not path:
+            continue
+        agent = item.get("agent") or item.get("by") or "?"
+        if isinstance(agent, (list, tuple)):
+            agent = "、".join(str(name) for name in agent if str(name).strip()) or "?"
+        at = str(item.get("at") or item.get("since") or "")
+        hours = item.get("hours", item.get("waited_hours"))
+        if hours is None and at:
+            hours = _wait_hours(at)
+        try:
+            hours = float(hours) if hours is not None else 0.0
+        except (TypeError, ValueError):
+            hours = 0.0
+        wait = item.get("wait") or item.get("waited") or _wait_phrase(at, hours)
+        rows.append({"path": path, "agent": str(agent), "at": at, "hours": hours, "wait": str(wait)})
+    return rows
+
+
+def _attach_lock_lights(payload, url, agent, home):
+    """`ic locks` 的两盏灯用的数据。服务端给了就用；没给就用现成的锁和队列现算。"""
+    if not isinstance(payload, dict):
+        return payload
+    locks = payload.get("locks")
+    if not isinstance(locks, list):
+        locks = []
+        payload["locks"] = locks
+    _mark_no_progress(locks)
+    if "orphan_queue" not in payload and url and agent:
+        try:
+            queue = call(url, agent, "GET", "/v1/locks/queue", home=home)
+            payload["orphan_queue"] = _derive_orphan_queue(
+                (queue or {}).get("pending") or [], locks
+            )
+        except (ApiError, MailError, SystemExit, OSError, ValueError, KeyError):
+            payload["orphan_queue"] = []
+    return payload
+
+
+def _orphan_queue_view(url: str, agent: str, home) -> list[dict]:
+    """`ic status` 那一行用。读不到服务就一个字都不说。"""
+    try:
+        payload = call(url, agent, "GET", "/v1/locks", home=home)
+    except (ApiError, MailError, SystemExit, OSError, ValueError, KeyError):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    if "orphan_queue" in payload:
+        return _orphan_rows(payload.get("orphan_queue"))
+    try:
+        queue = call(url, agent, "GET", "/v1/locks/queue", home=home)
+    except (ApiError, MailError, SystemExit, OSError, ValueError, KeyError):
+        return []
+    locks = payload.get("locks") or []
+    return _derive_orphan_queue((queue or {}).get("pending") or [], locks)
+
+
 def _unlocked_dirty(subprocess, url: str, agent: str, home) -> list[str]:
     """**空钥匙**：盘上有改动，但没有任何未过期写锁覆盖它。
 
@@ -1525,6 +1771,7 @@ def _status(args, home: Path, agent: str) -> int:
 
     loose = _unlocked_dirty(subprocess, url, agent, home)
     waiting = _waiting_on_you(url, agent, home)
+    orphans = _orphan_queue_view(url, agent, home)
     if args.json:
         print(json.dumps({
             "url": url, "pid": meta.get("pid"), "agent": agent,
@@ -1532,6 +1779,7 @@ def _status(args, home: Path, agent: str) -> int:
             "skill_drift": skill_drift_lines(),
             "unlocked_dirty": loose,
             "waiting_on_you": [c.get("id") for c in waiting],
+            "orphan_queue": orphans,
         }, ensure_ascii=False))
         return 0
     pid = meta.get("pid")
@@ -1557,6 +1805,9 @@ def _status(args, home: Path, agent: str) -> int:
         shown = "、".join(Path(p).name for p in loose[:3])
         more = f"（共 {len(loose)} 个）" if len(loose) > 3 else ""
         print(f"  ⚠ 盘上有改动没人持钥匙：{shown}{more}——要么提交，要么 `ic lock` 再动。只提示，不拦")
+    if orphans:
+        longest = max(float(row.get("hours") or 0) for row in orphans)
+        print(f"  钥匙空着但有排队的路径 {len(orphans)} 条（最久 {_hours_text(longest)}）")
     return 0
 
 
@@ -1820,7 +2071,7 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
         print(
             f"已拿到 {len(rows)} 个写锁（{payload.get('agent')}，到 "
             f"{payload.get('expires_at_beijing') or payload.get('expires_at')} 过期）——只有你能改这些路径"
-            f"（续期：重复执行同一命令即可）"
+            f"（有进度再执行同一命令即续期；盘上没动过要用 --stay，最多到拿锁后 1 小时）"
         )
         for item in rows:
             tail = f"（任务 {item['task_id']}）" if item.get("task_id") else ""
@@ -1888,12 +2139,17 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
             task = f"（任务 {item['task_id']}）" if item.get("task_id") else ""
             left = int(item.get("expires_in_seconds") or 0)
             queued = int(item.get("queued") or 0)
-            soon = "  ⚠ 快到期：重复 `ic lock <路径>` 即续期" if left <= 300 else ""
+            soon = "  ⚠ 快到期：有进度就重复 `ic lock <路径>` 续期；盘上没动过加 --stay" if left <= 300 else ""
             print(
                 f"  {item['path']}  ← {item['agent']}{task}  到 "
                 f"{item.get('expires_at_beijing') or item['expires_at']}（剩 {left // 60} 分）{soon}"
                 + (f"  📥 有 {queued} 条待改（`ic queue {item['path']}` 看）" if queued else "")
             )
+            if item.get("no_progress"):
+                when = item.get("acquired_at_beijing") or beijing_time(str(item.get("acquired_at") or ""))
+                print(f"    ⚠ 无进度：自 {when} 起盘上没变")
+        for row in _orphan_rows(payload.get("orphan_queue")):
+            print(f"钥匙空着、有人在等：{row['path']}（{row['agent']} 提的，{row['wait']}）")
         return
     if cmd == "tasks" and not as_json:
         rows = payload.get("tasks") or []
