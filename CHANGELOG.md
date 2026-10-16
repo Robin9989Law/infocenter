@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] - 2026-10-16（v0.6.0 之后）
+
+> 追账：下面四笔当时只进了 commit message，没进本表（pi 承办，文档追码时发现）。`195f578`（重打外锚）属锚点例行，不列。
+
+### Added
+- **案卷状态机进既有哈希链**（`9cff5c8`，cursor 落）：立案 / 认领 / 强制接手 / 转办 / 暂停 / 恢复 / 中止 / 办结 / 重开，都在**同一个事务**里追加一行 `case_*` 事件（带 `case_` 前缀，免得和任务自己的 `create` / `status` 撞名），记 `from_status → to_status` + 主办窗口 + 署名。**`task_id` 留空、与 `project_coordinator` / 案卷 `acceptance` 同例** ⇒ 任务重放不看它，而封卷、转办、重开从此**改不掉而不动链**（旧链只管任务与锁，案卷的收局是套「写了就算」的空档）。+ `tests/test_case_chain.py`。
+
+### Fixed
+- **`ic reply --to` 是单值 ⇒ 收件人被静默缩窄**（`570c124`，pi 2026-10-15 报）：`send` 的 `--to` 是 `action="append"`，`reply` 不是 ⇒ `ic reply --to A --to B` **只发给 B 且不报错**，两边不对称。现与 `send` 对称：可重复、逗号也吃（服务端 `parse_recipients` 本来就拆逗号，差的只是 CLI 这一头）。+ `tests/test_reply_body_file.py` 3 项。
+- **`/openapi.json` 跟不上实码路由，而且漏了不报错**（`7b2a9b4`，cursor 落）：`GET /v1` 和 README 都让新 agent 照这份机器可读说明接，源码里多了一条分发、表里没写 ⇒ 外人照着 404，内部一万次测试也发现不了。现在**精确路径 / 前缀切片 / `action` 子路径**逐条跟源码对齐，另补 `tests/test_openapi_contract.py`：拿分发字面与契约表求差，**漏写即红**（只在 CSRF 闸里出现、没有切片分发的前缀进 `GATE_ONLY_PREFIXES`，确实分发了但不该进契约的进 `NOT_IN_CONTRACT`，**都得写理由**，不许默默删）。
+- **静态对账看不见循环生成的子命令**（`ba71662`）：对账靠扫源码字面，`for name in (...): sub.add_parser(name)` 这种写法扫不到 ⇒ 新子命令漏进对账表也不报。现抽出 `build_parser()`（`main` 只留剥全局参数、解析、分发），对账改为**从解析器递归内省**，并断言看得见 `crew pause|resume|abort|close` 与 `sync export|import|once`。
+
 ## [0.6.0] - 2026-10-16
 
 > **这一版把「谁说了算」分清了**：全局只有一个人 **`manager`**（＝用户本人，旧名 `human`），**每个项目**另有自己的 **coordinator**（由 manager 指定）。
