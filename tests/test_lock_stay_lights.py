@@ -44,7 +44,7 @@ class StaySwitchTest(unittest.TestCase):
                 help_text = action.help or ""
         self.assertEqual(
             help_text,
-            "盘上没动过时，显式再要一段租约；不刷新计时，最多到拿锁后 1 小时",
+            "盘上没动过时，到顶前可以多次再要一段；不刷新计时，到期时间截到拿锁后 1 小时",
         )
 
     def _lock(self, *extra):
@@ -65,7 +65,7 @@ class StaySwitchTest(unittest.TestCase):
     def test_三个错误码的人话(self):
         samples = {
             "no_progress": "盘上没动过，不给第二把租约",
-            "stay_exhausted": "延过一次了，要再拿请先 `ic unlock` 放一次再拿",
+            "stay_exhausted": "到顶前可以多次",
             "no_acceptance": "怎样算完",
         }
         for code, mark in samples.items():
@@ -88,13 +88,23 @@ class StaySwitchTest(unittest.TestCase):
         self.assertEqual(text.count("别硬写"), 1)
         self.assertIn(message, text)
 
-    def test_服务端只写了事由就把人话接上(self):
-        message = "延过一次了，要再拿请先 `ic unlock` 放一次再拿"
+    def test_旧句改印成到顶_新事由仍接上人话(self):
+        stale = "延过一次了，要再拿请先 `ic unlock` 放一次再拿"
+        text = cli._format_mail_error(MailError("stay_exhausted", stale, 409))
+        self.assertNotIn("延过一次", text)
+        self.assertIn("到顶前可以多次", text)
+        self.assertIn("拿锁后 1 小时的顶", text)
+        self.assertIn("别硬写", text)
+        self.assertIn("到期自然回到可拿", text)
+        self.assertEqual(text.count("别硬写"), 1)
+
+        message = "路径 /tmp/a.py 已经到拿锁后 1 小时的顶了"
         text = cli._format_mail_error(MailError("stay_exhausted", message, 409))
         self.assertIn(message, text)
         self.assertIn("别硬写", text)
         self.assertIn("到期自然回到可拿", text)
         self.assertEqual(text.count("别硬写"), 1)
+        self.assertEqual(text.count("拿锁后 1 小时的顶"), 1)
 
     def test_命令行收到错误码就印人话(self):
         with mock.patch.object(cli, "call", side_effect=MailError("stay_exhausted", "stay_exhausted", 409)):
@@ -103,6 +113,8 @@ class StaySwitchTest(unittest.TestCase):
                 code = cli.main(["--as", "grok", "--url", "http://127.0.0.1:9", "lock", "/tmp/stay-probe.py"])
         self.assertEqual(code, 1)
         self.assertIn("stay_exhausted:", err.getvalue())
+        self.assertIn("到顶前可以多次", err.getvalue())
+        self.assertNotIn("延过一次", err.getvalue())
         self.assertIn("放一次再拿", err.getvalue())
         self.assertIn("到期自然回到可拿", err.getvalue())
 

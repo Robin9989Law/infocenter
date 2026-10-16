@@ -8,6 +8,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import quote, urlencode
 
 from infocenter.paths import ROOT, home_dir
 from infocenter.server import discover_url, healthy, owned_url
@@ -80,6 +81,16 @@ def ensure_server(explicit: str | None = None, home=None) -> str:
     raise SystemExit("信息中心没有启动" + (f"\n{detail}" if detail else ""))
 
 
+def _ascii_path(path: str) -> str:
+    """路径里的非 ASCII 先百分号编码，请求行才是 ASCII。
+
+    不编码的话，http.client 在 `_encode_request` 里用 ascii 编请求行，
+    `agents remove 中文名` 这类按名取路径的命令会直接 UnicodeEncodeError，
+    CLI 甩出一整段 traceback。斜杠保留。调用方给的是原文，百分号也编码，避免二次理解。
+    """
+    return quote(str(path), safe="/")
+
+
 def request(
     url: str,
     method: str,
@@ -91,10 +102,8 @@ def request(
     window: str | None = None,
     pid: int | None = None,
 ):
-    target = url.rstrip("/") + path
+    target = url.rstrip("/") + _ascii_path(path)
     if query:
-        from urllib.parse import urlencode
-
         pairs = {key: value for key, value in query.items() if value is not None}
         if pairs:
             target += "?" + urlencode(pairs)
@@ -135,6 +144,20 @@ def request(
         # N1：IncompleteRead/BadStatusLine 等只继承 HTTPException（不是 OSError），
         # 之前会逃逸成裸 traceback；这里一并包成 ApiError。
         raise ApiError(0, {"error": "transport", "message": f"连不上信息中心：{exc}"}) from exc
+    except UnicodeEncodeError as exc:
+        # 路径已百分号编码。还炸，多半是服务地址或身份名（请求头）里有非 ASCII。
+        # 不把 http.client 的栈甩给用户。
+        raise ApiError(
+            0,
+            {
+                "error": "bad_request_target",
+                "message": (
+                    "请求没送出去：地址或请求头里还有 HTTP 不收的非 ASCII。"
+                    "路径上的名字已经做过百分号编码；请检查服务地址和身份名。"
+                    "没有改任何东西。"
+                ),
+            },
+        ) from exc
     if not raw:
         payload = {}
     else:

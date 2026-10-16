@@ -263,7 +263,7 @@ def build_parser() -> argparse.ArgumentParser:
     lock.add_argument("--changed", action="store_true",
                       help="锁住 git 工作区里所有改动文件（可与显式路径并用，取并集）")
     lock.add_argument("--stay", action="store_true",
-                      help="盘上没动过时，显式再要一段租约；不刷新计时，最多到拿锁后 1 小时")
+                      help="盘上没动过时，到顶前可以多次再要一段；不刷新计时，到期时间截到拿锁后 1 小时")
 
     unlock = sub.add_parser("unlock", help="放写锁（默认只放自己的）")
     unlock.add_argument("paths", nargs="*", help="要放的路径；不填 = 放掉自己的全部锁")
@@ -584,7 +584,7 @@ def main(argv=None) -> int:
                     "dirty": dirty,
                     # --changed 的语义是"锁我这批脏文件"：别人锁着的脏文件不是我该拿的，跳过并报告
                     "skip_locked": bool(args.changed),
-                    # 盘上没动过时，显式再要一段租约。服务端决定给不给；这里只把开关交过去。
+                    # 盘上没动过时，到顶前可以多次再要一段。服务端决定给不给；这里只把开关交过去。
                     "stay": bool(args.stay),
                 },
                 home=home,
@@ -1491,7 +1491,11 @@ _LEASE_ADVICE = (
 )
 _LEASE_COPY = {
     "no_progress": "盘上没动过，不给第二把租约。" + _LEASE_ADVICE,
-    "stay_exhausted": "延过一次了，要再拿请先 `ic unlock` 放一次再拿。" + _LEASE_ADVICE,
+    "stay_exhausted": (
+        "已经到拿锁后 1 小时的顶了。到顶前可以多次 `--stay`，到期时间截到这个顶，计时起点不刷新。"
+        "要再拿请先 `ic unlock` 放一次再拿。"
+        + _LEASE_ADVICE
+    ),
     "no_acceptance": (
         "办结前要先写「怎样算完」，写成第三个人能照着复跑的命令或测试名，形容词不算。"
         + _LEASE_ADVICE
@@ -1500,7 +1504,7 @@ _LEASE_COPY = {
 # 服务端若已经把这套人话写全，就原样印，避免两句叠在一起。
 _LEASE_MARK = {
     "no_progress": ("不给第二把", "盘上没动过"),
-    "stay_exhausted": ("放一次再拿", "延过一次"),
+    "stay_exhausted": ("拿锁后 1 小时的顶", "到顶前可以多次"),
     "no_acceptance": ("怎样算完",),
 }
 
@@ -1576,15 +1580,30 @@ def _unread_replies_line(item) -> str:
     return line
 
 
+def _stay_exhausted_text(text: str) -> str:
+    """服务端旧句把到顶说成「延过一次了」。
+
+    实现是到顶前可以多次 `--stay`，`expires` 截到 cap，不是只许一次。
+    旧句还在线上时，CLI 改印对齐的句子。服务端改口（带上新记号）之后照旧接人话，不盖掉事由。
+    """
+    marks = _LEASE_MARK["stay_exhausted"]
+    if text and "延过一次" in text and not any(mark in text for mark in marks):
+        return ""
+    return text
+
+
 def _format_mail_error(exc: MailError) -> str:
     """人话出口。三个新错误码在服务端没写人话时，用上面那套 409 文案。
 
     服务端若已经写了事由（路径、案卷号），人话没接上就接在后面，不把事由盖掉。
     `unread_replies` 另走：服务端有话就整句原样印，不盖掉案卷号和「来自谁 / 多久」。
+    `stay_exhausted` 的旧句「延过一次了」与实现不符，先换成对齐的句子再印。
     """
     text = (exc.message or "").strip()
     if exc.code == "unread_replies":
         return _format_unread_replies(text)
+    if exc.code == "stay_exhausted":
+        text = _stay_exhausted_text(text)
     canon = _LEASE_COPY.get(exc.code)
     if canon is None:
         return f"{exc.code}: {text}\n"
