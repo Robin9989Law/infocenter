@@ -204,7 +204,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic case <id> --note "…" --wait-for <身份>` | **接活钩子**：把「我在等谁」落到案卷上（状态同时转成「待 <身份>」）——被等的人敲 `ic status` 能看到「有 N 卷在等你」。**必须带 `--note`**（说清在等什么），单独给会被拒 |
 | `ic case <id> --wbs 父/子` | 给案卷打 WBS 路径（`/` 分隔，空=未归类）；**只有本项目的 coordinator 或 manager 能改** |
 | `ic case <id> --milestone-add "名字" [--milestone-owner 身份]` / `--milestone-done N` | 加一条里程碑 / 勾掉第 N 条（下标从 0 起，`!N` 撤回完成）；**只有 coordinator 能改** |
-| `ic cases [--workspace X] [--status 状态] [--owner 身份] [--wait-for 身份] [--wbs 前缀] [--limit N] [--all]` | 列出案卷（**默认只列未封卷**；没实质内容的（验收/里程碑/WBS 都没有）打 `[信]` 标、**不藏**——实测那堆里有真活；已封卷的折成一行，`--all` 看全）；`--wbs` 前缀匹配（给 `防混写` 会带出 `防混写/锁与闸` 下面的）。每条带 `unread_replies`（按请求者自己算，别人的未签收副本不算） |
+| `ic cases [--workspace X] [--status 状态] [--owner 身份] [--wait-for 身份] [--wbs 前缀] [--limit N] [--all]` | 列出案卷（**默认只列未封卷**；没实质内容的（验收/里程碑/WBS 都没有）打 `[信]` 标、**不藏**——实测那堆里有真活；已封卷的折成一行，`--all` 看全）；`--wbs` 前缀匹配（给 `防混写` 会带出 `防混写/锁与闸` 下面的）。每条带 `unread_replies`（按请求者自己算，别人的未签收副本不算）；`> 0` 时另打**一行黄灯** `⚠ 有 N 封未签收回信（最早 <时间>，来自 <身份>）`——`a8e374b`：时间和来信人只读 store 给的 `unread_replies_earliest_beijing` / `unread_replies_from`，缺了就只留「有 N 封」，**客户端不自己数也不编时间**；`ic case <id>` 看单卷时同样打这一行；只提示不拦 |
 | `ic projects [--project <路径> --coordinator <身份>]` | 列出项目（名字 / 路径 / **该项目的 coordinator**）；带 `--coordinator` 就是指定或更换它（**只有 manager（旧名 `human`）能设；空值＝清空 ⇒ 回到「没指定」**）。这是**治理动作**，改一次进一条留痕（`project_coordinator`：谁把哪个项目的协调者从谁换成谁），`ic audit` 查得到 |
 | `ic windows [--agent 身份] [--workspace X] [--state 状态]` | 列出办公室（窗口）登记；默认只列在办/暂停 + 近期离场，`--all` 看全 |
 
@@ -229,7 +229,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | 任务 | `ic task add … --acceptance "一行验收"` | `ic tasks` / 看板标出来（**不拦**） |
 | 案卷 | `ic case <id> --acceptance "…"` | **办结（close）前服务端拦两条**：① 没写就 409 `no_acceptance`；② 线程上自己有未签收回信就 409 `unread_replies`（中止不要求）；列表侧 `ic cases` / 看板标 **⚠ 没写怎样算完** + `unread_replies` 计数 |
 
-> **封卷门槛（两条，缺一不可）**：办结（close）前必须同时满足 ① **写了「怎样算完」**（`ic case <id> --acceptance "…"`，否则 **409 `no_acceptance`**）② **把这条线程上自己没签收的回信看完**（`deliveries.to_agent = 封卷人 AND deliveries.status = 'unread'` 的条数为 0，否则 **409 `unread_replies`**——文案：这条线上你还有 N 封没收，先把回信看完再封卷 `ic inbox --status unread`）。**中止（abort）两条都不要求**（没做完的事不该被逼着编验收或等回信）。
+> **封卷门槛（两条，缺一不可）**：办结（close）前必须同时满足 ① **写了「怎样算完」**（`ic case <id> --acceptance "…"`，否则 **409 `no_acceptance`**）② **把这条线程上自己没签收的回信看完**（`deliveries.to_agent = 封卷人 AND deliveries.status = 'unread'` 的条数为 0，否则 **409 `unread_replies`**——文案：这条线上你还有 N 封没收，先把回信看完再封卷 `ic inbox --status unread`；**CLI 把这句原样印出来**，不盖掉案卷号和「来自谁 / 最早多久」）。**中止（abort）两条都不要求**（没做完的事不该被逼着编验收或等回信）。
 > **判据口径说死**：那个「怎样算完」要写成**第三个人能照着复跑的命令或测试名**（例：`pytest tests/test_lock_progress.py -q 全绿 + grep -c no_progress README.md ≥ 1`），**不许写「已经差不多了」「基本可用」这类形容词**——形容词机器判不了、人也复现不了（这是产品里现成的「锚定测试」位置）。任务侧本来就已要求（开工即冻结规格）。
 
 收尾时对着**四件事**核对（不是靠记性）：
@@ -274,7 +274,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 
 | 命令 | 作用 |
 | --- | --- |
-| `ic lock <路径…> [--changed] [--stay] [--ttl 秒] [--task ID] [--note …] [--force]` | 拿写锁（同一路径同时只有一个 agent 能改）。`--changed` = 锁住 git 工作区里所有改动文件（可与显式路径并用，取并集）；**重复执行同一命令＝续期**，但**盘上自 `acquired_at` 起没写入痕迹 ⇒ 409 `no_progress`**（不给第二把租约；要硬留就加 `--stay`，最多延到拿锁后 1 小时、再多 `stay_exhausted`，先 `ic unlock` 放一次再拿）；TTL 默认 1800 秒（＝一次会话一把租约）、最长 12h；`--force` 抢锁仅 coordinator 可用 |
+| `ic lock <路径…> [--changed] [--stay] [--ttl 秒] [--task ID] [--note …] [--force]` | 拿写锁（同一路径同时只有一个 agent 能改）。`--changed` = 锁住 git 工作区里所有改动文件（可与显式路径并用，取并集）；**重复执行同一命令＝续期**，但**盘上自 `acquired_at` 起没写入痕迹 ⇒ 409 `no_progress`**（不给第二把租约；要硬留就加 `--stay`——**到顶前可以多次**，`acquired_at` 不刷新、到期时间截到拿锁后 1 小时；到了顶 **409 `stay_exhausted`**，先 `ic unlock` 放一次再拿）；TTL 默认 1800 秒（＝一次会话一把租约）、最长 12h；`--force` 抢锁仅 coordinator 可用 |
 | `ic locks` / `ic unlock [路径…] [--force]` | 看锁（带"剩 N 分"，快到期有提醒）/ 放锁（不填路径＝放掉自己的全部） |
 | `ic guard [--any-holder] [--staged] [--install-hook]` | 提交闸：每个改动都必须被**未过期写锁**覆盖。默认查整棵工作区（更严），`--staged` 只查暂存区＝"这次提交了什么"（git 钩子用）；`--any-holder` 只要求有锁覆盖（钩子用，互斥已在拿锁那步生效）；`--install-hook` 一条命令装上提交钩子（**新 clone 必做**，否则闸门只是"可选项"；没装时会打印提醒） |
 | `ic audit [--task ID] [--anchor] [--anchor-file 路径] [--quiet]` | **留痕机器验证**：哈希链是否完整、重放是否与任务现状逐字段一致、外锚是否对得上。`--anchor` 把当前链头写成外锚（链不干净拒绝打锚）；相对路径以**仓库根**为准 |
@@ -323,11 +323,11 @@ $ git commit -m "锚：留痕链头"          # 锚进了 git，才算落在库�
 - **全部有痕迹** ⇒ 照旧正常续期（`acquired_at` 刷新，计时重开）。
 - **有任一条没痕迹**（整把语义 ⇒ 整笔拒）：
   - 普通续期 ⇒ **409 `no_progress`**：**不动已有锁、不自动放**；文案照现有 409 那套（别硬写 / 记进自己待办 / 先做别的 / 到期自然回到可拿）。
-  - 加 `ic lock --stay` ⇒ 允许**只留一次**，但 `acquired_at` **不刷新**，且 `expires_at` 不得晚于 `acquired_at + 2×TTL`（＝拿锁后最多 1 小时）；已到 ⇒ **409 `stay_exhausted`**（「延过一次了，要再拿请先 `ic unlock` 放一次再拿」）。
+  - 加 `ic lock --stay` ⇒ **到顶前可以多次**（早先的文案写成「只留一次」，与实际不符，`589cd59` 已对齐），但 `acquired_at` **不刷新**，`expires_at` 截到 `acquired_at + 2×TTL`（＝拿锁后最多 1 小时）；已到顶 ⇒ **409 `stay_exhausted`**，CLI 印的是对齐后的人话（「已经到拿锁后 1 小时的顶了。到顶前可以多次 `--stay`……要再拿请先 `ic unlock` 放一次再拿」）——服务端若还回旧句「延过一次了」，出口也换成这句，不叠两遍。
   - 无进度续期（`stay=true`）在痕迹链上的 `lock` 行**带个记号**，事后看得出「这是无进度续期」。
 
 人话三句：**写了文件（盘上真变了）⇒ 正常续期、计时重开**；**盘上没动过 ⇒ 不给第二把租约（`no_progress`）**；
-**要留就 `ic lock --stay`（最多延到拿锁后 1 小时，再多先 `ic unlock` 放一次再拿）**。
+**要留就 `ic lock --stay`（到顶前可以多次，到期时间截到拿锁后 1 小时；到了顶先 `ic unlock` 放一次再拿）**。
 
 ### 拿不到钥匙怎么办：**记进自己的 TODO**（不排队、不通知、不点名）
 
@@ -387,6 +387,8 @@ $ ic --as B guard --staged                        # 提交那一刻再说一遍
 ### 写侧：改文件前先拿钥匙（`.opencode/plugins/infocenter-lock`）
 
 规矩（manager 定稿）：**文件默认只读（权限位不含写位，能读不能改）；谁要改文件，先拿钥匙（`ic lock`）使文件可写；拿钥匙期间该文件仅此一人可写，其他 agent 只能读；改完提交后钥匙自动放回，文件回到只读。**
+
+**人是 `manager` / `human` 两个名字，算同一个持有者**（`f54bf74`）：两个别名都能放掉 / 续上同一个人拿着的锁，移除成员也一样；**别名续期不改写链上的持有者名字，落库的仍是当初那个名字**（不迁移、不重命名）。判定只走 `store._same_agent` / `_holder_names`（唯一真相源 `store.is_person()`），别在别处再写一份「是不是人」。
 
 > **作用域（务必诚实划界）**：这个「只读」由锁系统在**本仓 git 可报路径内**落实，而且是**拿过 / 放回过钥匙之后**才落到权限位（`_chmod_locked` 只在 `unlock`／到期时跑）——从没进过锁循环的新建文件仍是工具的默认权限，不会凭空变只读。更关键的是：这套锁**只覆盖仓库内的路径，管不到仓库外的副本**（例如各 agent 实际加载的安装态 `~/.agents/skills/infocenter/SKILL.md`）。所以「仓库那份 ↔ 安装那份」的一致性**不靠这把锁**兜底，要靠**漂移检查**：优先用**软链**（安装副本 → 仓库副本，一份真相），不能软链的在 `ic status` / `ic guard` 里比对两份内容、不一致就出一行（**已落码**，只提示不拦；`ic status --json` 带 `skill_drift` 字段）——**两份真相靠人记一定再犯**。另见 `skills/infocenter/SKILL.md`（交互会话读的正是安装副本，那份也要与仓库同步）。
 
