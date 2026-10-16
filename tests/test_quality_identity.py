@@ -75,6 +75,24 @@ class IdentityQualityTest(unittest.TestCase):
         got = self.store.case_milestone_add(cid, agent="manager", name="人拍的")
         self.assertEqual([m["name"] for m in got["milestones"]], ["人拍的"])
 
+    def test_remove_agent_self_ok_peer_403_manager_ok(self):
+        """自己退自己可以；别人删别人 403；manager 删别人成功（3eba4a2 后补）。"""
+        names = lambda: {row["name"] for row in self.store.list_agents()}
+
+        gone = self.store.remove_agent("cursor", "cursor")
+        self.assertEqual(gone, {"name": "cursor", "removed": True})
+        self.assertNotIn("cursor", names())
+
+        with self.assertRaises(MailError) as ctx:
+            self.store.remove_agent("kimi", "human")
+        self.assertEqual(ctx.exception.status, 403)
+        self.assertEqual(ctx.exception.code, "human_only")
+        self.assertIn("human", names())
+
+        removed = self.store.remove_agent("manager", "kimi")
+        self.assertEqual(removed, {"name": "kimi", "removed": True})
+        self.assertNotIn("kimi", names())
+
     def test_http_remove_by_manager_is_a_business_miss(self):
         status, payload = handle(
             "DELETE", "/v1/agents/zzz-not-exist", {"X-Agent": "manager"}, b"{}", self.store

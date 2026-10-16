@@ -545,7 +545,7 @@ class Store:
         return [_agent(row, unread.get(row["name"], 0), by_agent.get(row["name"], [])) for row in rows]
 
     def remove_agent(self, agent: str, name: str) -> dict:
-        """从名册移除：**自己退自己**可以；移除**别人**只有 human 能（README 一直这么写，现在是机器护栏）。"""
+        """从名册移除：**自己退自己**可以；移除**别人**只有 manager（含旧名 human）能（README 一直这么写，现在是机器护栏）。"""
         name = normalize_name(name)
         if normalize_name(agent) != name:
             _must_human(agent)
