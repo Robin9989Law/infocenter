@@ -181,7 +181,7 @@ class IdentityQualityTest(unittest.TestCase):
         html = (ROOT / "infocenter" / "web" / "index.html").read_text(encoding="utf-8")
         self.assertIn('name === "human" ? "manager"', html)
         self.assertIn("manager · 干预中枢", html)
-        self.assertIn('"X-Agent": "human"', html)
+        self.assertIn('"X-Agent": "manager"', html)
         self.assertIn('h === "human"', html)
 
 

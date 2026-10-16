@@ -280,7 +280,7 @@ let state = {
 
 async function api(path, opts = {}) {
   const { method = "GET", body } = opts;
-  const headers = { "X-Agent": "human" };
+  const headers = { "X-Agent": "manager" };
   if (body || method !== "GET") {
     headers["Content-Type"] = "application/json";
   }
