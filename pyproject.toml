@@ -19,7 +19,11 @@ license = "MIT"
 ic = "infocenter.cli:main"
 
 [tool.setuptools]
-packages = ["infocenter"]
+# infocenter.web 是控制台单页（`ic serve` 的 /ui）所在子目录，只有 index.html、无 __init__.py。
+# setuptools 仍会顺着 package-data 的 glob 把它认成 importable 子包，所以必须显式列进 packages：
+# 否则 sdist 阶段报 `Package 'infocenter.web' is absent from the packages configuration`，
+# 且 sdist 里不带 web/index.html（wheel 靠下面的 glob 侥幸带上，单看 wheel 会漏判）。
+packages = ["infocenter", "infocenter.web"]
 
 [tool.setuptools.dynamic]
 version = { attr = "infocenter.__version__" }
@@ -27,4 +31,7 @@ version = { attr = "infocenter.__version__" }
 [tool.setuptools.package-data]
 # 控制台单页（`ic serve` 的 /ui）是包的一部分：不显式带上，wheel/sdist 里就没有它，
 # 外人 pip 装完能起服务、但打不开控制台（实测：不带这行时 wheel 18 个文件、无 web/index.html）。
-infocenter = ["web/*"]
+# key 必须加引号且写具体子包名——写成 `infocenter = ["web/*"]` 会让 setuptools 把 web 认成
+# 不在 packages 里的子包（见上，触发 absent 告警 + sdist 漏文件）；不加引号则 TOML 把点号名
+# 嵌成 infocenter 的子表，报 `tool.setuptools.package-data.infocenter must be array`。
+"infocenter.web" = ["*.html"]

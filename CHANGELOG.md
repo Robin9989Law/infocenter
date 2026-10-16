@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 > 上一版（0.5.0）是首个公开版。
 
 ### Fixed
+- **sdist 期最后一条构建告警：`Package 'infocenter.web' is absent from the packages configuration`**（pyproject，pi 承办 / opencode 复核）。控制台单页 `infocenter/web/index.html` 所在子目录 `web` **无 `__init__.py`**，但 `[tool.setuptools.package-data]` 里旧写法 `infocenter = ["web/*"]` 让 setuptools 顺着 glob 把它认成 importable 子包 `infocenter.web`，而 `packages` 里只有 `infocenter`。**只出在 sdist 那一步**：wheel 靠那条 glob 侥幸带上了 `index.html`（单看 wheel 会漏判），sdist 却报 absent 告警**且不打包 `web/index.html`**。改法（零新增文件）：`packages = ["infocenter", "infocenter.web"]` + `package-data` 用带引号的子包名 key `"infocenter.web" = ["*.html"]`（key 不加引号会被 TOML 嵌成 `infocenter` 子表、报 `must be array`）。判据全过：从仓外真打 sdist+wheel **无该告警**、两种产物**都含** `infocenter/web/index.html`；全量 547 测试 OK；按 L5 真装 wheel 后 `ic serve` 打开 `/ui` 返 200（控制台页 73521 B）。
 - **协调者分层那晚的漏网（kimi 追审：阻断 4 条，全部落修）**：
   ① **`_human_voices()` 是 SQL 里的角色比较**（`WHERE role = 'coordinator'`）——迁移把 role 改写成 `manager` 之后
   这个查询**永久落空**，看板第 1 条线（「人话 / 人话过期」）**静默退化成只有 human**；
