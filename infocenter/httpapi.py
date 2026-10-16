@@ -163,7 +163,7 @@ OPENAPI = {
         },
         "/v1/agents/{name}/messages": {
             "get": {
-                "summary": "某个身份的往来信件（收发方向、对方、主题、状态）",
+                "summary": "某个身份的往来信件（收发方向、对方、主题、状态）。name 是人时合并 manager / human 两名的往来，不改 deliveries",
                 "parameters": [
                     {"$ref": "#/components/parameters/Agent"},
                     {"name": "name", "in": "path", "required": True, "schema": {"type": "string"}},

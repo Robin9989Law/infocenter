@@ -158,6 +158,50 @@ def _holder_names(agent: str) -> tuple[str, ...]:
     return (agent,)
 
 
+def _recipient_names(agent: str) -> tuple[str, ...]:
+    """收件箱和往来列表要算进来的落库收件名。
+
+    人只认 `is_person`：manager 与 human 都算上。别人只有自己。
+    不改 deliveries 里的名字。反例测试短路这一处，合并就没了。
+    """
+    agent = normalize_name(agent)
+    if not is_person(agent):
+        return (agent,)
+    return tuple(sorted(HUMAN_NAMES, key=lambda name: (name != HUMAN, name)))
+
+
+def _resolve_own_delivery(conn: sqlite3.Connection, message_id: str, agent: str) -> sqlite3.Row | None:
+    """先找收件人正好是这个名字的那一份，没有再找另一个人的别名。
+
+    只读：不插入、不改 to_agent。
+    """
+    agent = normalize_name(agent)
+    row = conn.execute(
+        """
+        SELECT message_id, to_agent, status, read_at, claimed_by, claimed_at
+        FROM deliveries
+        WHERE message_id = ? AND to_agent = ?
+        """,
+        (message_id, agent),
+    ).fetchone()
+    if row is not None or not is_person(agent):
+        return row
+    for other in _recipient_names(agent):
+        if other == agent:
+            continue
+        row = conn.execute(
+            """
+            SELECT message_id, to_agent, status, read_at, claimed_by, claimed_at
+            FROM deliveries
+            WHERE message_id = ? AND to_agent = ?
+            """,
+            (message_id, other),
+        ).fetchone()
+        if row is not None:
+            return row
+    return None
+
+
 def normalize_case_id(value: str) -> str:
     """L2：案卷编号 / thread_id 统一安全字符集与长度，非法一律 400。"""
     if not isinstance(value, str):
@@ -1125,13 +1169,17 @@ class Store:
                 _lazy_reconcile_all(conn, now)
             # D-1：将窗口/封卷/暂停过滤条件直接下推到 SQL（NOT EXISTS），并在 LIMIT 前执行过滤，
             # 避免被过滤行先吃掉 LIMIT 配额导致本窗口未读被截断。
+            # 人的收件箱把两个名字的 delivery 都算进来（视图）。d.to_agent 仍是落库的那一个名字。
+            names = _recipient_names(agent)
+            name_sql = ",".join("?" for _ in names)
             rows = conn.execute(
-                """
-                SELECT m.*, d.status AS delivery_status, d.read_at AS delivery_read_at,
+                f"""
+                SELECT m.*, d.to_agent AS delivered_to, d.status AS delivery_status,
+                       d.read_at AS delivery_read_at,
                        d.claimed_by AS delivery_claimed_by, d.claimed_at AS delivery_claimed_at
                 FROM deliveries d
                 JOIN messages m ON m.id = d.message_id
-                WHERE d.to_agent = ?
+                WHERE d.to_agent IN ({name_sql})
                   AND (? = 'all' OR d.status = ?)
                   AND (
                     ? IS NULL
@@ -1171,7 +1219,7 @@ class Store:
                 ORDER BY m.created_at DESC, m.id DESC
                 """,
                 (
-                    agent,
+                    *names,
                     status,
                     status,
                     window_id,
@@ -1188,24 +1236,25 @@ class Store:
                 rows = [row for row in rows if _workspace_scope(row["workspace"], workspace)]
             messages = []
             for row in rows:
+                holder = row["delivered_to"]
                 if window_id is not None and status == "unread":
                     if _is_thread_paused_or_sealed(conn, row["thread_id"]):
                         continue
-                    eff_claim = _effective_thread_claim(conn, row["thread_id"], agent, row["delivery_claimed_by"])
+                    eff_claim = _effective_thread_claim(conn, row["thread_id"], holder, row["delivery_claimed_by"])
                     if eff_claim is not None and eff_claim != window_id:
                         continue
-                messages.append(
-                    _view(
-                        conn,
-                        row,
-                        agent,
-                        full,
-                        row["delivery_status"],
-                        row["delivery_read_at"],
-                        row["delivery_claimed_by"],
-                        row["delivery_claimed_at"],
-                    )
+                item = _view(
+                    conn,
+                    row,
+                    holder,
+                    full,
+                    row["delivery_status"],
+                    row["delivery_read_at"],
+                    row["delivery_claimed_by"],
+                    row["delivery_claimed_at"],
                 )
+                item["delivered_to"] = holder
+                messages.append(item)
                 if len(messages) >= limit:
                     break
             # M1-data：unread_total 与 `_unread_counts` 同口径——
@@ -1216,7 +1265,7 @@ class Store:
                     if _is_thread_paused_or_sealed(conn, row["thread_id"]):
                         continue
                     eff_claim = _effective_thread_claim(
-                        conn, row["thread_id"], agent, row["delivery_claimed_by"]
+                        conn, row["thread_id"], row["delivered_to"], row["delivery_claimed_by"]
                     )
                     if window_id is None:
                         if eff_claim is not None:
@@ -1237,16 +1286,19 @@ class Store:
     def get_message(self, agent: str, message_id: str, full: bool = True) -> dict:
         agent = normalize_name(agent)
         with self._session(readonly=True) as conn:
-            row = _must_visible(conn, message_id, agent)
-            delivery = conn.execute(
-                "SELECT status, read_at, claimed_by, claimed_at FROM deliveries WHERE message_id = ? AND to_agent = ?",
-                (row["id"], agent),
-            ).fetchone()
+            row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+            delivery = _resolve_own_delivery(conn, message_id, agent) if row is not None else None
+            if row is None or (delivery is None and not _is_party(conn, row, agent)):
+                raise MailError("not_found", "没有这封信，或者你不在其中", 404)
             status = delivery["status"] if delivery else None
             read_at = delivery["read_at"] if delivery else None
             claimed_by = delivery["claimed_by"] if delivery else None
             claimed_at = delivery["claimed_at"] if delivery else None
-            return _view(conn, row, agent, full, status, read_at, claimed_by, claimed_at)
+            holder = delivery["to_agent"] if delivery else agent
+            view = _view(conn, row, holder, full, status, read_at, claimed_by, claimed_at)
+            if delivery is not None:
+                view["delivered_to"] = delivery["to_agent"]
+            return view
 
     def mark(
         self,
@@ -1262,19 +1314,20 @@ class Store:
         if status not in {"read", "archived"}:
             raise MailError("invalid_status", "只能标成 read 或 archived")
         with self._session(immediate=True) as conn:
-            msg_row = _must_visible(conn, message_id, agent)
-            delivery = conn.execute(
-                "SELECT status, read_at, claimed_by, claimed_at FROM deliveries WHERE message_id = ? AND to_agent = ?",
-                (message_id, agent),
-            ).fetchone()
+            msg_row = conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone()
+            delivery = _resolve_own_delivery(conn, message_id, agent) if msg_row is not None else None
+            if msg_row is None or (delivery is None and not _is_party(conn, msg_row, agent)):
+                raise MailError("not_found", "没有这封信，或者你不在其中", 404)
             if delivery is None:
                 raise MailError("not_a_recipient", "这封信不是留给你的，不能替别人签收", 409)
+            # 落在已经存在的那一行上。先本名，没有才是另一个别名。不改名、不新建。
+            target = delivery["to_agent"]
             now = utcnow()
             read_at = delivery["read_at"] or now
             if window_id is None:
                 conn.execute(
                     "UPDATE deliveries SET status = ?, read_at = ? WHERE message_id = ? AND to_agent = ?",
-                    (status, read_at, message_id, agent),
+                    (status, read_at, message_id, target),
                 )
             else:
                 _upsert_window(
@@ -1300,7 +1353,7 @@ class Store:
                 else:
                     conn.execute(
                         "UPDATE deliveries SET status = ?, read_at = ? WHERE message_id = ? AND to_agent = ?",
-                        (status, read_at, message_id, agent),
+                        (status, read_at, message_id, target),
                     )
         self._signal()
         return self.get_message(agent, message_id, full=True)
@@ -3648,22 +3701,25 @@ class Store:
 
     def agent_messages(self, agent: str, limit: int = 100) -> list[dict]:
         name = normalize_name(agent)
+        names = _recipient_names(name)
         n = _limit(limit)
+        name_sql = ",".join("?" for _ in names)
         with self._session(readonly=True) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT m.id, m.thread_id, m.from_agent, m.subject, m.created_at, m.workspace, m.body,
-                       d.status AS my_status, d.claimed_by AS my_claimed_by,
                        (SELECT c.title FROM cases c WHERE (c.id = m.thread_id OR c.thread_id = m.thread_id) LIMIT 1) AS case_title,
                        (SELECT c.id FROM cases c WHERE (c.id = m.thread_id OR c.thread_id = m.thread_id) LIMIT 1) AS case_id
                 FROM messages m
-                LEFT JOIN deliveries d ON d.message_id = m.id AND d.to_agent = ?
-                WHERE m.from_agent = ?
-                   OR EXISTS (SELECT 1 FROM deliveries d2 WHERE d2.message_id = m.id AND d2.to_agent = ?)
+                WHERE m.from_agent IN ({name_sql})
+                   OR EXISTS (
+                        SELECT 1 FROM deliveries d2
+                        WHERE d2.message_id = m.id AND d2.to_agent IN ({name_sql})
+                   )
                 ORDER BY m.created_at DESC, m.id DESC
                 LIMIT ?
                 """,
-                (name, name, name, n),
+                (*names, *names, n),
             ).fetchall()
             out = []
             for row in rows:
@@ -3674,7 +3730,10 @@ class Store:
                         (row["id"],),
                     )
                 ]
-                sent = row["from_agent"] == name
+                own = _resolve_own_delivery(conn, row["id"], name)
+                sent = row["from_agent"] == name or (
+                    is_person(name) and is_person(row["from_agent"])
+                )
                 out.append(
                     {
                         "id": row["id"],
@@ -3686,10 +3745,11 @@ class Store:
                         "workspace": row["workspace"] or "",
                         "direction": "out" if sent else "in",
                         "other": (", ".join(recips) if sent else row["from_agent"]),
-                        "claimed_by": row["my_claimed_by"] or "",
+                        "claimed_by": (own["claimed_by"] if own else None) or "",
                         "case_id": row["case_id"] or "",
                         "case_title": row["case_title"] or "",
-                        "my_status": row["my_status"] if not sent else None,
+                        "my_status": (own["status"] if own else None) if not sent else None,
+                        "delivered_to": own["to_agent"] if own is not None else "",
                         "created_at": row["created_at"],
                         "created_at_beijing": beijing_time(row["created_at"]),
                     }
@@ -4271,16 +4331,16 @@ def _block_unread_replies(conn: sqlite3.Connection, row: sqlite3.Row, agent: str
 def _mark_own_delivery_read(
     conn: sqlite3.Connection, message_id: str, agent: str, now: str
 ) -> None:
-    """只把收件人自己的那一份标成已读。不改认领，不动案卷。"""
-    row = conn.execute(
-        "SELECT read_at FROM deliveries WHERE message_id = ? AND to_agent = ?",
-        (message_id, agent),
-    ).fetchone()
+    """只把收件人自己的那一份标成已读。不改认领，不动案卷，不改名字，不新建行。
+
+    人先找本名那一份，没有再找另一个别名。
+    """
+    row = _resolve_own_delivery(conn, message_id, agent)
     if row is None:
         return
     conn.execute(
         "UPDATE deliveries SET status = 'read', read_at = ? WHERE message_id = ? AND to_agent = ?",
-        (row["read_at"] or now, message_id, agent),
+        (row["read_at"] or now, message_id, row["to_agent"]),
     )
 
 
@@ -4369,7 +4429,8 @@ def _claim_thread_on_touch(
 ) -> None:
     thread_id = message_row["thread_id"]
     msg_id = message_row["id"]
-    if not _is_thread_party(conn, thread_id, agent):
+    delivery = _resolve_own_delivery(conn, msg_id, agent)
+    if delivery is None and not _is_thread_party(conn, thread_id, agent):
         raise MailError("not_found", f"没有找到案卷或线程：{thread_id}", 404)
     case_row = _find_case(conn, thread_id)
     if case_row is not None:
@@ -4380,10 +4441,6 @@ def _claim_thread_on_touch(
             return
         _must_unsealed(case_row)
 
-    delivery = conn.execute(
-        "SELECT status, read_at, claimed_by, claimed_at FROM deliveries WHERE message_id = ? AND to_agent = ?",
-        (msg_id, agent),
-    ).fetchone()
     direct_claim = delivery["claimed_by"] if delivery else None
     existing_claim = _effective_thread_claim(conn, thread_id, agent, direct_claim)
     if existing_claim is None and case_row is not None and case_row["owner_window"] and _same_agent(case_row["owner_agent"] or "", agent):
@@ -4393,6 +4450,7 @@ def _claim_thread_on_touch(
         raise MailError("already_claimed", f"这条线已被 {existing_claim} 主办，如需接手请使用 force=True", 409)
 
     if delivery is not None:
+        target = delivery["to_agent"]
         read_at = (delivery["read_at"] or now) if mark_read else delivery["read_at"]
         new_status = "read" if mark_read else delivery["status"]
         if force and existing_claim is not None and existing_claim != window_id:
@@ -4402,7 +4460,7 @@ def _claim_thread_on_touch(
                 SET status = ?, read_at = ?, claimed_by = ?, claimed_at = ?
                 WHERE message_id = ? AND to_agent = ?
                 """,
-                (new_status, read_at, window_id, now, msg_id, agent),
+                (new_status, read_at, window_id, now, msg_id, target),
             )
         else:
             cur = conn.execute(
@@ -4412,7 +4470,7 @@ def _claim_thread_on_touch(
                 WHERE message_id = ? AND to_agent = ?
                   AND (claimed_by IS NULL OR claimed_by = ?)
                 """,
-                (new_status, read_at, window_id, now, msg_id, agent, window_id),
+                (new_status, read_at, window_id, now, msg_id, target, window_id),
             )
             if cur.rowcount == 0:
                 raise MailError("already_claimed", "并发认领冲突：这封信已被其他窗口抢先认领", 409)
