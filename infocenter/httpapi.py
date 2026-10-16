@@ -214,7 +214,10 @@ OPENAPI = {
             "get": {"summary": "看一封信，不消费", "responses": {"200": {"description": "message"}}}
         },
         "/v1/messages/{id}/read": {
-            "post": {"summary": "签收自己的那一份（带 X-Window 时按线程软认领并立案）", "responses": {"200": {"description": "message"}}}
+            "post": {
+                "summary": "签收自己的那一份。未封卷线程带 X-Window 时按线程软认领并立案；已封卷线程只标已读，不认领、不动案卷",
+                "responses": {"200": {"description": "message"}},
+            }
         },
         "/v1/messages/{id}/archive": {
             "post": {"summary": "归档自己的那一份", "responses": {"200": {"description": "message"}}}
@@ -226,11 +229,17 @@ OPENAPI = {
             "get": {"summary": "只返回调用方参与过的回合", "responses": {"200": {"description": "thread"}}}
         },
         "/v1/cases": {
-            "get": {"summary": "列出案卷（办事追踪）", "responses": {"200": {"description": "cases"}}},
+            "get": {
+                "summary": "列出案卷（办事追踪）。每条 unread_replies 按请求者自己算",
+                "responses": {"200": {"description": "cases"}},
+            },
             "post": {"summary": "立案（创建案卷）", "responses": {"201": {"description": "case"}}},
         },
         "/v1/cases/{id}": {
-            "get": {"summary": "查看单个案卷与全部节点流水", "responses": {"200": {"description": "case"}}}
+            "get": {
+                "summary": "查看单个案卷与全部节点流水。unread_replies 按请求者自己算",
+                "responses": {"200": {"description": "case"}},
+            }
         },
         "/v1/cases/{id}/pause": {
             "post": {"summary": "暂停案卷（不封卷，保留归属）", "responses": {"200": {"description": "case"}}}
@@ -242,7 +251,10 @@ OPENAPI = {
             "post": {"summary": "中止案卷（封卷只读）", "responses": {"200": {"description": "case"}}}
         },
         "/v1/cases/{id}/close": {
-            "post": {"summary": "办结案卷（结案封档只读，释放归属）", "responses": {"200": {"description": "case"}}}
+            "post": {
+                "summary": "办结案卷（结案封档只读，释放归属）。没写怎样算完 409 no_acceptance；发给自己的未签收信 409 unread_replies",
+                "responses": {"200": {"description": "case"}},
+            }
         },
         "/v1/cases/{id}/acceptance": {
             "post": {
@@ -950,6 +962,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 waiting_for=query.get("waiting_for", [None])[0] or query.get("wait_for", [None])[0],
                 limit=limit,
                 wbs=query.get("wbs", [None])[0],
+                viewer=agent,
             )
             return 200, {"cases": cases, "count": len(cases)}
         if method == "POST":
@@ -984,7 +997,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
     if path.startswith("/v1/cases/"):
         rest = path[len("/v1/cases/") :]
         if method == "GET" and "/" not in rest and rest:
-            return 200, store.get_case(rest)
+            return 200, store.get_case(rest, viewer=agent)
         if method == "POST" and "/" in rest:
             case_id, action = rest.rsplit("/", 1)
             if not case_id or "/" in case_id:

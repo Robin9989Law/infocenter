@@ -1287,6 +1287,7 @@ class Store:
                     now=now,
                 )
                 if status == "read":
+                    # 已封卷的线程在这里只标已读就返回：不认领、不动案卷。
                     _claim_thread_on_touch(
                         conn,
                         agent=agent,
@@ -1533,19 +1534,20 @@ class Store:
                 cid, owner_window, init_note, now,
             )
             row = _find_case(conn, cid)
-            return _case_view(conn, row)
+            return _case_view(conn, row, viewer=agent)
 
-    def get_case(self, case_id: str) -> dict:
+    def get_case(self, case_id: str, viewer: str | None = None) -> dict:
         if not isinstance(case_id, str) or not case_id.strip():
             raise MailError("not_found", "缺少案卷编号", 404)
         cid = normalize_case_id(case_id)
+        viewer_name = normalize_name(viewer) if viewer else None
         now = utcnow()
         with self._session(immediate=True) as conn:
             row = _find_case(conn, cid)
             if row is None:
                 raise MailError("not_found", f"没有找到案卷：{cid}", 404)
             row = _lazy_reconcile_case(conn, row, now)
-            return _case_view(conn, row)
+            return _case_view(conn, row, viewer=viewer_name)
 
     def case_wbs_set(
         self,
@@ -1582,7 +1584,7 @@ class Store:
                 auto=False,
                 now=now,
             )
-            out = _case_view(conn, _find_case(conn, cid))
+            out = _case_view(conn, _find_case(conn, cid), viewer=agent)
         self._signal()
         return out
 
@@ -1631,7 +1633,7 @@ class Store:
                 auto=False,
                 now=now,
             )
-            out = _case_view(conn, _find_case(conn, cid))
+            out = _case_view(conn, _find_case(conn, cid), viewer=agent)
         self._signal()
         return out
 
@@ -1677,7 +1679,7 @@ class Store:
                 auto=False,
                 now=now,
             )
-            out = _case_view(conn, _find_case(conn, cid))
+            out = _case_view(conn, _find_case(conn, cid), viewer=agent)
         self._signal()
         return out
 
@@ -1723,7 +1725,7 @@ class Store:
                 auto=False,
                 now=now,
             )
-            out = _case_view(conn, _find_case(conn, cid))
+            out = _case_view(conn, _find_case(conn, cid), viewer=agent)
         self._signal()
         return out
 
@@ -1736,6 +1738,7 @@ class Store:
         waiting_for: str | None = None,
         limit: int = 100,
         wbs: str | None = None,
+        viewer: str | None = None,
     ) -> list[dict]:
         limit = _limit(limit)
         wbs_filter = _wbs_path(wbs) if wbs else None
@@ -1744,6 +1747,7 @@ class Store:
         agent_filter = normalize_name(owner_agent) if owner_agent else None
         # 「在等谁」：只按名字比（空表示不在等）
         wait_filter = normalize_name(waiting_for) if waiting_for else None
+        viewer_name = normalize_name(viewer) if viewer else None
         now = utcnow()
         with self._session(immediate=True) as conn:
             _lazy_reconcile_all(conn, now)
@@ -1767,7 +1771,7 @@ class Store:
                     path = row["wbs_path"] or ""
                     if path != wbs_filter and not path.startswith(wbs_filter + "/"):
                         continue
-                matched.append(_case_view(conn, row))
+                matched.append(_case_view(conn, row, viewer=viewer_name))
                 if len(matched) >= limit:
                     break
         return matched
@@ -1833,7 +1837,7 @@ class Store:
                 now=now,
             )
             updated = _find_case(conn, row["id"])
-            return _case_view(conn, updated)
+            return _case_view(conn, updated, viewer=agent)
 
     def claim_case(
         self,
@@ -1900,7 +1904,7 @@ class Store:
                         row["id"], window_id, note_text, now,
                     )
                 updated = _find_case(conn, row["id"])
-                return _case_view(conn, updated)
+                return _case_view(conn, updated, viewer=agent)
 
             msg = conn.execute(
                 "SELECT * FROM messages WHERE thread_id = ? OR id = ? ORDER BY created_at ASC LIMIT 1",
@@ -1931,7 +1935,7 @@ class Store:
                     conn, agent, last["action"], "", "open",
                     created["id"], window_id, last["note"], now,
                 )
-            return _case_view(conn, created)
+            return _case_view(conn, created, viewer=agent)
 
     def transfer_case(
         self,
@@ -2005,7 +2009,7 @@ class Store:
                 row["id"], node_window, note_text, now,
             )
             updated = _find_case(conn, row["id"])
-            res = _case_view(conn, updated)
+            res = _case_view(conn, updated, viewer=agent)
         self._signal()
         return res
 
@@ -2164,7 +2168,7 @@ class Store:
                 row["id"], window_id, note_text, now,
             )
             updated = _find_case(conn, row["id"])
-            res = _case_view(conn, updated)
+            res = _case_view(conn, updated, viewer=agent)
         self._signal()
         return res
 
@@ -3251,7 +3255,8 @@ class Store:
         now: str,
     ) -> dict:
         node_window = window_id or row["owner_window"]
-        # 办结才要求「怎样算完」。中止（aborted）不要求。任务侧的开工门槛不在这里再加一遍。
+        # 办结才要求「怎样算完」，并且这条线上发给封卷人自己的信都已签收。
+        # 中止（aborted）两条都不要求。任务侧的开工门槛不在这里再加一遍。
         if seal and new_status == "done" and not str(row["acceptance"] or "").strip():
             raise MailError(
                 "no_acceptance",
@@ -3259,6 +3264,8 @@ class Store:
                 f"先 `ic case {row['id']} --acceptance \"…\"`。中止不要求这一句。",
                 409,
             )
+        if seal and new_status == "done":
+            _block_unread_replies(conn, row, agent)
         if seal:
             # 封卷（中止 / 办结）：释放主办窗口占用，标记只读
             conn.execute(
@@ -3307,7 +3314,7 @@ class Store:
             row["id"], node_window, note, now,
         )
         updated = _find_case(conn, row["id"])
-        return _case_view(conn, updated)
+        return _case_view(conn, updated, viewer=agent)
 
     # ── D1 办公室（windows）与项目（projects）──────────────────────────────
 
@@ -4219,6 +4226,64 @@ def _must_unsealed(row: sqlite3.Row) -> None:
         raise MailError("case_sealed", f"案卷 {row['id']} 已封卷（{row['status']}），只读不可修改", 409)
 
 
+def _own_unread_replies(conn: sqlite3.Connection, thread_id: str, agent: str) -> list[sqlite3.Row]:
+    """这条线程上发给 agent 自己、还没签收的投递（按时间从早到晚）。
+
+    只算这一份：别人未签收的副本他签不了，拿它卡人＝死锁。
+    """
+    if not thread_id or not agent:
+        return []
+    return conn.execute(
+        """
+        SELECT m.id, m.from_agent, m.created_at
+        FROM deliveries d
+        JOIN messages m ON m.id = d.message_id
+        WHERE m.thread_id = ?
+          AND d.to_agent = ?
+          AND d.status = 'unread'
+        ORDER BY m.created_at ASC, m.id ASC
+        """,
+        (thread_id, agent),
+    ).fetchall()
+
+
+def _block_unread_replies(conn: sqlite3.Connection, row: sqlite3.Row, agent: str) -> None:
+    """办结门槛：封卷人自己在这条线程上还有未签收信 ⇒ 409 unread_replies。
+
+    只算封卷人自己那一份：别人未签收的副本他签不了，拿它卡人＝死锁。
+    中止（aborted）不走这里。
+    """
+    hits = _own_unread_replies(conn, row["thread_id"], agent)
+    if not hits:
+        return
+    earliest = hits[0]
+    when = beijing_time(str(earliest["created_at"] or ""))
+    who = earliest["from_agent"]
+    raise MailError(
+        "unread_replies",
+        f"案卷 {row['id']} 这条线上你还有 {len(hits)} 封没收"
+        f"（最早 {when}，来自 {who}）。"
+        "先把回信看完再封卷（`ic inbox --status unread`）。中止不要求。",
+        409,
+    )
+
+
+def _mark_own_delivery_read(
+    conn: sqlite3.Connection, message_id: str, agent: str, now: str
+) -> None:
+    """只把收件人自己的那一份标成已读。不改认领，不动案卷。"""
+    row = conn.execute(
+        "SELECT read_at FROM deliveries WHERE message_id = ? AND to_agent = ?",
+        (message_id, agent),
+    ).fetchone()
+    if row is None:
+        return
+    conn.execute(
+        "UPDATE deliveries SET status = 'read', read_at = ? WHERE message_id = ? AND to_agent = ?",
+        (row["read_at"] or now, message_id, agent),
+    )
+
+
 def _is_thread_sealed(conn: sqlite3.Connection, thread_id: str) -> bool:
     row = _find_case(conn, thread_id)
     if row is None:
@@ -4309,6 +4374,10 @@ def _claim_thread_on_touch(
     case_row = _find_case(conn, thread_id)
     if case_row is not None:
         case_row = _lazy_reconcile_case(conn, case_row, now)
+        # 签收不是改案卷。封卷线程里的信仍可标已读：不认领、不动案卷、不破只读。
+        if mark_read and (case_row["sealed"] or case_row["status"] in SEALED_STATUSES):
+            _mark_own_delivery_read(conn, msg_id, agent, now)
+            return
         _must_unsealed(case_row)
 
     delivery = conn.execute(
@@ -5296,7 +5365,7 @@ def _human_voices(conn: sqlite3.Connection) -> set[str]:
     return voices
 
 
-def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
+def _case_view(conn: sqlite3.Connection, row: sqlite3.Row, viewer: str | None = None) -> dict:
     node_rows = conn.execute(
         "SELECT * FROM case_nodes WHERE case_id = ? ORDER BY id ASC",
         (row["id"],),
@@ -5336,8 +5405,11 @@ def _case_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
     # **不是过滤条件**——实测那堆里有真活（派单线程可以是"在办"、有 5 封信、三样全无）；
     # 看板默认折的是**已封卷**（归档；实测 100 条里 52 条是它）。
     substantive = bool((row["acceptance"] or "").strip() or milestones or (row["wbs_path"] or "").strip())
+    # 发给请求者自己、还没签收的信。别人那份不算（他签不了，拿它卡人＝死锁）。零新列，现查。
+    unread_replies = len(_own_unread_replies(conn, row["thread_id"], viewer or ""))
     return {
         "substantive": substantive,
+        "unread_replies": unread_replies,
         "id": row["id"],
         "thread_id": row["thread_id"],
         "title": row["title"],
