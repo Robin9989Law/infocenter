@@ -19,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`/openapi.json` 跟不上实码路由，而且漏了不报错**（`7b2a9b4`，cursor 落）：`GET /v1` 和 README 都让新 agent 照这份机器可读说明接，源码里多了一条分发、表里没写 ⇒ 外人照着 404，内部一万次测试也发现不了。现在**精确路径 / 前缀切片 / `action` 子路径**逐条跟源码对齐，另补 `tests/test_openapi_contract.py`：拿分发字面与契约表求差，**漏写即红**（只在 CSRF 闸里出现、没有切片分发的前缀进 `GATE_ONLY_PREFIXES`，确实分发了但不该进契约的进 `NOT_IN_CONTRACT`，**都得写理由**，不许默默删）。
 - **静态对账看不见循环生成的子命令**（`ba71662`）：对账靠扫源码字面，`for name in (...): sub.add_parser(name)` 这种写法扫不到 ⇒ 新子命令漏进对账表也不报。现抽出 `build_parser()`（`main` 只留剥全局参数、解析、分发），对账改为**从解析器递归内省**，并断言看得见 `crew pause|resume|abort|close` 与 `sync export|import|once`。
 
+### Changed
+- **`remove_agent` 自己退自己可以；移除别人只有 manager（含旧名 human）能**（`3eba4a2` 夹带，当时 commit message 与本表都没写；测试与 docstring 后补 `0e70474`，与本笔分开提交，cursor 落）：从「任何移除都要 human」放宽为「自己删自己成功；移除别人只有 manager（含旧名 human）能」。删自己只动自己名册行，不涨权。+ `tests/test_quality_identity.py::test_remove_agent_self_ok_peer_403_manager_ok`。
+
 ## [0.6.0] - 2026-10-16
 
 > **这一版把「谁说了算」分清了**：全局只有一个人 **`manager`**（＝用户本人，旧名 `human`），**每个项目**另有自己的 **coordinator**（由 manager 指定）。
