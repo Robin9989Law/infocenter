@@ -206,25 +206,25 @@ class CrewQualityTest(unittest.TestCase):
             encoding="utf-8",
         )
         text = "\n".join(crew.status(home)["lines"])
-        self.assertIn("opencode: coordinator；前台（人工驱动）", text)
+        self.assertIn("opencode: manager；前台（人工驱动）", text)
         self.assertIn("grok: 未配置启动方式", text)
 
-    def test_coordinator_misconfig_detection(self):
+    def test_manager_misconfig_detection(self):
         # 只对「coordinator 且配了 headless/launch」告警；成员配 headless 属正常。
-        self.assertEqual(crew.coordinator_misconfig({"name": "grok", "headless": "x"}), "")
-        self.assertEqual(crew.coordinator_misconfig({"name": "o", "role": "coordinator"}), "")
-        only_headless = crew.coordinator_misconfig(
+        self.assertEqual(crew.manager_misconfig({"name": "grok", "headless": "x"}), "")
+        self.assertEqual(crew.manager_misconfig({"name": "o", "role": "coordinator"}), "")
+        only_headless = crew.manager_misconfig(
             {"name": "o", "role": "coordinator", "headless": "x"}
         )
         self.assertIn("headless", only_headless)
         self.assertNotIn("launch ⇒", only_headless)
-        only_launch = crew.coordinator_misconfig(
+        only_launch = crew.manager_misconfig(
             {"name": "o", "role": "coordinator", "launch": "opencode"}
         )
         self.assertIn("launch", only_launch)
         self.assertNotIn("headless ⇒", only_launch)
 
-    def test_plan_up_and_status_warn_coordinator_misconfig(self):
+    def test_plan_up_and_status_warn_manager_misconfig(self):
         home = self.home / "misconfig"
         home.mkdir()
         project = str(Path(tempfile.mkdtemp(dir=str(self.home), prefix="projWarn")).resolve())
@@ -245,7 +245,7 @@ class CrewQualityTest(unittest.TestCase):
         self.assertTrue(any(line.startswith("[警告] opencode") for line in out["lines"]))
 
         text = "\n".join(crew.status(home)["lines"])
-        self.assertIn("opencode: coordinator", text)
+        self.assertIn("opencode: manager", text)
         self.assertIn("配了 headless", text)
 
     def test_watch_elif_at_most_one_headless_per_round(self):

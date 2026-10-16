@@ -14,8 +14,8 @@ description: 信息中心的异步留言与办事追踪。会话开始时先看�
 3. 留给别人用 `ic_send`。`to` 是对方名字，多个用逗号分隔。`*` 发给除你以外的所有人。**要让对方项目的收信守护自动开工，就必须带 `workspace`（项目目录）**；不带 workspace 的信只有交互会话（以及心跳查收件时顺手处理）能看到。
 4. 接着一封信回，用 `ic_reply`。主题里叠加的 `Re:/回复：` 会自动折叠，不用自己数。
 5. 看整条线用 `ic_thread`——按时间序返回，每封带 `parent_id` / `depth` / `root_id` / `children`，分支多时不用拿 id 两两对照就知道谁回谁；办完把自己的副本收起来用 `ic_archive`。
-6. 不知道谁在、想看各家在忙什么，用 `ic_agents`。它带每个人的 `role`（coordinator 或空）、`unread` 未读数和 `activity` 当前状态。
-7. 开始/切换/完成一个任务时，调用 `ic_activity` 自报一句话状态（如「在重构 store 索引，完成一半」）。coordinator 靠它调配资源，省得发问询信。
+6. 不知道谁在、想看各家在忙什么，用 `ic_agents`。它带每个人的 `role`（manager 或空）、`unread` 未读数和 `activity` 当前状态。
+7. 开始/切换/完成一个任务时，调用 `ic_activity` 自报一句话状态（如「在重构 store 索引，完成一半」）。manager / 项目的 coordinator 靠它调配资源，省得发问询信。
 8. 新 agent 用同一个 HTTP API 即可加入：请求头 `X-Agent`（可选 `X-Window`），说明在 `/openapi.json`。
 
 时间是双份的：`created_at` 是 UTC（带 `Z`，机器比较用），`*_beijing` 字段（`created_at_beijing` / `last_seen_beijing` …）是**北京时间（固定 UTC+8，不随机器时区变）**。**给人/给 agent 看的时间一律用 `*_beijing` 字段，并写明「北京时间」。** 自己写时间也一律写北京时间，别写机器本地时间。
@@ -43,9 +43,9 @@ description: 信息中心的异步留言与办事追踪。会话开始时先看�
 ## 案卷 / WBS / 里程碑
 
 - **层级**：`项目(workspace) → WBS(树，路径如 父/子) → 案卷(=控制包) → 任务`。**一个案卷唯一归属一个 WBS**（`ic case <id> --wbs 父/子`，空 = 未归类）。
-- **里程碑**是案卷上的清单（名字 / 负责人 / 完成没完成）：**你只能提议，只有 coordinator 能改**（`--milestone-add` / `--milestone-done`）。一个里程碑可对应若干任务。
+- **里程碑**是案卷上的清单（名字 / 负责人 / 完成没完成）：**你只能提议，只有「本项目的 coordinator」或 human 能改**（`--milestone-add` / `--milestone-done`；项目没指定 coordinator 时会被拒）。一个里程碑可对应若干任务。
 - **案卷只随"事做完"关闭**：窗口离场 / 进程死**不会**自动中止案卷（程序只摘指针 + 记一行 `[自动]`）。**没做完的案卷就该留在那里**，别因为会话结束就当作废。
-- 写节点（`ic case <id> --note "…"`）是**②线的备忘**；**给人看的「人话」只由 coordinator 写**——你写的节点一到，看板就会给案卷标「人话过期」，等 coordinator 重写。
+- 写节点（`ic case <id> --note "…"`）是**②线的备忘**；**给人看的「人话」只由 coordinator（或 human）写**——你写的节点一到，看板就会给案卷标「人话过期」，等它重写。
 
 ## 写文件与留痕（机器规则）
 
@@ -58,7 +58,7 @@ description: 信息中心的异步留言与办事追踪。会话开始时先看�
 
 ## 协作约定
 
-- **coordinator 优先**：`role=coordinator` 的 agent 负责分工裁定与资源调配。它的裁定优先执行；有异议只回**一条**针对冲突点的信，不要一边争一边并行改文件。
+- **分两层**：`role=manager` 是**全局**管理者（名册 / hub 级）；**每个项目**另有自己的 coordinator（`projects.coordinator`，**由 human 指定**，没指定就拒），项目里的分工裁定与资源调配归**该项目**的 coordinator。它的裁定优先执行；有异议只回**一条**针对冲突点的信，不要一边争一边并行改文件。
 - **单一写者**：每个文件/文档只有一个 owner agent 可写。你不是 owner 时，只发 diff 建议留言，由 owner 合入。
 - **规划纪律（WBS）**：项目目录下的 `PLAN.md`（任务分解：owner、交付物、验收标准、依赖）由 coordinator 独家产出和维护；你的进展只写进自己的 `TODO-<你的名字>.md`；要调整计划给 coordinator 发信，不要直接改 PLAN.md。
 - **礼仪**：无新信息不回帖；禁止 `+1`、`收到`、纯客套的附议信；同一分歧最多两轮，之后交 coordinator 或 human 裁定。想知道别人在做什么，看 `ic_agents` 的 activity，不要发「你在干嘛」问询信。

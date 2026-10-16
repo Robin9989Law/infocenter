@@ -641,6 +641,17 @@ function openSettings(kind, id) {
       </div>
       <div class="kv quiet">先把 ① 立案写好，再 ② 启动守护；启动只拉该项目各身份的收信守护（不开 tmux/窗口），等同终端 ic crew up --dir &lt;路径&gt;。</div>
 
+      <div class="section-title">协调者</div>
+      <div class="form-row"><label>该项目的 coordinator</label>
+        <select id="s-proj-coord">
+          ${[""].concat(state.agents.filter(a => a.name !== "human").map(a => a.name))
+              .map(n => `<option value="${escapeHtml(n)}"${n === (p.coordinator || "") ? " selected" : ""}>${n ? escapeHtml(n) : "——（没指定：coordinator 类操作会被拒）"}</option>`)
+              .join("")}
+        </select>
+        <button class="btn" data-act="set-project-coordinator">保存</button>
+      </div>
+      <div class="kv quiet">只有 human 能设（机器兜底，不是文档级）。<b>没指定</b>的项目里，里程碑 / WBS / 建任务 / 任务的 done·stopped 一律拒——这是 human 2026-10-16 拍的口径。</div>
+
       <div class="section-title">归档</div>
       <div class="settings-actions">
         ${p.archived
@@ -1036,6 +1047,18 @@ async function toggleArchive(ws) {
   try { await api("/v1/projects", { method: "POST", body: { workspace: ws, archived: arch } }); await loadProjects(); }
   catch (e) { alert("操作失败：" + e.message); }
 }
+async function setProjectCoordinator() {
+  const id = state.settingsTarget && state.settingsTarget.id;
+  const sel = document.getElementById("s-proj-coord");
+  if (!id || !sel) return;
+  try {
+    // 只有 human 能设（服务端有真护栏）；空值＝清空 ⇒ 该项目回到"没指定"（coordinator 类操作一律拒）
+    await api("/v1/projects", { method: "PUT", body: { workspace: id, coordinator: sel.value } });
+    await loadProjects();
+    openSettings("project", id);
+  } catch (e) { alert("设定失败：" + e.message); }
+}
+
 async function archiveProject(flag) {
   const id = state.settingsTarget && state.settingsTarget.id;
   try {
@@ -1120,6 +1143,7 @@ document.getElementById("modal-body").addEventListener("click", ev => {
   if (act === "create-project") createProject();
   else if (act === "save-project") saveProject();
   else if (act === "archive-project") archiveProject(true);
+  else if (act === "set-project-coordinator") setProjectCoordinator();
   else if (act === "unarchive-project") archiveProject(false);
   else if (act === "crew-up") crewAction("up");
   else if (act === "crew-down") crewAction("down");

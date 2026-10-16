@@ -496,18 +496,20 @@ def _tmux_session_exists(session: str) -> bool:
     return result.returncode == 0
 
 
-_COORDINATOR_FORBIDDEN = ("headless", "launch")
+_MANAGER_FORBIDDEN = ("headless", "launch")
 
 
-def coordinator_misconfig(item: dict) -> str:
-    """role=coordinator 却配了 headless/launch 时的警告文案；合规返回 ""。
+def manager_misconfig(item: dict) -> str:
+    """role=manager（旧名 coordinator）却配了 headless/launch 时的警告文案；合规返回 ""。
 
-    coordinator 的前台由人驱动：配 headless 会让收信守护也去改计划/派单；
-    配 launch 会让 crew up 另起一个会抢活的前台 actor。两者都会造成「两个 coordinator 抢活」。
+    manager 的前台由人驱动：配 headless 会让收信守护也去改计划/派单；
+    配 launch 会让 crew up 另起一个会抢活的前台 actor。两者都会造成「两个管理者抢活」。
     """
-    if str(item.get("role") or "") != "coordinator":
+    # 旧值 coordinator 也认——**这一条是真行为**：写成 `!= "coordinator"` 的话，改名之后
+    # 这个警告会永久消失（静默失效的又一例）。
+    if str(item.get("role") or "").strip().lower() not in {"manager", "coordinator"}:
         return ""
-    bad = [key for key in _COORDINATOR_FORBIDDEN if str(item.get(key) or "").strip()]
+    bad = [key for key in _MANAGER_FORBIDDEN if str(item.get(key) or "").strip()]
     if not bad:
         return ""
     reasons = {
@@ -529,7 +531,7 @@ def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
         app = str(item.get("app") or "").strip()
         launch = str(item.get("launch") or "").strip()
         headless = str(item.get("headless") or "").strip()
-        warn = coordinator_misconfig(item)
+        warn = manager_misconfig(item)
         if warn:
             # 只警告不阻断：纪律写进 README 也要每次起守护当着你面提醒一次。
             actions.append({"agent": agent, "kind": "warn", "command": [], "note": warn})
@@ -704,11 +706,11 @@ def kickoff(
     subject: str | None = None,
     as_name: str | None = None,
 ) -> dict:
-    coordinator = normalize_name(as_name) if as_name else config.coordinator(home)
+    coordinator = normalize_name(as_name) if as_name else config.manager(home)
     if not coordinator:
         raise MailError(
             "no_coordinator",
-            "config.json 里没有 coordinator。先执行：ic agents add <名字> --role coordinator（多项目可用 --from 指定发信身份）",
+            "config.json 里没有 manager。先执行：ic agents add <名字> --role manager（多项目可用 --from 指定发信身份）",
         )
     plan = Path(plan_path).expanduser().read_text(encoding="utf-8")
     if not plan.strip():
@@ -790,8 +792,8 @@ def status(home, project: str | None = None) -> dict:
     for item in entries:
         agent = item["name"]
         parts = []
-        if str(item.get("role") or "") == "coordinator":
-            parts.append("coordinator")
+        if str(item.get("role") or "").strip().lower() in {"manager", "coordinator"}:
+            parts.append("manager")
         daemons = by_agent.get(agent, [])
         if daemons:
             parts += [
@@ -809,13 +811,13 @@ def status(home, project: str | None = None) -> dict:
             ways = [key for key in ("launch", "app", "headless") if str(item.get(key) or "").strip()]
             if not ways and not daemons:
                 # coordinator 的前台由人驱动（不配 launch/headless，也不该由 crew 拉起），别当成配错。
-                if str(item.get("role") or "") == "coordinator":
+                if str(item.get("role") or "").strip().lower() in {"manager", "coordinator"}:
                     parts.append("前台（人工驱动）")
                 else:
                     parts.append("未配置启动方式")
-        warn = coordinator_misconfig(item)
+        warn = manager_misconfig(item)
         if warn:
-            bad = "/".join(key for key in _COORDINATOR_FORBIDDEN if str(item.get(key) or "").strip())
+            bad = "/".join(key for key in _MANAGER_FORBIDDEN if str(item.get(key) or "").strip())
             parts.append(f"\033[31m⚠ 配了 {bad}（会抢活）\033[0m")
         lines.append(f"  {agent}: " + ("；".join(parts) if parts else "空闲"))
     for agent, daemons in by_agent.items():
@@ -1529,8 +1531,8 @@ def watch(
                             last_run = time.monotonic()
                 elif beat and time.monotonic() - last_run >= beat:
                     print(f"[{beijing_stamp()}] 无新信，心跳 {beat}s 到期，触发规划运行", flush=True)
-                    is_coord = str((entry or {}).get("role") or "") == "coordinator"
-                    coord_name = config.coordinator(home)
+                    is_coord = str((entry or {}).get("role") or "").strip().lower() in {"manager", "coordinator"}
+                    coord_name = config.manager(home)
                     before = _progress_snapshot(progress_paths)
                     h_outcome = _run_headless(
                         template,

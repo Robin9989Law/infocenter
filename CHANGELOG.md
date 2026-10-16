@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **coordinator 分两层：全局叫 `manager`，每个项目的叫 `coordinator`（由 human 指定）**（human 2026-10-16 拍，四条裁定逐条落码）。以前 `coordinator` 是**一个全局角色**（config/库里 `role=coordinator`），一个身份管所有项目——**一个词管两个范围**，正是这一晚一直在打的病（一个概念两套口径）。现在：
+  - **`manager`**（旧名 coordinator，配置里写旧值也认，读进来一律记成 `manager`）：**全局**管理者，管名册与 hub 级；**不再自动拥有某个项目里的权**。
+  - **`coordinator`**：**某个项目**的那个人，落在 `projects.coordinator`（新列，在线迁移自愈）。管这个项目的里程碑 / WBS / 建任务 / 任务的 done·stopped / 抢锁与替成员落地。**由 human 指定**（只有 human 能设：`ic --as human projects --project <路径> --coordinator <身份>`，或控制台 → 项目设置 → 协调者；空值＝清空）。
+  - **没指定就拒**（`no_coordinator` 409，报文说清怎么指定）——不默认兜底；**项目在、`coordinator` 为空**才拒。**不属于任何项目**的卷（空 workspace / 没登记过的目录）**回落 manager**；锁与提交闸只有路径 ⇒ 按路径找项目（取最长匹配），找到按那项目的 coordinator 判、找不到回落 manager。
+  - **`human` 天然算**（它是定这两个角色的人），否则你自己的控制台按钮会被自己拒。
+  - **一次性填充**：迁移时把已有项目填成当时的全局那个（从库里 `agents.role` 取，不写死名字）⇒ 落地那一刻不断档。
+  - **顺带补上一条旧账**：`agents remove` 的「只有 human 能移除成员」以前**只在文档里**、机器没兜（CLI 直接调删除、不查身份）——现在 `_must_human` 是真护栏（新口径的两条 human-only 也用它）。
+  - 面：`projects` 表新列 + `PUT /v1/projects` 收 `coordinator`（按调用者判 human）+ CLI `ic projects`（列项目、指定协调者）+ 控制台项目设置一个下拉；README 术语表/mermaid/kickoff/WBS 负责人/`human ≠ coordinator` 那几处、`config.py` 字段说明、`SKILL.md` 8 处一并改齐（**改了行为就必须改说法**——这一晚最大的教训）。
+  - + `tests/test_coordinator_scope.py`（**12 项**：没指定就拒 / 指定后能做 / 别人项目不能插手 / **manager 不再自动有项目权** / human 天然算 / 清空＝回到没指定 / 无项目回落 manager / 只有 human 能指定 / 名册里没有的名字拒 / 锁按路径判 3×3 / 旧值兼容）。
+
 ### Added
 - **发布卫生：真打一个包再打开看**（2026-10-16 定，PLAN §14.4 的 L5）。现场：v0.5.0 发布前 `pip wheel .` 出来的 wheel 只有 18 个文件、**没有 `infocenter/web/index.html`** ⇒ 外人 `pip install` 完能起服务、但**控制台 `/ui` 404**；而这一条**内部跑一万次测试都发现不了**（测试全从源码树读文件，只有"装出来的那份"才有这问题）。现在 `tests/test_packaging.py` 不查配置、**真的打个 wheel 再打开看**：控制台单页在不在、版本号一不一致、`ic = infocenter.cli:main` 入口在不在、六个关键模块齐不齐（构建不了就跳过并说明，不假装绿）。README 的收尾判据另加一句：**发布前真装一遍**（venv 装 wheel → `ic --version` → `/ui` 要 200）。
 - **接活钩子：`--wait-for`——「触发条件不许只写在信里」**（2026-10-16 定，PLAN §14.4 的 L4）。`ic case <id> --note "为什么" --wait-for <身份>` 把「我在等谁」落成案卷状态「待 X」（`waiting_for` 这一列**本来就有**——回复时还会自动维护——缺的只是"人怎么设、被等的人怎么看"）；**必须带 `--note`**（同 `--status` 的口径：状态变更要留一行，不许静默）。被等的人敲 **`ic status` 多一盏灯**：`⚠ 有 N 卷在等你：<卷号> <标题>…`，只算**未封卷**的（封卷＝归档，不该再催人），`--json` 带 `waiting_on_you`；`ic cases --wait-for <身份>` 可以只看等他的。来源是实测：SKILL 那卷的验收写着「触发 = kimi 宣布修订冻结」，而 **kimi 的 TODO 里没有这一项** ⇒ 那是个**永远不会响的触发**，事就那么悬着。现场验过：给 SKILL 那卷写上 `--wait-for kimi` 后，kimi 敲 `ic status` 立刻看到那一行。+ `tests/test_wait_for.py`（10 项）。

@@ -6,7 +6,8 @@
 每个 agent 条目的可选字段：
   name         身份名（必填）
   description  描述
-  role         "coordinator"（主协调）或空（成员）
+  role         "manager"（**全局**管理者；旧值 "coordinator" 仍认）或空（成员）。
+               注意：**项目里的 coordinator 不在名册上**——它是项目的 `projects.coordinator`，由 human 指定、没指定就拒
   launch       交互启动命令，crew up 时在 tmux/Terminal 里于项目目录运行
   app          macOS 应用名，crew up 时 `open -a <app> <项目目录>`
   headless     无人值守命令模板，{prompt} 会被替换为收信处理指令；配了才会开守护
@@ -156,9 +157,10 @@ def entry(home, name: str) -> dict | None:
     return None
 
 
-def coordinator(home) -> str | None:
+def manager(home) -> str | None:
+    """**全局**管理者（旧名 coordinator）：名册里 `role` 是 manager / 旧值 coordinator 的第一个。"""
     for item in load(home)["agents"]:
-        if str(item.get("role") or "") == "coordinator":
+        if str(item.get("role") or "").strip().lower() in {"manager", "coordinator"}:
             return item["name"]
     return None
 
@@ -195,7 +197,9 @@ def add(home, name: str, description: str = "", role: str = "", **extra) -> dict
         entries = []
     patch = {key: value for key, value in extra.items() if value not in (None, "")}
     if role:
-        patch["role"] = role
+        # 一个词只留一个意思：旧名 coordinator 写盘时就记成 manager（读侧也认旧值，见 manager()）。
+        text = str(role).strip().lower()
+        patch["role"] = "manager" if text in {"manager", "coordinator"} else role
     target: dict | None = None
     for index, item in enumerate(entries):
         if _raw_agent_name(item) != name:

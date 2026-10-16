@@ -133,11 +133,11 @@ def main(argv=None) -> int:
     agents_p.add_argument("action", nargs="?", default="list", choices=["list", "add", "remove"])
     agents_p.add_argument("name", nargs="?", default=None, help="add/remove 的 agent 名字")
     agents_p.add_argument("--description", "-d", default="", help="add 时的描述")
-    agents_p.add_argument("--role", default="", help="add 时的角色，coordinator 或留空")
+    agents_p.add_argument("--role", default="", help="add 时的角色：manager（全局管理者）或留空")
 
     reg = sub.add_parser("register", help="注册或更新自己")
     reg.add_argument("--description", default=None)
-    reg.add_argument("--activity", default=None, help="一句话状态自报：你在做什么，coordinator 据此调配")
+    reg.add_argument("--activity", default=None, help="一句话状态自报：你在做什么，manager / 本项目的 coordinator 据此调配")
 
     send = sub.add_parser("send", help="发一封留言")
     send.add_argument("--to", action="append", required=True, help="收件人。可重复。* 表示除自己以外的所有人")
@@ -180,12 +180,12 @@ def main(argv=None) -> int:
                       help="在等谁（身份名）：状态同时转成「待 <身份>」，被等的人敲 ic status 能看到")
     case.add_argument("--wbs", default=None, help="给案卷打 WBS 路径（如 防混写/锁与闸）")
     case.add_argument("--milestone-add", dest="milestone_add", default=None,
-                      help="加一条里程碑（**只有 coordinator 能改**）")
+                      help="加一条里程碑（**只有本项目的 coordinator 或 human 能改**；项目没指定就拒）")
     case.add_argument("--milestone-owner", dest="milestone_owner", default=None, help="里程碑负责人")
     case.add_argument("--milestone-done", dest="milestone_done", default=None,
                       help="勾掉第 N 条里程碑（下标从 0 起；加 ! 前缀=撤回完成，如 '!0'）")
     case.add_argument("--acceptance", default=None,
-                      help="写「怎样算完」：一行验收（≤400 字；owner 或 coordinator 能写）")
+                      help="写「怎样算完」：一行验收（≤400 字；owner 或本项目的 coordinator 能写）")
 
     cases = sub.add_parser("cases", help="列出案卷")
     cases.add_argument("--workspace", default=None)
@@ -237,7 +237,7 @@ def main(argv=None) -> int:
     queue.add_argument("--note", default=None, help="我要改什么（提议内容）")
     queue.add_argument("--patch-file", dest="patch_file", default=None, help="改动补丁（可选，从文件读）")
     queue.add_argument("--merge", action="store_true",
-                       help="合并排队的改动（**只有拿钥匙的人**或 coordinator 能做）")
+                       help="合并排队的改动（**只有拿钥匙的人**能做；钥匙主人不在时那个项目的 coordinator / human 可收口）")
     queue.add_argument("--id", dest="ids", action="append", default=None,
                        help="只合并这几条（q<编号>；可重复给，也可逗号分隔：--id q271,q272）")
     queue.add_argument("--task", default=None, help="提议关联的任务")
@@ -250,13 +250,13 @@ def main(argv=None) -> int:
     lock.add_argument("--ttl", type=int, default=None, help="锁的有效秒数（默认 1800，最短 30，最长 12h）")
     lock.add_argument("--task", dest="task_id", default=None, help="这次改的是哪个任务")
     lock.add_argument("--note", default=None, help="为什么锁")
-    lock.add_argument("--force", action="store_true", help="强制抢占（仅 coordinator）")
+    lock.add_argument("--force", action="store_true", help="强制抢占：项目内的路径要那个项目的 coordinator，项目外要 manager（human 天然算）")
     lock.add_argument("--changed", action="store_true",
                       help="锁住 git 工作区里所有改动文件（可与显式路径并用，取并集）")
 
     unlock = sub.add_parser("unlock", help="放写锁（默认只放自己的）")
     unlock.add_argument("paths", nargs="*", help="要放的路径；不填 = 放掉自己的全部锁")
-    unlock.add_argument("--force", action="store_true", help="清场（仅 coordinator）")
+    unlock.add_argument("--force", action="store_true", help="清场：不带路径时是 hub 级（要 manager）；带路径按路径找项目（找不到回落 manager）")
 
     probe = sub.add_parser(
         "probe", help="空转采样（**只读**）：把每家的 headless 触发数和产出并排摆出来"
@@ -291,6 +291,11 @@ def main(argv=None) -> int:
         help=f"列出全部办公室，包含离场超过 {_RECENT_LEFT_TEXT}的。不指定时默认隐藏这些",
     )
 
+    projects = sub.add_parser("projects", help="列出项目；**human** 可指定项目的 coordinator")
+    projects.add_argument("--project", dest="project", default=None, help="项目路径（指定 coordinator 时必填）")
+    projects.add_argument("--coordinator", dest="coordinator", default=None,
+                          help="指定/更换该项目的 coordinator（**只有 human** 能设；没指定则 coordinator 类操作一律拒）")
+
     mcp = sub.add_parser("mcp", help="以 stdio MCP 运行")
     mcp.add_argument("--agent", dest="mcp_agent", default=None, help="固定身份。不写则每个工具调用自己带 agent")
     mcp.add_argument("--no-notify", action="store_true", help="不推送到信提醒，工具结果也不带未读尾巴（工作会话用）")
@@ -301,11 +306,11 @@ def main(argv=None) -> int:
     crew_up.add_argument("--dir", required=True, help="项目目录")
     crew_up.add_argument("--dry-run", action="store_true", help="只预览将执行的命令")
     crew_up.add_argument("--only", default="", help="只拉部分 agent，逗号分隔")
-    crew_kick = crew_sub.add_parser("kickoff", help="以 coordinator 身份发启动信")
+    crew_kick = crew_sub.add_parser("kickoff", help="以 manager（或指定身份）发启动信")
     crew_kick.add_argument("--plan", required=True, help="分工文件路径")
     crew_kick.add_argument("--dir", required=True, help="项目目录，会记进 workspace")
     crew_kick.add_argument("--subject", default=None)
-    crew_kick.add_argument("--from", dest="sender", default=None, help="多项目时指定发信身份，默认取 config 里第一个 coordinator")
+    crew_kick.add_argument("--from", dest="sender", default=None, help="多项目时指定发信身份，默认取 config 里的 manager")
     crew_status = crew_sub.add_parser("status", help="查看守护进程与 tmux 状态")
     crew_status.add_argument("--dir", default=None, help="只看某个项目")
     crew_down = crew_sub.add_parser("down", help="杀守护进程、关 tmux 会话")
@@ -682,6 +687,16 @@ def main(argv=None) -> int:
                 },
                 home=home,
             )
+        elif args.cmd == "projects":
+            if args.coordinator is not None:
+                if not args.project:
+                    raise MailError("invalid_project", "指定 coordinator 要一起给 `--project <路径>`")
+                payload = call(
+                    args.url, agent, "PUT", "/v1/projects",
+                    {"workspace": args.project, "coordinator": args.coordinator}, home=home,
+                )
+            else:
+                payload = call(args.url, agent, "GET", "/v1/projects", home=home)
         elif args.cmd == "windows":
             payload = call(
                 args.url,
@@ -1512,7 +1527,7 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
         return
     if cmd == "agents" and isinstance(payload, dict) and "agents" in payload and not as_json:
         for item in payload["agents"]:
-            role = " [coordinator]" if item.get("role") == "coordinator" else ""
+            role = " [manager]" if str(item.get("role") or "") in {"manager", "coordinator"} else ""
             desc = f"（{item['description']}）" if item.get("description") else ""
             print(f"{item['name']}{role}  未读 {item.get('unread', 0)}  最后活动 {item.get('last_seen_beijing', '')}{desc}")
             if item.get("activity"):
@@ -1561,12 +1576,12 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 f"{payload['human_note']}{mark}"
             )
         else:
-            print("人话: 还没有（看板上的说法只能由 coordinator 用 `ic case <id> --note \"…\"` 写）")
+            print("人话: 还没有（看板上的说法只能由本项目的 coordinator 或 human 用 `ic case <id> --note \"…\"` 写）")
         stones = payload.get("milestones") or []
         if payload.get("acceptance"):
             print(f"怎样算完: {payload['acceptance']}")
         else:
-            print("怎样算完: 还没写（`ic case <id> --acceptance \"…\"`，owner 或 coordinator 能写）")
+            print("怎样算完: 还没写（`ic case <id> --acceptance \"…\"`，owner 或本项目的 coordinator 能写）")
         if stones:
             print(f"里程碑 {payload.get('milestones_done', 0)}/{len(stones)}：")
             for index, item in enumerate(stones):
@@ -1574,8 +1589,23 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 who = f"  （{item['owner']}）" if item.get("owner") else ""
                 print(f"  {index}. {mark} {item['name']}{who}")
         else:
-            print("里程碑：无（`ic case <id> --milestone-add \"名字\"`，只有 coordinator 能改）")
+            print("里程碑：无（`ic case <id> --milestone-add \"名字\"`，只有本项目的 coordinator 或 human 能改）")
         print(payload.get("text") or json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    if cmd == "projects" and not as_json:
+        if "coordinator" in payload and "projects" not in payload:
+            # PUT 回来的是**单条**（刚指定/更换的那个项目），不是列表
+            who = (payload.get("coordinator") or "").strip() or "——（没指定：coordinator 类操作会被拒）"
+            print(f"{payload.get('name')}  coordinator={who}")
+            print(f"  {payload.get('workspace')}")
+            return
+        rows = payload.get("projects") or []
+        print(f"项目 {payload.get('count', len(rows))} 个")
+        for item in rows:
+            who = (item.get("coordinator") or "").strip() or "——"
+            print(f"  {item.get('name')}  coordinator={who}")
+            print(f"    {item.get('workspace')}")
+        print("  （没写 coordinator 的项目：coordinator 类操作会被拒；不属于任何登记项目的路径回落 manager）")
         return
     if cmd == "cases" and not as_json:
         all_rows = payload.get("cases") or []

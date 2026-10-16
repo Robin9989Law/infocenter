@@ -55,7 +55,7 @@ flowchart LR
   subgraph 你的机器
     G[grok] <--> HUB
     K[kimi] <--> HUB
-    O[opencode<br/>coordinator] <--> HUB
+    O[opencode<br/>manager] <--> HUB
     C[cursor] <--> HUB
     P[pi] <--> HUB
     U[你 human] <--> HUB
@@ -78,8 +78,9 @@ flowchart LR
 | **收件箱（inbox）** | 某个身份收到的所有信，按状态分为未读 / 已签收 / 已归档 | 查看**不会消费**，签收后才算读过 |
 | **签收（read）** | 把**自己的那一份**标记为已签收 | 一封信发给五个人，各人签收互不影响 |
 | **线程（thread）** | 一封原信加上它的所有回复 | 回复自动沿用线程；你只能看到自己参与过的回合 |
-| **coordinator** | config 中标有 `role: coordinator` 的 agent | 它的分工裁定优先执行，并负责维护 PLAN.md、催办和调配 |
-| **human** | 人自己的身份（不是 agent，**也不等于 coordinator**） | 人的意图/拍板以 `human` 名义下发；它还是 CLI/接口的**默认身份**、唯一能移除其他成员的**特权身份**。coordinator 只是被人驱动的 agent，二者职责不同，别混 |
+| **manager** | 名册里 `role=manager` 的 agent（**旧称 coordinator**，配置里写旧值也认） | **全局**管理者：名册与 hub 级的事；**不自动拥有某个项目里的权** |
+| **coordinator** | 某个项目的协调者：`projects.coordinator`，**由 human 指定** | 这个项目的里程碑 / WBS / 建任务 / 任务的 done·stopped / 抢锁替成员落地；**没指定的项目一律拒**（不默认兜底） |
+| **human** | 人自己的身份（不是 agent，**也不同于上面两个角色**） | 人的意图/拍板以 `human` 名义下发；它还是 CLI/接口的**默认身份**、唯一能移除其他成员、**唯一能指定项目 coordinator** 的身份；它**天然**能行使上面两种角色的权（它是定这两个角色的人），别混 |
 | **收信守护进程** | `ic crew up` 派生的后台进程 | 长轮询等待新信，一有新信就触发一次 headless 运行 |
 | **心跳（heartbeat）** | 收信守护进程在无信时使用的定时器 | 没信也会定期触发一次「规划运行」，推进任务 |
 | **activity** | 每个 agent 的一句话状态 | agent 自报「我在做什么」的字段，coordinator 据此调配，无需发问询信 |
@@ -205,6 +206,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic case <id> --wbs 父/子` | 给案卷打 WBS 路径（`/` 分隔，空=未归类）；**只有 coordinator 能改** |
 | `ic case <id> --milestone-add "名字" [--milestone-owner 身份]` / `--milestone-done N` | 加一条里程碑 / 勾掉第 N 条（下标从 0 起，`!N` 撤回完成）；**只有 coordinator 能改** |
 | `ic cases [--workspace X] [--status 状态] [--owner 身份] [--wait-for 身份] [--wbs 前缀] [--limit N] [--all]` | 列出案卷（**默认只列未封卷**；没实质内容的（验收/里程碑/WBS 都没有）打 `[信]` 标、**不藏**——实测那堆里有真活；已封卷的折成一行，`--all` 看全）；`--wbs` 前缀匹配（给 `防混写` 会带出 `防混写/锁与闸` 下面的） |
+| `ic projects [--project <路径> --coordinator <身份>]` | 列出项目（名字 / 路径 / **该项目的 coordinator**）；带 `--coordinator` 就是指定或更换它（**只有 human** 能设；空值＝清空 ⇒ 回到「没指定」） |
 | `ic windows [--agent 身份] [--workspace X] [--state 状态]` | 列出办公室（窗口）登记；默认只列在办/暂停 + 近期离场，`--all` 看全 |
 
 ### 任务队列
@@ -641,7 +643,8 @@ ic probe --watch 3600 &     # 常驻探针：每小时采一次，直到 Ctrl-C
 - **信件按 workspace 归属**：守护只处理 workspace 等于本项目（全路径、解析后路径或目录名都算命中，例如 `workspace: my-project` 能匹配到同名目录）的信；其他项目的信留给那边的守护。
 - **没有 workspace 的信不自动触发任何守护**——它由交互会话处理（MCP 推送照常）；心跳运行查收件时若发现明确属于本项目的，会顺手处理。这条仲裁规则保证两个守护不会抢同一封信。
 - `ic crew status --dir <项目>` / `ic crew down --dir <项目>` 按项目查看和清理；不带 `--dir` 则是全局视图/全局清理。
-- 多项目各有 coordinator 时，`ic crew kickoff --from <身份>` 指定以谁的名义发启动信（默认取 config 里第一个 coordinator）。
+- 多项目各有 coordinator 时，`ic crew kickoff --from <身份>` 指定以谁的名义发启动信（默认取 config 里的 **manager**）。
+- **项目的 coordinator 由 human 指定**：`ic --as human projects --project <路径> --coordinator <身份>`，或控制台 → 项目设置 → 协调者。**没指定就先拒**（human 2026-10-16 拍）。
 
 ```bash
 ic crew up --dir ~/projects/alpha        # 项目甲：各家守护各起一个（键 = 身份×甲）
@@ -720,7 +723,7 @@ ic case m1a2b3c4 --acceptance "三处测试都补了、全量绿、README 记一
 
 - 状态：**待办 / 在办 / 待谁 / 暂停 / 中止 / 办结**；**封卷后只读**（要改只能重开）。
 - 收局操作走 `ic crew pause|resume|abort|close <身份>`：暂停只打断当前一轮、可恢复；中止 / 办结会封卷。
-- **层级**：`项目(workspace) → WBS(树) → 案卷(=控制包) → 任务`。**一个案卷唯一归属一个 WBS**；WBS **不建表**、就是路径（`父/子`），**空 = 未归类**（老案卷只归档不转）。WBS 负责人固定是 coordinator。
+- **层级**：`项目(workspace) → WBS(树) → 案卷(=控制包) → 任务`。**一个案卷唯一归属一个 WBS**；WBS **不建表**、就是路径（`父/子`），**空 = 未归类**（老案卷只归档不转）。WBS 负责人固定是**该项目的 coordinator**（由 human 指定）。
 - **里程碑**（案卷"做完没有"的清单）：案卷上的**一列 JSON**，**不建表**。`名字 / 负责人 / 完成没完成` 三格；**一个里程碑可对应若干任务**。**agent 提议、只有 coordinator 能改**；案卷只显示里程碑，任务细节不上看板。
 - **怎样算完**（一件事的收尾判据）：案卷上**一行**（≤400 字），`ic case <id> --acceptance "…"`，**owner 或 coordinator 能写**。它不替代里程碑：里程碑是路标，这一行是"做成什么算做成"。**空着不拦**——`ic cases` 和控制台会标 **⚠ 没写怎样算完**，剩下的是人的事（见[收尾判据](#收尾判据什么样算做完)）。
 - **案卷只随"事做完"关闭**：窗口离场 / 进程死**不会**自动中止案卷——程序只做两件无争议的事：摘掉主办窗口指针 + 记一行 `[自动]` 说明（**状态不动、不封卷**）。要收工得显式 `abort` / `close`。
@@ -748,7 +751,7 @@ ic case m1a2b3c4 --acceptance "三处测试都补了、全量绿、README 记一
 - **单一写者**：每个文件或文档只有一个 owner agent 可以写；其他人只发 diff 建议，由 owner 合入。
 - **单一活跃 coordinator**：同一身份若既跑交互会话、又跑收信守护，改 `PLAN.md` 与发派单**只由一个 actor**执行（默认交互会话），避免两个 actor 抢活。
 - **coordinator 的前台由人驱动**：coordinator 通常只在人正在操作的交互 session 里干活，因此**一般不给它配 `headless`（更不要配 `launch`）**——配 `headless` 会让守护也去改计划/派单；配 `launch` 会在 tmux 会话 `ic-crew-<hash>` 里多开一个 `<项目>-<名字>` 窗口，那个窗口一开就会以 coordinator 身份干活。二者都会造成「两个 coordinator 抢活」。`ic crew status` 会把这样的 coordinator 显示为「前台（人工驱动）」。要真需要人值守的无人 coordinator，再把只读纪律写进 `heartbeat_prompt`。**这条纪律有机器兜底**：`ic crew up`（含 `--dry-run`）遇到这样的 coordinator 会打印 `[警告]`，`ic crew status` 该行标红 `⚠ 配了 headless/launch（会抢活）`——只提醒、不阻断。
-- **`human` ≠ coordinator**：`human` 是**人自己的邮箱身份**（意图与拍板以它下发；也是 CLI/接口默认身份、唯一能移除其他成员的特权身份）；coordinator 是**被人驱动的 agent**，它的前台是人开的那个会话。「这个前台是人在开」不等于「人就是 coordinator」，二者不要合并。
+- **`human` / `manager` / `coordinator` 是三样东西**：`human` 是**人自己的邮箱身份**（意图与拍板以它下发；也是 CLI/接口默认身份、唯一能移除其他成员、**唯一能指定项目 coordinator**）；`manager` 是**全局**那个（管 hub 级，**不自动拥有项目里的权**）；`coordinator` 是**某个项目**的那个人（由 human 指定，**没指定就拒**），它的前台是人开的那个会话。「这个前台是人在开」不等于「人就是 coordinator」，二者不要合并。
 - **规划纪律**：`PLAN.md` 由 coordinator 独家维护；成员的进展只写进自己的 `TODO-<名字>.md`；要调整计划就发信。
 - **礼仪**：无新信息不回帖；禁止 `+1` 和纯客套的附议；同一分歧最多讨论两轮，之后交由 coordinator / human 裁定。
 - **kickoff 信**：先回一条信，确认自己认领的分工并更新 activity，再动手。

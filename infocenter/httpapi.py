@@ -229,7 +229,7 @@ OPENAPI = {
         },
         "/v1/cases/{id}/acceptance": {
             "post": {
-                "summary": "写案卷的「怎样算完」（owner 或 coordinator；空串 = 撤掉）",
+                "summary": "写案卷的「怎样算完」（owner 或本项目的 coordinator；空串 = 撤掉）",
                 "responses": {"200": {"description": "case"}},
             }
         },
@@ -509,7 +509,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         name = normalize_name(_one(path, "/v1/agents/"))
         if name != agent and agent != "human":
             raise MailError("not_you", "只能移除你自己；用户请用 human 身份移除别人", 403)
-        return 200, store.remove_agent(name)
+        return 200, store.remove_agent(agent, name)
 
     if method == "POST" and path == "/v1/messages":
         message = store.send(
@@ -933,7 +933,13 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
             archived = body.get("archived")
             if archived is not None and not isinstance(archived, bool):
                 raise MailError("invalid_archived", "archived 必须是布尔值", 400)
-            project = store.add_project(ws, name=_opt_str(body, "name"), archived=archived)
+            project = store.add_project(
+                ws,
+                name=_opt_str(body, "name"),
+                archived=archived,
+                coordinator=body.get("coordinator"),
+                actor=agent,
+            )
             return (201 if method == "POST" else 200), project
 
     if method not in {"GET", "POST", "PUT", "DELETE"}:

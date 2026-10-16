@@ -313,24 +313,33 @@ class HubTest(unittest.TestCase):
         home = self.home / "cfg"
         added = subprocess.run(
             [sys.executable, IC, "--home", str(home), "--as", "planner",
-             "agents", "add", "planner", "-d", "总协调", "--role", "coordinator"],
+             "agents", "add", "planner", "-d", "全局管理者", "--role", "manager"],
             check=True, capture_output=True, text=True, env=self._env(),
         )
         self.assertIn("planner", added.stdout)
         saved = json.loads((home / "config.json").read_text(encoding="utf-8"))
         entry = next(item for item in saved["agents"] if item["name"] == "planner")
-        self.assertEqual(entry["role"], "coordinator")
+        self.assertEqual(entry["role"], "manager")
+        # 旧名还认（human 2026-10-16：全局那个改叫 manager；一个词不许有两个意思）
+        subprocess.run(
+            [sys.executable, IC, "--home", str(home), "--as", "planner",
+             "agents", "add", "legacy", "--role", "coordinator"],
+            check=True, capture_output=True, text=True, env=self._env(),
+        )
+        saved2 = json.loads((home / "config.json").read_text(encoding="utf-8"))
+        legacy = next(item for item in saved2["agents"] if item["name"] == "legacy")
+        self.assertEqual(legacy["role"], "manager")
         request(self.url, "POST", "/v1/messages", "grok", {"to": "kimi", "subject": "一", "body": "1"})
         request(self.url, "POST", "/v1/messages", "grok", {"to": "kimi", "subject": "二", "body": "2"})
         agents = {item["name"]: item for item in request(self.url, "GET", "/v1/agents", "human")["agents"]}
         self.assertEqual(agents["kimi"]["unread"], 2)
         self.assertEqual(agents["grok"]["unread"], 0)
-        self.assertEqual(agents["planner"]["role"], "coordinator")
+        self.assertEqual(agents["planner"]["role"], "manager")   # 旧名 coordinator 归一成 manager
         listed = subprocess.run(
             [sys.executable, IC, "--as", "human", "agents"],
             check=True, capture_output=True, text=True, env=self._env(),
         )
-        self.assertIn("planner [coordinator]", listed.stdout)
+        self.assertIn("planner [manager]", listed.stdout)
         self.assertIn("kimi  未读 2", listed.stdout)
 
     def test_mcp_notify_and_no_notify(self):

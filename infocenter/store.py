@@ -407,6 +407,21 @@ class Store:
             project_cols = {row[1] for row in conn.execute("PRAGMA table_info(projects)")}
             if "archived" not in project_cols:
                 conn.execute("ALTER TABLE projects ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+            if "coordinator" not in project_cols:
+                # human 2026-10-16：「每个项目 coordinator 不固定，由用户指定」+「一次性填成现在的那个」。
+                # 这里只加列；「填谁」从库里 `agents.role` 取（`_is_coordinator` 一直看它，口径一致）——
+                # 不去读 config.json，免得 store 去懂配置的格式。
+                conn.execute("ALTER TABLE projects ADD COLUMN coordinator TEXT NOT NULL DEFAULT ''")
+                legacy = conn.execute(
+                    "SELECT name FROM agents WHERE role IN ('manager', 'coordinator') "
+                    "ORDER BY created_at, name LIMIT 1"
+                ).fetchone()
+                if legacy is not None:
+                    conn.execute(
+                        "UPDATE projects SET coordinator = ? WHERE coordinator = ''", (legacy["name"],)
+                    )
+            # 旧值 `coordinator` 一律记成 `manager`：同一个词不许有两个意思（那是我们一直在打的病）。
+            conn.execute("UPDATE agents SET role = 'manager' WHERE role = 'coordinator'")
 
 
     def seed(self) -> None:
@@ -499,7 +514,9 @@ class Store:
                 by_agent.setdefault(w["agent"], []).append(_window_summary(w))
         return [_agent(row, unread.get(row["name"], 0), by_agent.get(row["name"], [])) for row in rows]
 
-    def remove_agent(self, name: str) -> dict:
+    def remove_agent(self, agent: str, name: str) -> dict:
+        """从名册移除。**只有 human**（README 一直这么写；2026-10-16 起有机器兜底，不再是文档级）。"""
+        _must_human(agent)
         name = normalize_name(name)
         with self._session(immediate=True) as conn:
             removed = conn.execute("DELETE FROM agents WHERE name = ?", (name,)).rowcount > 0
@@ -1502,7 +1519,7 @@ class Store:
         wbs_path: str | None,
         window_id: str | None = None,
     ) -> dict:
-        """把案卷归到一个 WBS（路径，空串 = 未归类）。**只有 coordinator 能改**。
+        """把案卷归到一个 WBS（路径，空串 = 未归类）。**只有本项目的 coordinator 或 human 能改**。
 
         一个案卷**唯一**归属一个 WBS；WBS 是树（`父/子`），不建表、只用路径。
         """
@@ -1510,8 +1527,8 @@ class Store:
         path = _wbs_path(wbs_path)
         now = utcnow()
         with self._session(immediate=True) as conn:
-            _must_coordinator(conn, agent)
             row = _find_case(conn, cid)
+            _must_coordinator(conn, agent, row["workspace"] if row else None)
             if row is None:
                 raise MailError("not_found", f"没有找到案卷：{cid}", 404)
             if row["sealed"] or row["status"] in SEALED_STATUSES:
@@ -1557,7 +1574,7 @@ class Store:
                 raise MailError("not_found", f"没有找到案卷：{cid}", 404)
             if row["sealed"] or row["status"] in SEALED_STATUSES:
                 raise MailError("case_sealed", f"案卷 {cid} 已封卷，不能再改「怎样算完」", 409)
-            if agent != (row["owner_agent"] or "") and not _is_coordinator(conn, agent):
+            if agent != (row["owner_agent"] or "") and not _is_coordinator(conn, agent, row["workspace"]):
                 owner = row["owner_agent"] or "（还没人）"
                 raise MailError(
                     "not_yours",
@@ -1601,8 +1618,8 @@ class Store:
         who = str(owner or "").strip()
         now = utcnow()
         with self._session(immediate=True) as conn:
-            _must_coordinator(conn, agent)
             row = _find_case(conn, cid)
+            _must_coordinator(conn, agent, row["workspace"] if row else None)
             if row is None:
                 raise MailError("not_found", f"没有找到案卷：{cid}", 404)
             if row["sealed"] or row["status"] in SEALED_STATUSES:
@@ -1642,8 +1659,8 @@ class Store:
         idx = int(index)
         now = utcnow()
         with self._session(immediate=True) as conn:
-            _must_coordinator(conn, agent)
             row = _find_case(conn, cid)
+            _must_coordinator(conn, agent, row["workspace"] if row else None)
             if row is None:
                 raise MailError("not_found", f"没有找到案卷：{cid}", 404)
             if row["sealed"] or row["status"] in SEALED_STATUSES:
@@ -2123,7 +2140,7 @@ class Store:
         owner_name = normalize_name(owner or agent)
         now = utcnow()
         with self._session(immediate=True) as conn:
-            _must_coordinator(conn, agent)
+            _must_coordinator(conn, agent, workspace)
             _upsert(conn, owner_name, None)
             sup = normalize_case_id(supersedes) if supersedes else None
             if sup:
@@ -2254,7 +2271,7 @@ class Store:
             if row["status"] != "todo":
                 raise MailError("invalid_transition", f"只有 todo 能开工（当前 {row['status']}）", 409)
             # 第三条线只兜底：规格不全**不拦人**（看板会把它标黄）。
-            if agent != row["owner"] and not _is_coordinator(conn, agent):
+            if agent != row["owner"] and not _is_coordinator(conn, agent, row["workspace"]):
                 raise MailError("not_yours", "只有该任务的 owner 或 coordinator 能开工", 403)
             conn.execute(
                 "UPDATE tasks SET status = 'doing', updated_at = ?, updated_by = ? WHERE id = ?",
@@ -2295,7 +2312,7 @@ class Store:
                 )
             if st == cur:
                 raise MailError("invalid_transition", f"已经是 {st}", 409)
-            is_coord = _is_coordinator(conn, agent)
+            is_coord = _is_coordinator(conn, agent, row["workspace"])
             mine = agent == row["owner"]
             # 状态机 = 两张表的**并集**，对谁都一样（表就是唯一事实，别再散判）。
             # 注意：`doing → todo` 对 coordinator **也不许**——倒回 todo 等于"解冻规格"，
@@ -2354,8 +2371,8 @@ class Store:
             raise MailError("nothing_to_update", "没有要改的字段", 400)
         now = utcnow()
         with self._session(immediate=True) as conn:
-            _must_coordinator(conn, agent)
             row = _find_task(conn, task_id)
+            _must_coordinator(conn, agent, row["workspace"])
             if row["status"] != "todo":
                 raise MailError(
                     "spec_frozen",
@@ -2404,8 +2421,8 @@ class Store:
             raise MailError("invalid_by", "by 必须是整数") from None
         now = utcnow()
         with self._session(immediate=True) as conn:
-            _must_coordinator(conn, agent)
             row = _find_task(conn, task_id)
+            _must_coordinator(conn, agent, row["workspace"])
             if row["status"] in TASK_TERMINAL:
                 raise MailError(
                     "task_closed",
@@ -2467,8 +2484,13 @@ class Store:
             if str(val).strip()
         }
         with self._session(immediate=True) as conn:
-            if force:  # 抢锁＝不可逆干扰，只有 coordinator 能做（与 lock_release 对称）
-                _must_coordinator(conn, agent)
+            if force:  # 抢锁＝不可逆干扰：项目内的路径看**那个项目**的 coordinator，项目外回落 manager
+                if not _may_force(conn, agent, wanted):
+                    raise MailError(
+                        "not_coordinator",
+                        f"{agent} 不能抢锁：项目内的路径要那个项目的 coordinator，项目外要 manager（human 天然算）",
+                        403,
+                    )
             _locks_sweep(conn, now)
             held = []
             skipped: list[dict] = []
@@ -2606,7 +2628,12 @@ class Store:
         with self._session(immediate=True) as conn:
             _locks_sweep(conn, now)
             if force:
-                _must_coordinator(conn, agent)
+                if not _may_force(conn, agent, None if paths is None else _lock_paths(paths)):
+                    raise MailError(
+                        "not_coordinator",
+                        f"{agent} 不能强制放锁：项目内的路径要那个项目的 coordinator，项目外要 manager（human 天然算）",
+                        403,
+                    )
                 if paths is None:
                     rows = conn.execute("SELECT * FROM locks").fetchall()
                     conn.execute("DELETE FROM locks")
@@ -2774,7 +2801,7 @@ class Store:
         now = utcnow()
         with self._session(immediate=True) as conn:
             holder = conn.execute("SELECT agent FROM locks WHERE path = ?", (target,)).fetchone()
-            is_coord = _is_coordinator(conn, agent)
+            is_coord = _may_force(conn, agent, [target])
             if holder is not None and holder["agent"] != agent and not is_coord:
                 raise MailError(
                     "not_yours",
@@ -2900,7 +2927,7 @@ class Store:
         now = utcnow()
         with self._session(immediate=True) as conn:
             _locks_sweep(conn, now)
-            is_coord = _is_coordinator(conn, agent)
+            is_coord = _may_force(conn, agent, wanted)
             held_rows = conn.execute("SELECT * FROM locks").fetchall()
         unlocked: list[str] = []
         mine: list[dict] = []
@@ -3356,7 +3383,10 @@ class Store:
         self._signal()
         return view
 
-    def add_project(self, workspace: str, name: str | None = None, archived: bool | None = None) -> dict:
+    def add_project(
+        self, workspace: str, name: str | None = None, archived: bool | None = None,
+        coordinator: str | None = None, actor: str | None = None,
+    ) -> dict:
         ws = _workspace(workspace)
         if not ws:
             raise MailError("invalid_workspace", "项目目录 workspace 不能为空")
@@ -3367,9 +3397,25 @@ class Store:
         proj_name = (name or "").strip() or Path(ws).name or ws
         if len(proj_name) > 200 or "\n" in proj_name or "\r" in proj_name:
             raise MailError("invalid_project_name", "项目名称不能换行，最长 200 字")
+        if coordinator is not None and not isinstance(coordinator, str):
+            raise MailError("invalid_coordinator", "coordinator 必须是身份名", 400)
+        # 空串＝**显式清空**（清完这个项目就"没指定"，coordinator 类操作一律拒）；None＝别动它。
+        if isinstance(coordinator, str) and not coordinator.strip():
+            wait_coord = ""
+        else:
+            wait_coord = normalize_name(coordinator) if isinstance(coordinator, str) else None
         now = utcnow()
         with self._session(immediate=True) as conn:
-            _upsert_project(conn, ws, proj_name, now, archived=archived)
+            if wait_coord is not None:
+                # human 2026-10-16 拍：**只有 human** 能指定/更换项目的 coordinator（真护栏，不是文档级）
+                _must_human(actor or "")
+                if wait_coord:   # 空串＝清空，不用查名册；给了名字就要求它在名册里（打错的名字会静默变成"没指定"）
+                    known = conn.execute("SELECT 1 FROM agents WHERE name = ?", (wait_coord,)).fetchone()
+                    if known is None:
+                        raise MailError(
+                            "unknown_agent", f"名册里没有 {wait_coord}（先 `ic agents add {wait_coord}`）", 400
+                        )
+            _upsert_project(conn, ws, proj_name, now, archived=archived, coordinator=wait_coord)
             projects = _collect_projects(conn)
         ws_bare = Path(ws).name == ws
         for item in projects:
@@ -4284,7 +4330,10 @@ def _upsert_window(
     )
 
 
-def _upsert_project(conn: sqlite3.Connection, workspace: str, name: str | None, now: str, archived: bool | None = None) -> None:
+def _upsert_project(
+    conn: sqlite3.Connection, workspace: str, name: str | None, now: str,
+    archived: bool | None = None, coordinator: str | None = None,
+) -> None:
     ws = _workspace(workspace)
     if not ws:
         return
@@ -4293,11 +4342,18 @@ def _upsert_project(conn: sqlite3.Connection, workspace: str, name: str | None, 
     existing = conn.execute("SELECT * FROM projects WHERE workspace = ?", (ws,)).fetchone()
     if existing is None:
         conn.execute(
-            "INSERT INTO projects(workspace, name, created_at, updated_at, archived) VALUES (?, ?, ?, ?, ?)",
-            (ws, proj_name, now, now, arc or 0),
+            "INSERT INTO projects(workspace, name, created_at, updated_at, archived, coordinator) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (ws, proj_name, now, now, arc or 0, (coordinator or "").strip()),
         )
     else:
         final_name = proj_name if name else (existing["name"] or proj_name)
+        if coordinator is not None:
+            # 只有**显式**传才动 coordinator（消息/案卷顺带登记项目时绝不能碰它）
+            conn.execute(
+                "UPDATE projects SET coordinator = ?, updated_at = ? WHERE workspace = ?",
+                (coordinator.strip(), now, ws),
+            )
         if arc is None:
             conn.execute(
                 "UPDATE projects SET name = ?, updated_at = ? WHERE workspace = ?",
@@ -4371,6 +4427,7 @@ def _collect_projects(conn: sqlite3.Connection) -> list[dict]:
             "workspace": ws,
             "name": meta["name"] or Path(ws).name or ws,
             "archived": bool(meta.get("archived")),
+            "coordinator": str(meta.get("coordinator") or ""),
             "case_count": total,
             "total_cases": total,
             "active_cases": doing,
@@ -4815,18 +4872,105 @@ def _task_priority(value) -> int:
     return max(-99, min(n, 99))
 
 
-def _is_coordinator(conn: sqlite3.Connection, agent: str) -> bool:
+def _must_human(agent: str) -> None:
+    """**只有 human**：指定项目的 coordinator、移除成员（README 一直这么写，2026-10-16 起有机器兜底）。"""
+    if normalize_name(agent) != "human":
+        raise MailError("human_only", f"{agent} 不是 human；这件事只有 human 能做", 403)
+
+
+def _is_manager(conn: sqlite3.Connection, agent: str) -> bool:
+    """**全局管理者**（旧称 coordinator）：名册里 `role=manager` 的；human 天然算。"""
+    agent = normalize_name(agent)
+    if agent == "human":
+        return True
     row = conn.execute("SELECT role FROM agents WHERE name = ?", (agent,)).fetchone()
-    return bool(row and str(row["role"] or "") == "coordinator")
+    return bool(row and str(row["role"] or "") in {"manager", "coordinator"})
 
 
-def _must_coordinator(conn: sqlite3.Connection, agent: str) -> None:
-    if not _is_coordinator(conn, agent):
+def _project_for(conn: sqlite3.Connection, workspace: str | None) -> sqlite3.Row | None:
+    """按 workspace 找项目行（全路径 / 解析后 / 裸目录名都算命中，跟别处一套口径）。"""
+    if not (workspace or "").strip():
+        return None
+    for row in conn.execute("SELECT * FROM projects").fetchall():
+        if _workspace_scope(workspace, row["workspace"]):
+            return row
+    return None
+
+
+def _project_for_path(conn: sqlite3.Connection, path: str) -> sqlite3.Row | None:
+    """按**文件路径**找它属于哪个项目（锁与提交闸只有路径、没有项目）。
+
+    取**最长**匹配（最具体的那个项目）；不属于任何项目 ⇒ None。
+    """
+    if not (path or "").strip():
+        return None
+    real = os.path.realpath(path)
+    best: sqlite3.Row | None = None
+    best_len = -1
+    for row in conn.execute("SELECT * FROM projects").fetchall():
+        ws = (row["workspace"] or "").strip()
+        if not ws:
+            continue
+        root = os.path.realpath(ws)
+        if real == root or real.startswith(root.rstrip("/") + "/"):
+            if len(root) > best_len:
+                best, best_len = row, len(root)
+    return best
+
+
+def _is_coordinator(conn: sqlite3.Connection, agent: str, workspace: str | None) -> bool:
+    """**这个项目**的协调者。
+
+    人拍的口径（2026-10-16）：每个项目 coordinator **不固定、由用户指定**；**项目在、没指定 ⇒ 拒**
+    （不许默认兜底）。三种边角：
+    - `human` 天然算（它是拍板的人）；
+    - **不属于任何项目**（空 workspace / 没登记过的目录）⇒ 回落 `_is_manager`（跟锁那条规则同源）；
+    - 项目在而 `coordinator` 为空 ⇒ **False**（必须指定）。
+    """
+    agent = normalize_name(agent)
+    if agent == "human":
+        return True
+    row = _project_for(conn, workspace)
+    if row is None:
+        return _is_manager(conn, agent)
+    return (row["coordinator"] or "").strip() == agent
+
+
+def _may_force(conn: sqlite3.Connection, agent: str, paths) -> bool:
+    """抢锁 / 替成员落地这类**不可逆干扰**：按路径找项目 ⇒ 那项目的 coordinator；找不到项目 ⇒ 回落 manager。
+
+    （human 2026-10-16 拍的第 3 条。）`paths=None`（放全部锁＝清场）算 hub 级 ⇒ 只看 manager。
+    """
+    if paths is None:
+        return _is_manager(conn, agent)
+    for path in [p for p in (paths or []) if p]:
+        row = _project_for_path(conn, path)
+        if row is None:
+            if not _is_manager(conn, agent):
+                return False
+        elif not _is_coordinator(conn, agent, row["workspace"]):
+            return False
+    return True
+
+
+def _must_coordinator(conn: sqlite3.Connection, agent: str, workspace: str | None) -> None:
+    if _is_coordinator(conn, agent, workspace):
+        return
+    row = _project_for(conn, workspace)
+    if row is not None and not (row["coordinator"] or "").strip():
         raise MailError(
-            "not_coordinator",
-            f"{agent} 不是 coordinator；建任务 / 改规格只有 coordinator 能做",
-            403,
+            "no_coordinator",
+            f"项目 {row['workspace']} 还没指定 coordinator（human 2026-10-16 拍：每个项目由人指定、"
+            "没指定就拒）。请 human 指定：`ic --as human projects --project <路径> --coordinator <身份>`",
+            409,
         )
+    raise MailError(
+        "not_coordinator",
+        f"{agent} 不是这个项目的 coordinator"
+        + (f"（{row['workspace']}：coordinator = {row['coordinator']}）" if row is not None else "（这卷没归属项目）")
+        + "；建任务 / 改规格只有它或 human 能做",
+        403,
+    )
 
 
 def _find_task(conn: sqlite3.Connection, task_id) -> sqlite3.Row:
@@ -5403,9 +5547,9 @@ def _role(value) -> str:
     text = value.strip().lower()
     if text in {"", "member"}:
         return ""
-    if text == "coordinator":
-        return "coordinator"
-    raise MailError("invalid_role", "role 只能是空（成员）或 coordinator")
+    if text in {"manager", "coordinator"}:   # coordinator 是**旧名**，一律记成 manager
+        return "manager"
+    raise MailError("invalid_role", "role 只能是空（成员）或 manager")
 
 
 def _activity(value) -> str:

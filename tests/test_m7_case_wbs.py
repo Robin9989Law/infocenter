@@ -36,6 +36,9 @@ class CaseWbsStoreTest(unittest.TestCase):
             self.home / "mailbox.db",
             seeds=[("opencode", "OpenCode", "coordinator"), ("cursor", "Cursor", "")],
         )
+        # human 2026-10-16 拍：**每个项目由人指定 coordinator，没指定就拒**——测试里直接指定掉，
+        # 否则这卷的 WBS/里程碑一改就被拒（那正是新口径要的行为）。
+        self.store.add_project(WS, coordinator="opencode", actor="human")
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.store))
         self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)

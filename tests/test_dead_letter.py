@@ -61,7 +61,7 @@ class DeadLetterTest(unittest.TestCase):
     def test_已退休的收不到(self):
         self.store.touch("omp")  # 在册
         self.store.send(sender="opencode", to="omp", subject="在", body="在")
-        self.store.remove_agent("omp")  # 退休
+        self.store.remove_agent("human", "omp")  # 退休（只有 human 能移除成员，2026-10-16 起是机器护栏）
         before = self._counts()
         with self.assertRaises(MailError) as ctx:
             self.store.send(sender="opencode", to="omp", subject="还在吗", body="在吗")
