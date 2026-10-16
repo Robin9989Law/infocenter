@@ -128,11 +128,15 @@ OPENAPI = {
     "paths": {
         "/health": {"get": {"summary": "存活检查", "responses": {"200": {"description": "ok"}}}},
         "/openapi.json": {"get": {"summary": "这份说明", "responses": {"200": {"description": "OpenAPI"}}}},
+        "/": {"get": {"summary": "与 GET /v1 同一份入口说明", "responses": {"200": {"description": "how to join"}}}},
         "/v1": {"get": {"summary": "给新 agent 的入口说明", "responses": {"200": {"description": "how to join"}}}},
         "/v1/agents": {
             "get": {
                 "summary": "列出 agent",
-                "parameters": [{"$ref": "#/components/parameters/Agent"}],
+                "parameters": [
+                    {"$ref": "#/components/parameters/Agent"},
+                    {"name": "probe_minutes", "in": "query", "schema": {"type": "number"}, "description": "给每家附上这段时间的空转采样"},
+                ],
                 "responses": {"200": {"description": "agents"}},
             }
         },
@@ -154,6 +158,17 @@ OPENAPI = {
                 ],
                 "responses": {"200": {"description": "removed"}},
             },
+        },
+        "/v1/agents/{name}/messages": {
+            "get": {
+                "summary": "某个身份的往来信件（收发方向、对方、主题、状态）",
+                "parameters": [
+                    {"$ref": "#/components/parameters/Agent"},
+                    {"name": "name", "in": "path", "required": True, "schema": {"type": "string"}},
+                    {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+                ],
+                "responses": {"200": {"description": "messages"}},
+            }
         },
         "/v1/messages": {
             "post": {
@@ -233,6 +248,30 @@ OPENAPI = {
                 "responses": {"200": {"description": "case"}},
             }
         },
+        "/v1/cases/{id}/reopen": {
+            "post": {"summary": "重开已封卷案卷（状态回 open，节点只增不删）", "responses": {"200": {"description": "case"}}}
+        },
+        "/v1/cases/{id}/claim": {
+            "post": {"summary": "认领到当前窗口。query 或 body 的 force=1 可从其他窗口接手", "responses": {"200": {"description": "case"}}}
+        },
+        "/v1/cases/{id}/transfer": {
+            "post": {"summary": "转办。body.to_window 必填，可带 to_agent", "responses": {"200": {"description": "case"}}}
+        },
+        "/v1/cases/{id}/nodes": {
+            "post": {"summary": "写回一行节点。body.note 必填；可带 status、waiting_for", "responses": {"200": {"description": "case"}}}
+        },
+        "/v1/cases/{id}/note": {
+            "post": {"summary": "与 /nodes 相同（别名）", "responses": {"200": {"description": "case"}}}
+        },
+        "/v1/cases/{id}/wbs": {
+            "post": {"summary": "打 WBS 路径。body.wbs_path 必填（空串 = 未归类）；仅 coordinator", "responses": {"200": {"description": "case"}}}
+        },
+        "/v1/cases/{id}/milestone": {
+            "post": {"summary": "加一条里程碑。body.name 必填；仅 coordinator", "responses": {"200": {"description": "case"}}}
+        },
+        "/v1/cases/{id}/milestone-done": {
+            "post": {"summary": "勾掉第 N 条里程碑。body.index 从 0 起；done=false 撤回；仅 coordinator", "responses": {"200": {"description": "case"}}}
+        },
         "/v1/probe": {
             "get": {
                 "summary": "空转采样（只读）：每家的 headless 触发数与产出并排看",
@@ -245,10 +284,172 @@ OPENAPI = {
         "/v1/windows": {
             "get": {"summary": "列出办公室（窗口）", "responses": {"200": {"description": "windows"}}},
             "post": {"summary": "登记或更新办公室（窗口）", "responses": {"200": {"description": "window"}}},
+            "put": {"summary": "登记或更新办公室（与 POST 相同）", "responses": {"200": {"description": "window"}}},
+        },
+        "/v1/windows/{id}": {
+            "get": {"summary": "查看一个办公室", "responses": {"200": {"description": "window"}}},
+            "put": {"summary": "更新办公室（workspace / activity / state）", "responses": {"200": {"description": "window"}}},
+            "post": {"summary": "更新办公室（与 PUT 相同）", "responses": {"200": {"description": "window"}}},
+            "delete": {"summary": "办公室离场", "responses": {"200": {"description": "window"}}},
+        },
+        "/v1/windows/{id}/leave": {
+            "post": {"summary": "办公室离场，并封掉名下案卷", "responses": {"200": {"description": "window"}}}
+        },
+        "/v1/windows/{id}/exit": {
+            "post": {"summary": "与 leave 相同（别名）", "responses": {"200": {"description": "window"}}}
+        },
+        "/v1/windows/{id}/stop": {
+            "post": {"summary": "与 leave 相同（别名）", "responses": {"200": {"description": "window"}}}
+        },
+        "/v1/windows/{id}/abort": {
+            "post": {"summary": "与 leave 相同（别名）", "responses": {"200": {"description": "window"}}}
+        },
+        "/v1/windows/{id}/pause": {
+            "post": {"summary": "暂停办公室", "responses": {"200": {"description": "window"}}}
+        },
+        "/v1/windows/{id}/resume": {
+            "post": {"summary": "恢复办公室", "responses": {"200": {"description": "window"}}}
         },
         "/v1/projects": {
             "get": {"summary": "列出项目及案卷统计", "responses": {"200": {"description": "projects"}}},
             "post": {"summary": "设定项目地址（纳入管理）", "responses": {"201": {"description": "project"}}},
+            "put": {"summary": "更新项目地址或 coordinator（与 POST 同一处理）", "responses": {"200": {"description": "project"}}},
+        },
+        "/v1/activity": {
+            "get": {
+                "summary": "全局工作痕迹流",
+                "parameters": [
+                    {"name": "limit", "in": "query", "schema": {"type": "integer"}, "description": "默认 50"},
+                ],
+                "responses": {"200": {"description": "activity"}},
+            }
+        },
+        "/v1/audit": {
+            "get": {
+                "summary": "留痕机器验证：哈希链重放是否与当前状态一致",
+                "parameters": [
+                    {"name": "task", "in": "query", "schema": {"type": "string"}},
+                    {"name": "anchor_seq", "in": "query", "schema": {"type": "string"}, "description": "库外锚；与 anchor_hash 一起给才核对"},
+                    {"name": "anchor_hash", "in": "query", "schema": {"type": "string"}},
+                    {"name": "anchor_at", "in": "query", "schema": {"type": "string"}},
+                ],
+                "responses": {"200": {"description": "audit"}},
+            }
+        },
+        "/v1/crew": {
+            "get": {
+                "summary": "收信守护状态",
+                "parameters": [
+                    {"name": "dir", "in": "query", "schema": {"type": "string"}, "description": "只看这个项目目录"},
+                ],
+                "responses": {"200": {"description": "crew status"}},
+            },
+            "post": {
+                "summary": "起停收信守护。body.action 为 up 或 down；dir 必填；only 可选",
+                "responses": {"200": {"description": "crew"}},
+            },
+        },
+        "/v1/headless": {
+            "get": {
+                "summary": "在跑的 headless",
+                "parameters": [
+                    {"name": "dir", "in": "query", "schema": {"type": "string"}, "description": "只看这个项目目录"},
+                ],
+                "responses": {"200": {"description": "headless"}},
+            }
+        },
+        "/v1/headless/runs": {
+            "get": {
+                "summary": "headless 运行上下文（提示词与输出尾部）",
+                "parameters": [
+                    {"name": "dir", "in": "query", "schema": {"type": "string"}},
+                    {"name": "limit", "in": "query", "schema": {"type": "integer"}, "description": "默认 30"},
+                ],
+                "responses": {"200": {"description": "runs"}},
+            }
+        },
+        "/v1/daemons": {
+            "get": {"summary": "守护进程实况", "responses": {"200": {"description": "daemons"}}}
+        },
+        "/v1/restart": {
+            "post": {
+                "summary": "一键重启服务端与在跑的项目守护。body.dry_run=true 只预览脚本",
+                "responses": {"200": {"description": "restart"}},
+            }
+        },
+        "/v1/open": {
+            "post": {
+                "summary": "在访达 / 文件管理器里打开目录。body.path（或 dir）必填",
+                "responses": {"200": {"description": "opened"}},
+            }
+        },
+        "/v1/tasks": {
+            "get": {
+                "summary": "列出任务队列",
+                "parameters": [
+                    {"$ref": "#/components/parameters/Agent"},
+                    {"name": "owner", "in": "query", "schema": {"type": "string"}},
+                    {"name": "workspace", "in": "query", "schema": {"type": "string"}},
+                    {"name": "status", "in": "query", "schema": {"type": "string"}},
+                    {"name": "all", "in": "query", "schema": {"type": "boolean"}, "description": "连已被取代的也列出"},
+                    {"name": "limit", "in": "query", "schema": {"type": "integer"}},
+                ],
+                "responses": {"200": {"description": "tasks"}},
+            },
+            "post": {
+                "summary": "建任务。title、workspace 必填；仅 coordinator",
+                "parameters": [{"$ref": "#/components/parameters/Agent"}],
+                "responses": {"201": {"description": "task"}},
+            },
+        },
+        "/v1/tasks/{id}": {
+            "get": {"summary": "任务详情，含完整 supersedes 链", "responses": {"200": {"description": "task"}}}
+        },
+        "/v1/tasks/{id}/start": {
+            "post": {"summary": "开工", "responses": {"200": {"description": "task"}}}
+        },
+        "/v1/tasks/{id}/status": {
+            "post": {"summary": "改状态。body.status；blocked 带 reason，done 或 stopped 带 handoff", "responses": {"200": {"description": "task"}}}
+        },
+        "/v1/tasks/{id}/update": {
+            "post": {"summary": "改规格（title / owner / deps / acceptance / case_id / priority）", "responses": {"200": {"description": "task"}}}
+        },
+        "/v1/tasks/{id}/bump": {
+            "post": {"summary": "调优先级。body.by 默认 1", "responses": {"200": {"description": "task"}}}
+        },
+        "/v1/locks": {
+            "get": {"summary": "列出写锁", "responses": {"200": {"description": "locks"}}},
+            "post": {
+                "summary": "拿写锁。body.paths 必填；可带 ttl、task_id、note、skip_locked、force。被他人锁着返回 409",
+                "parameters": [
+                    {"$ref": "#/components/parameters/Agent"},
+                    {"$ref": "#/components/parameters/Window"},
+                ],
+                "responses": {"201": {"description": "locks"}},
+            },
+        },
+        "/v1/locks/release": {
+            "post": {"summary": "放写锁。paths 不填＝放自己的全部；force 仅 coordinator", "responses": {"200": {"description": "locks"}}}
+        },
+        "/v1/locks/queue": {
+            "get": {
+                "summary": "列出拿不到钥匙时记下的改动",
+                "parameters": [{"name": "path", "in": "query", "schema": {"type": "string"}}],
+                "responses": {"200": {"description": "queue"}},
+            },
+            "post": {
+                "summary": "记下要改的路径。body.path 必填；可带 note、patch、task_id",
+                "responses": {"201": {"description": "queued"}},
+            },
+        },
+        "/v1/locks/queue/merge": {
+            "post": {"summary": "合并排队的改动（要拿着该路径的钥匙）。body.path 必填；ids 可选", "responses": {"200": {"description": "merged"}}}
+        },
+        "/v1/guard": {
+            "post": {
+                "summary": "提交闸报告。body.paths 必填；require_mine 默认 true。始终 200，由调用方看 ok",
+                "responses": {"200": {"description": "guard"}},
+            }
         },
     },
 }
