@@ -213,6 +213,32 @@ def _resolve_own_delivery(conn: sqlite3.Connection, message_id: str, agent: str)
     return None
 
 
+def _collapse_alias_deliveries(rows: list, agent: str) -> list:
+    """同一封信在人的两个名字上各有一行时，只留一份，避免未读数翻倍。
+
+    先留本名那一行，没有才留别名。名字只问 `_recipient_names`。
+    非人本来就只有一行。未读查询里若本名那行已读、不在这批里，就留下仍未读的别名行。
+    """
+    try:
+        agent = normalize_name(agent)
+    except MailError:
+        return list(rows)
+    if len(_recipient_names(agent)) < 2:
+        return list(rows)
+    best: dict[str, object] = {}
+    order: list[str] = []
+    for row in rows:
+        mid = row["id"]
+        prev = best.get(mid)
+        if prev is None:
+            best[mid] = row
+            order.append(mid)
+            continue
+        if row["delivered_to"] == agent and prev["delivered_to"] != agent:
+            best[mid] = row
+    return [best[mid] for mid in order]
+
+
 def normalize_case_id(value: str) -> str:
     """L2：案卷编号 / thread_id 统一安全字符集与长度，非法一律 400。"""
     if not isinstance(value, str):
@@ -671,21 +697,26 @@ class Store:
         touch_window: bool = True,
     ) -> dict:
         """M1：只取最旧的 limit 条，cursor = 实际返回的最大 delivery_seq（无则 = since）。
-        旧实现取全表 MAX(rowid) 却只回最新 limit 条，超出的旧信会永久跳过。"""
+        旧实现取全表 MAX(rowid) 却只回最新 limit 条，超出的旧信会永久跳过。
+        人的两个名字共用 `_recipient_names`；同一封信两行都未读时折成一份。"""
+        names = _recipient_names(agent)
+        name_sql = ",".join("?" for _ in names)
         if window_id is None:
             with self._session(readonly=True) as conn:
                 rows = conn.execute(
-                    """
-                    SELECT m.*, d.rowid AS delivery_seq, d.status AS delivery_status,
+                    f"""
+                    SELECT m.*, d.to_agent AS delivered_to, d.rowid AS delivery_seq,
+                           d.status AS delivery_status,
                            d.read_at AS delivery_read_at, d.claimed_by AS delivery_claimed_by,
                            d.claimed_at AS delivery_claimed_at
                     FROM deliveries d
                     JOIN messages m ON m.id = d.message_id
-                    WHERE d.to_agent = ? AND d.status = 'unread'
+                    WHERE d.to_agent IN ({name_sql}) AND d.status = 'unread'
                     ORDER BY d.rowid ASC
                     """,
-                    (agent,),
+                    names,
                 ).fetchall()
+                rows = _collapse_alias_deliveries(rows, agent)
                 if workspace is not None:
                     rows = [row for row in rows if _workspace_scope(row["workspace"], workspace)]
                 fresh = [row for row in rows if row["delivery_seq"] > since][:limit]
@@ -742,17 +773,19 @@ class Store:
                     }
             _lazy_reconcile_all(conn, now)
             rows = conn.execute(
-                """
-                SELECT m.*, d.rowid AS delivery_seq, d.status AS delivery_status,
+                f"""
+                SELECT m.*, d.to_agent AS delivered_to, d.rowid AS delivery_seq,
+                       d.status AS delivery_status,
                        d.read_at AS delivery_read_at, d.claimed_by AS delivery_claimed_by,
                        d.claimed_at AS delivery_claimed_at
                 FROM deliveries d
                 JOIN messages m ON m.id = d.message_id
-                WHERE d.to_agent = ? AND d.status = 'unread'
+                WHERE d.to_agent IN ({name_sql}) AND d.status = 'unread'
                 ORDER BY d.rowid ASC
                 """,
-                (agent,),
+                names,
             ).fetchall()
+            rows = _collapse_alias_deliveries(rows, agent)
             if workspace is not None:
                 rows = [row for row in rows if _workspace_scope(row["workspace"], workspace)]
 
@@ -777,6 +810,7 @@ class Store:
                     # M6-0：只认领属于本窗 workspace 的信；他项目窗口**照常看见**但**不认领**，
                     # 认领留给该项目自己的窗口/守护（否则它会被永久挡住）。
                     if _auto_claim_allowed(conn, window_id, row["workspace"]):
+                        target = row["delivered_to"]
                         cur = conn.execute(
                             """
                             UPDATE deliveries
@@ -784,7 +818,7 @@ class Store:
                             WHERE message_id = ? AND to_agent = ?
                               AND (claimed_by IS NULL OR claimed_by = ?)
                             """,
-                            (window_id, now, row["id"], agent, window_id),
+                            (window_id, now, row["id"], target, window_id),
                         )
                         if cur.rowcount == 0:
                             continue
@@ -955,7 +989,9 @@ class Store:
             if thread_id:
                 case_row = _find_case(conn, final_thread_id)
                 if case_row is not None and not case_row["sealed"] and case_row["status"] not in SEALED_STATUSES:
-                    if case_row["status"] == "waiting" and case_row["owner_agent"] in recipients and not _same_agent(sender, case_row["owner_agent"] or ""):
+                    owner_name = case_row["owner_agent"] or ""
+                    owner_addressed = any(_same_agent(owner_name, name) for name in recipients)
+                    if case_row["status"] == "waiting" and owner_addressed and not _same_agent(sender, owner_name):
                         conn.execute(
                             "UPDATE cases SET status = 'open', waiting_for = NULL, updated_at = ? WHERE id = ?",
                             (created, case_row["id"]),
@@ -971,8 +1007,8 @@ class Store:
                             auto=False,
                             now=created,
                         )
-                    elif case_row["status"] == "open" and _same_agent(sender, case_row["owner_agent"] or ""):
-                        wait_for = next((r for r in recipients if r != sender), None)
+                    elif case_row["status"] == "open" and _same_agent(sender, owner_name):
+                        wait_for = next((r for r in recipients if not _same_agent(r, sender)), None)
                         conn.execute(
                             "UPDATE cases SET status = 'waiting', waiting_for = ?, updated_at = ? WHERE id = ?",
                             (wait_for, created, case_row["id"]),
@@ -1033,10 +1069,10 @@ class Store:
                     now=now,
                 )
         if to is None:
-            if parent_view["from"] != sender:
+            if not _same_agent(parent_view["from"], sender):
                 targets: list[str] | str = [parent_view["from"]]
             else:
-                others = [name for name in parent_view["to"] if name != sender]
+                others = [name for name in parent_view["to"] if not _same_agent(name, sender)]
                 targets = others or [sender]
         else:
             targets = to
@@ -1424,21 +1460,23 @@ class Store:
     def thread(self, agent: str, thread_id: str) -> dict:
         agent = normalize_name(agent)
         thread_id = normalize_case_id(thread_id)
+        names = _recipient_names(agent)
+        name_sql = ",".join("?" for _ in names)
         with self._session(readonly=True) as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT m.* FROM messages m
                 WHERE m.thread_id = ?
                   AND (
-                    m.from_agent = ?
+                    m.from_agent IN ({name_sql})
                     OR EXISTS (
                         SELECT 1 FROM deliveries d
-                        WHERE d.message_id = m.id AND d.to_agent = ?
+                        WHERE d.message_id = m.id AND d.to_agent IN ({name_sql})
                     )
                   )
                 ORDER BY m.created_at ASC, m.id ASC
                 """,
-                (thread_id, agent, agent),
+                (thread_id, *names, *names),
             ).fetchall()
             if not rows:
                 raise MailError("not_found", "没有这封信，或者你不在其中", 404)
@@ -1476,10 +1514,7 @@ class Store:
                     base += 1
             messages = []
             for row in rows:
-                delivery = conn.execute(
-                    "SELECT status, read_at, claimed_by, claimed_at FROM deliveries WHERE message_id = ? AND to_agent = ?",
-                    (row["id"], agent),
-                ).fetchone()
+                delivery = _resolve_own_delivery(conn, row["id"], agent)
                 view = _view(
                     conn,
                     row,
@@ -1496,7 +1531,7 @@ class Store:
                 view["root_id"] = root_map[row["id"]]
                 view["children"] = children_map[row["id"]]
                 # 只给发件人补收件人回执。delivery_status/read_at 仍是查看者自己的那份，语义不变。
-                if row["from_agent"] == agent:
+                if _same_agent(row["from_agent"], agent):
                     view["recipient_receipts"] = _delivery_receipts(conn, row["id"])
                 messages.append(view)
         return {"thread_id": thread_id, "count": len(messages), "messages": messages}
@@ -5719,13 +5754,18 @@ def _unread_counts(conn: sqlite3.Connection, window_id: str | None = None) -> di
     有 window_id 时排除被同 agent 其他窗口认领或已暂停/已封卷的信（计划 §4.6）。"""
     rows = conn.execute(
         """
-        SELECT d.to_agent AS to_agent, d.claimed_by AS claimed_by, m.thread_id AS thread_id
+        SELECT d.message_id AS message_id, d.to_agent AS to_agent,
+               d.claimed_by AS claimed_by, m.thread_id AS thread_id
         FROM deliveries d
         JOIN messages m ON m.id = d.message_id
         WHERE d.status = 'unread'
         """
     ).fetchall()
+    # 人的两个名字合成一个未读数，同一封信两行都未读只算一次。名字只问 _recipient_names。
+    folded = set(_recipient_names(HUMAN))
+    fold = len(folded) > 1
     counts: dict[str, int] = {}
+    person_ids: set[str] = set()
     for row in rows:
         if _is_thread_paused_or_sealed(conn, row["thread_id"]):
             continue
@@ -5736,7 +5776,14 @@ def _unread_counts(conn: sqlite3.Connection, window_id: str | None = None) -> di
         else:
             if eff_claim is not None and eff_claim != window_id:
                 continue
-        counts[row["to_agent"]] = counts.get(row["to_agent"], 0) + 1
+        if fold and row["to_agent"] in folded:
+            person_ids.add(row["message_id"])
+        else:
+            counts[row["to_agent"]] = counts.get(row["to_agent"], 0) + 1
+    if fold:
+        merged = len(person_ids)
+        for name in folded:
+            counts[name] = merged
     return counts
 
 
@@ -5748,11 +5795,13 @@ def _must_visible(conn: sqlite3.Connection, message_id: str, agent: str) -> sqli
 
 
 def _is_party(conn: sqlite3.Connection, row: sqlite3.Row, agent: str) -> bool:
-    if row["from_agent"] == agent:
+    if _same_agent(row["from_agent"] or "", agent):
         return True
+    names = _recipient_names(agent)
+    marks = ",".join("?" for _ in names)
     found = conn.execute(
-        "SELECT 1 FROM deliveries WHERE message_id = ? AND to_agent = ?",
-        (row["id"], agent),
+        f"SELECT 1 FROM deliveries WHERE message_id = ? AND to_agent IN ({marks})",
+        (row["id"], *names),
     ).fetchone()
     return found is not None
 

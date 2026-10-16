@@ -256,6 +256,9 @@ hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
 function showName(name) {
   return name === "human" ? "manager" : (name || "");
 }
+function isPersonName(name) {
+  return name === "human" || name === "manager";
+}
 
 let state = {
   projects: [],
@@ -273,6 +276,7 @@ let state = {
   winState: "",
   mail: [],
   mailAgent: null,
+  mailBack: ["human", "human"],
   headless: [],
   daemons: [],
   runs: []
@@ -791,14 +795,16 @@ function openSettings(kind, id) {
       <div class="section-title">⑤ manager 的信件往来</div>
       <div id="s-agent-mail"><div class="empty">加载…</div></div>`;
     overlay.classList.add("show");
-    loadAgentMail("human");
+    state.mailBack = ["human", "human"];
+    loadAgentMail("manager");
     return;
   }
 
   if (kind === "agent") {
-    titleEl.textContent = "信件往来 · " + id;
+    titleEl.textContent = "信件往来 · " + showName(id);
     bodyEl.innerHTML = '<div id="s-agent-mail"><div class="empty">加载…</div></div>';
     overlay.classList.add("show");
+    state.mailBack = ["agent", id];
     loadAgentMail(id);
     return;
   }
@@ -987,7 +993,7 @@ async function loadAgentMail(name) {
             ? '<span title="发出" class="dir out">&#10145;</span>'
             : '<span title="收到" class="dir in">&#11013;</span>';
           const st = m.direction === "out" ? "" : (m.my_status === "unread" ? "未读" : m.my_status === "read" ? "已读" : m.my_status === "archived" ? "归档" : (m.my_status || ""));
-          const canRead = name === "human" && m.direction === "in" && m.my_status === "unread";
+          const canRead = isPersonName(name) && m.direction === "in" && m.my_status === "unread";
           const stCell = canRead
             ? `<button class="btn resume" data-read="${escapeHtml(m.id)}">标为已读</button>`
             : escapeHtml(st);
@@ -1161,7 +1167,7 @@ document.getElementById("modal-body").addEventListener("click", ev => {
   else if (act === "reopen-case") doCase("reopen", el.dataset.cid);
   else if (act === "refresh-stat") refreshWindowStatus();
   else if (act === "send-human") sendHuman();
-  else if (act === "back-mail") openSettings(state.mailAgent === "human" ? "human" : "agent", state.mailAgent);
+  else if (act === "back-mail") openSettings(state.mailBack[0], state.mailBack[1]);
   else if (act === "goto-window") {
     const pid = state.settingsTarget && state.settingsTarget.id;
     state.selectedProject = pid || null;
