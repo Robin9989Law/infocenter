@@ -1500,6 +1500,10 @@ class Store:
                 auto=False,
                 now=now,
             )
+            _emit_case_event(
+                conn, owner_agent or agent, "create", "", init_status,
+                cid, owner_window, init_note, now,
+            )
             row = _find_case(conn, cid)
             return _case_view(conn, row)
 
@@ -1862,6 +1866,10 @@ class Store:
                         auto=False,
                         now=now,
                     )
+                    _emit_case_event(
+                        conn, agent, action, row["status"], "open",
+                        row["id"], window_id, note_text, now,
+                    )
                 updated = _find_case(conn, row["id"])
                 return _case_view(conn, updated)
 
@@ -1884,6 +1892,16 @@ class Store:
                 now=now,
             )
             created = _find_case(conn, msg["thread_id"])
+            # 显式认领才进链。阅读/回复顺带认领走的是同一套落库，但不从这里经过。
+            last = conn.execute(
+                "SELECT action, note FROM case_nodes WHERE case_id = ? ORDER BY id DESC LIMIT 1",
+                (created["id"],),
+            ).fetchone()
+            if last is not None and last["action"] in {"claim", "takeover"}:
+                _emit_case_event(
+                    conn, agent, last["action"], "", "open",
+                    created["id"], window_id, last["note"], now,
+                )
             return _case_view(conn, created)
 
     def transfer_case(
@@ -1941,16 +1959,21 @@ class Store:
                 (target_agent, target_window, now, row["id"]),
             )
             _propagate_thread_claim(conn, row["thread_id"], target_agent, target_window, now, overwrite=True)
+            node_window = source_window or row["owner_window"] or target_window
             _insert_node(
                 conn,
                 case_id=row["id"],
                 agent=agent,
-                window_id=source_window or row["owner_window"] or target_window,
+                window_id=node_window,
                 action="transfer",
                 note=note_text,
                 status="open",
                 auto=False,
                 now=now,
+            )
+            _emit_case_event(
+                conn, agent, "transfer", row["status"], "open",
+                row["id"], node_window, note_text, now,
             )
             updated = _find_case(conn, row["id"])
             res = _case_view(conn, updated)
@@ -2106,6 +2129,10 @@ class Store:
                 status=new_status,
                 auto=False,
                 now=now,
+            )
+            _emit_case_event(
+                conn, agent, "reopen", row["status"], new_status,
+                row["id"], window_id, note_text, now,
             )
             updated = _find_case(conn, row["id"])
             res = _case_view(conn, updated)
@@ -3131,6 +3158,11 @@ class Store:
             auto=auto,
             now=now,
         )
+        # 暂停 / 恢复 / 中止 / 办结（含「写节点时直接封卷」和窗口暂停带上的案卷）同一事务进链。
+        _emit_case_event(
+            conn, agent, action, row["status"], new_status,
+            row["id"], node_window, note, now,
+        )
         updated = _find_case(conn, row["id"])
         return _case_view(conn, updated)
 
@@ -4035,6 +4067,7 @@ def _ensure_case_from_thread(
         auto=False,
         now=now,
     )
+    _emit_case_event(conn, agent, "create", "", "pending", thread_id, None, "立案", now)
     return conn.execute("SELECT * FROM cases WHERE id = ?", (thread_id,)).fetchone()
 
 
@@ -4853,6 +4886,22 @@ def _task_event_hash(prev_hash: str, fields: dict) -> str:
     blob = "\x1f".join([prev_hash] + [str(fields.get(key, "")) for key in
                                        ("task_id", "at", "agent", "action", "from_status", "to_status", "detail")])
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _emit_case_event(
+    conn, agent, action, from_status, to_status, case_id, window_id, note, now: str,
+) -> None:
+    """案卷状态机进既有哈希链。`task_id=""` 与 `project_coordinator` / `propose` 同例，任务重放不看它。
+
+    action 加 `case_` 前缀（`case_close` / `case_abort`），避免和任务自己的 create/status 撞名。
+    只钉状态跃迁；acceptance / milestone / wbs / 普通节点 / 阅读即认领不走这里。
+    """
+    name = action if str(action).startswith("case_") else f"case_{action}"
+    _emit_task_event(
+        conn, "", agent, name, from_status or "", to_status or "",
+        {"case_id": case_id, "window_id": window_id or "", "note": note or ""},
+        now,
+    )
 
 
 def _emit_task_event(conn, task_id, agent, action, from_status, to_status, detail: dict, now: str) -> None:
