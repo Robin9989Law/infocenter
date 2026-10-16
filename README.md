@@ -227,7 +227,10 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | 在哪写 | 怎么写 | 没写会怎样 |
 | --- | --- | --- |
 | 任务 | `ic task add … --acceptance "一行验收"` | `ic tasks` / 看板标出来（**不拦**） |
-| 案卷 | `ic case <id> --acceptance "…"` | `ic cases` 标 **⚠ 没写怎样算完**（**不拦**） |
+| 案卷 | `ic case <id> --acceptance "…"` | **办结（close）前服务端拦：没写就 409 `no_acceptance`**（中止不要求）；列表侧 `ic cases` / 看板标 **⚠ 没写怎样算完** |
+
+> **办结门槛**：**办结案卷前必须先写「怎样算完」**（`ic case <id> --acceptance "…"`），否则服务端拒（**409 `no_acceptance`**）；**中止（abort）不要求**（没做完的事不该被逼着编一个验收）。
+> **判据口径说死**：那个「怎样算完」要写成**第三个人能照着复跑的命令或测试名**（例：`pytest tests/test_lock_progress.py -q 全绿 + grep -c no_progress README.md ≥ 1`），**不许写「已经差不多了」「基本可用」这类形容词**——形容词机器判不了、人也复现不了（这是产品里现成的「锚定测试」位置）。任务侧本来就已要求（开工即冻结规格）。
 
 收尾时对着**四件事**核对（不是靠记性）：
 
@@ -271,7 +274,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 
 | 命令 | 作用 |
 | --- | --- |
-| `ic lock <路径…> [--changed] [--ttl 秒] [--task ID] [--note …] [--force]` | 拿写锁（同一路径同时只有一个 agent 能改）。`--changed` = 锁住 git 工作区里所有改动文件（可与显式路径并用，取并集）；**重复执行同一命令＝续期**；TTL 默认 1800 秒、最长 12h；`--force` 抢锁仅 coordinator 可用 |
+| `ic lock <路径…> [--changed] [--stay] [--ttl 秒] [--task ID] [--note …] [--force]` | 拿写锁（同一路径同时只有一个 agent 能改）。`--changed` = 锁住 git 工作区里所有改动文件（可与显式路径并用，取并集）；**重复执行同一命令＝续期**，但**盘上自 `acquired_at` 起没写入痕迹 ⇒ 409 `no_progress`**（不给第二把租约；要硬留就加 `--stay`，最多延到拿锁后 1 小时、再多 `stay_exhausted`，先 `ic unlock` 放一次再拿）；TTL 默认 1800 秒（＝一次会话一把租约）、最长 12h；`--force` 抢锁仅 coordinator 可用 |
 | `ic locks` / `ic unlock [路径…] [--force]` | 看锁（带"剩 N 分"，快到期有提醒）/ 放锁（不填路径＝放掉自己的全部） |
 | `ic guard [--any-holder] [--staged] [--install-hook]` | 提交闸：每个改动都必须被**未过期写锁**覆盖。默认查整棵工作区（更严），`--staged` 只查暂存区＝"这次提交了什么"（git 钩子用）；`--any-holder` 只要求有锁覆盖（钩子用，互斥已在拿锁那步生效）；`--install-hook` 一条命令装上提交钩子（**新 clone 必做**，否则闸门只是"可选项"；没装时会打印提醒） |
 | `ic audit [--task ID] [--anchor] [--anchor-file 路径] [--quiet]` | **留痕机器验证**：哈希链是否完整、重放是否与任务现状逐字段一致、外锚是否对得上。`--anchor` 把当前链头写成外锚（链不干净拒绝打锚）；相对路径以**仓库根**为准 |
@@ -304,10 +307,27 @@ $ git commit -m "锚：留痕链头"          # 锚进了 git，才算落在库�
 | 规矩 | 落地 |
 | --- | --- |
 | **每个文件只有一把钥匙** | 锁按路径唯一（主键）；`./a` / 绝对路径 / 符号链接 / **硬链接（同 inode）** 都算同一个文件 ⇒ 换个写法也绕不过去 |
-| **拿钥匙才可写** | `ic lock <路径>`；重复拿＝续期 |
+| **拿钥匙才可写** | `ic lock <路径>`；重复拿＝续期，但**盘上没动过就不给第二把租约**（见下「续期的新规矩」） |
 | **锁＝只读**（不锁也是只读） | 拿钥匙时把文件的 owner 写位打开（**可写**）；放钥匙时**清掉所有写位**（`444`／`555`）⇒ 谁都得先拿钥匙，`shell > file` 也挡住。**读权限一个都不动**（可以只读） |
 | **用完了放回去** | ① `git commit` 之后 `.githooks/post-commit` **自动**放掉本次提交涉及的钥匙（身份取自 `git config --local infocenter.agent`，由 `ic guard --install-hook` 写入）；② 也可手动 `ic unlock`；③ 锁 TTL 兜底 |
 | **放回自己的，不许动别人的** | `ic unlock` 只放自己的；`ic lock --changed` 遇到别人的锁跳过并报告 |
+
+### 续期的新规矩：**盘上没动过，就不给第二把租约**
+
+一把钥匙默认 TTL **1800 秒＝一次会话一把租约**（＝一次 headless 的墙钟上限，好记）。要堵的洞：
+**拿了钥匙不干活也能一直续**（一遍遍 `ic lock` 把 `acquired_at` 推后），别人永远拿不到。
+新规矩**只用现成的 `acquired_at` + 盘上 `stat`，零新增表/列/通知机制**：
+
+- **判定**：对这次要续的、当前由你持有的每条路径，看盘上自该条锁的 `acquired_at` 起**有没有写入痕迹**
+  = `os.stat(p).st_mtime >= acquired_at`（文件不存在＝无痕迹；秒级比较，宁松勿误杀）。
+- **全部有痕迹** ⇒ 照旧正常续期（`acquired_at` 刷新，计时重开）。
+- **有任一条没痕迹**（整把语义 ⇒ 整笔拒）：
+  - 普通续期 ⇒ **409 `no_progress`**：**不动已有锁、不自动放**；文案照现有 409 那套（别硬写 / 记进自己待办 / 先做别的 / 到期自然回到可拿）。
+  - 加 `ic lock --stay` ⇒ 允许**只留一次**，但 `acquired_at` **不刷新**，且 `expires_at` 不得晚于 `acquired_at + 2×TTL`（＝拿锁后最多 1 小时）；已到 ⇒ **409 `stay_exhausted`**（「延过一次了，要再拿请先 `ic unlock` 放一次再拿」）。
+  - 无进度续期（`stay=true`）在痕迹链上的 `lock` 行**带个记号**，事后看得出「这是无进度续期」。
+
+人话三句：**写了文件（盘上真变了）⇒ 正常续期、计时重开**；**盘上没动过 ⇒ 不给第二把租约（`no_progress`）**；
+**要留就 `ic lock --stay`（最多延到拿锁后 1 小时，再多先 `ic unlock` 放一次再拿）**。
 
 ### 拿不到钥匙怎么办：**记进自己的 TODO**（不排队、不通知、不点名）
 
@@ -465,7 +485,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `GET` | `/v1/cases/{id}` | 案卷详情与全部节点流水 |
 | `POST` | `/v1/cases/{id}/nodes` | 写回一行节点（`note` 单行；可带 `status` / `waiting_for`） |
 | `POST` | `/v1/cases/{id}/pause\|resume` | 暂停（不封卷、保留归属）/ 恢复为在办 |
-| `POST` | `/v1/cases/{id}/abort\|close` | 中止 / 办结，两者都会**封卷**；`close` 另释放归属 |
+| `POST` | `/v1/cases/{id}/abort\|close` | 中止 / 办结，两者都会**封卷**；`close` 另释放归属。**`close` 前没写「怎样算完」返回 409 `no_acceptance`**（中止不要求） |
 | `POST` | `/v1/cases/{id}/reopen` | 重开已封卷案卷：状态回 `open`、解除封卷，并留一条 `reopen` 节点（节点只增不删） |
 | `POST` | `/v1/cases/{id}/claim\|transfer` | 认领到当前窗口 / 转办给另一个窗口 |
 | `GET` `POST` | `/v1/windows` | 列出办公室；登记或更新办公室（`window_id` / `workspace` / `activity` / `state`） |
@@ -480,7 +500,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `GET` `POST` | `/v1/tasks` | 列出任务队列（`owner` / `workspace` / `status` / `all` / `limit`）；建任务（`title` 必填、`workspace` 必填，**仅 coordinator**） |
 | `GET` | `/v1/tasks/{id}` | 任务详情，含完整 `supersedes` 链 |
 | `POST` | `/v1/tasks/{id}/start\|status\|update\|bump` | 开工 / 改状态（`status`；`blocked` 带 `reason`，`done`\|`stopped` 带 `handoff`）/ 改规格 / 调优先级（`by`） |
-| `GET` `POST` | `/v1/locks` | 列出写锁；拿锁（`paths` 必填，可带 `ttl` / `task_id` / `note` / `force`）——被他人锁着返回 **409** |
+| `GET` `POST` | `/v1/locks` | 列出写锁；拿锁（`paths` 必填，可带 `ttl` / `task_id` / `note` / `force` / `stay`）——被他人锁着返回 **409**；自己持锁但**盘上无写入痕迹时普通续期返 409 `no_progress`**，`stay=true` 超过 `acquired_at + 2×TTL` 返 409 `stay_exhausted` |
 | `POST` | `/v1/locks/release` | 放锁（`paths` 不填＝放自己的全部；`force` 仅 coordinator） |
 | `POST` | `/v1/guard` | 提交闸报告（`paths` 必填，`require_mine` 默认 true）：**始终 200**，由 CLI 依 `ok` 决定退出码 |
 | `GET` | `/v1/audit` | 留痕机器验证（`task`；可带 `anchor_seq` / `anchor_hash` / `anchor_at` 核对库外锚） |
@@ -727,7 +747,7 @@ ic case m1a2b3c4 --acceptance "三处测试都补了、全量绿、README 记一
 - 收局操作走 `ic crew pause|resume|abort|close <身份>`：暂停只打断当前一轮、可恢复；中止 / 办结会封卷。
 - **层级**：`项目(workspace) → WBS(树) → 案卷(=控制包) → 任务`。**一个案卷唯一归属一个 WBS**；WBS **不建表**、就是路径（`父/子`），**空 = 未归类**（老案卷只归档不转）。WBS 负责人固定是**该项目的 coordinator**（由 manager 指定）。
 - **里程碑**（案卷"做完没有"的清单）：案卷上的**一列 JSON**，**不建表**。`名字 / 负责人 / 完成没完成` 三格；**一个里程碑可对应若干任务**。**agent 提议、只有 coordinator 能改**；案卷只显示里程碑，任务细节不上看板。
-- **怎样算完**（一件事的收尾判据）：案卷上**一行**（≤400 字），`ic case <id> --acceptance "…"`，**owner 或 coordinator 能写**。它不替代里程碑：里程碑是路标，这一行是"做成什么算做成"。**空着不拦**——`ic cases` 和控制台会标 **⚠ 没写怎样算完**，剩下的是人的事（见[收尾判据](#收尾判据什么样算做完)）。
+- **怎样算完**（一件事的收尾判据）：案卷上**一行**（≤400 字），`ic case <id> --acceptance "…"`，**owner 或 coordinator 能写**。它不替代里程碑：里程碑是路标，这一行是"做成什么算做成"。**办结前必填**——`close` 前没写就被服务端拒（**409 `no_acceptance`**；中止不要求）；**要写成第三个人能复跑的命令/测试名，不写形容词**（见[收尾判据](#收尾判据什么样算做完)）。未封卷且没写时，`ic cases` 和控制台先标 **⚠ 没写怎样算完** 提醒。
 - **案卷只随"事做完"关闭**：窗口离场 / 进程死**不会**自动中止案卷——程序只做两件无争议的事：摘掉主办窗口指针 + 记一行 `[自动]` 说明（**状态不动、不封卷**）。要收工得显式 `abort` / `close`。
 - **人话**（给看板读的那一句）：**coordinator 写的最后一行节点**就是案卷的"人话"（不用新字段）。如果这行之后又有别的节点，`ic cases` / 控制台会给它打上 **⚠ 人话过期** —— 意思是"看板上的说法可能已经不准，等 coordinator 重写"。**agent 写的节点是②线的备忘，不当作给人看的记录。**
 
