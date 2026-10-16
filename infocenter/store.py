@@ -856,7 +856,7 @@ class Store:
                 window_id=window_id,
                 client_cwd=client_cwd,
             )
-            # 只有显式传入才登记项目。父信/案卷/窗口+cwd 的推断不得 _upsert_project，
+            # 只有显式传入才登记项目。父信/案卷/窗口/cwd 的推断不得 _upsert_project，
             # 否则 cwd 兜底会继续造出垃圾项目。
             if workspace_source == "explicit" and workspace:
                 _upsert_project(conn, workspace, None, now)
@@ -1024,8 +1024,8 @@ class Store:
         else:
             targets = to
         final_subject = subject if subject else _re_subject(parent_view["subject"])
-        # workspace 不在这里传。send(reply_to=) 与 reply() 共用同一套继承：
-        # 显式 > 父信 > 案卷 > 窗口与客户端 cwd 命中同一未归档 project。
+        # workspace 不在这里传。send(reply_to=) 与 reply() 共用同一套解析：
+        # 显式 > 父信 > 案卷 > 窗口已登记 workspace > 客户端 cwd 命中已登记 project > 留空。
         return self.send(
             sender,
             targets,
@@ -3942,9 +3942,11 @@ def _resolve_outgoing_workspace(
 ) -> tuple[str | None, str]:
     """发出去的 workspace。不读进程 cwd，不登记新项目。
 
-    顺序：显式传入 > 父信 > 该线程案卷 > 窗口已登记 workspace 与客户端 cwd
-    命中同一个未归档 project 时写该 project 的规范路径 > 留空。
-    返回 (workspace, source)，source 为 explicit/parent/case/project/empty。
+    顺序：显式传入 > 父信 > 该线程案卷 > 发送窗口已登记的 workspace
+    > 客户端 cwd 命中已登记的未归档 project > 留空。
+    窗口有登记值就用窗口原文，不再要求与 cwd 一致；窗口没有时才看 cwd。
+    cwd 命中多条绝对路径、只命中已归档、或根本不命中：不猜。
+    返回 (workspace, source)，source 为 explicit/parent/case/window/project/empty。
     """
     if explicit:
         return explicit, "explicit"
@@ -3958,51 +3960,52 @@ def _resolve_outgoing_workspace(
             case_ws = _workspace(case_row["workspace"])
             if case_ws:
                 return case_ws, "case"
-    agreed = _agreed_project_workspace(conn, window_id, client_cwd)
-    if agreed:
-        return agreed, "project"
+    window_ws = _workspace(_window_workspace(conn, window_id))
+    if window_ws:
+        return window_ws, "window"
+    hit = _cwd_project_workspace(conn, client_cwd)
+    if hit:
+        return hit, "project"
     return None, "empty"
 
 
-def _agreed_project_workspace(
-    conn: sqlite3.Connection,
-    window_id: str | None,
-    client_cwd: str | None,
-) -> str | None:
-    """两侧都命中同一个未归档 project 才返回 projects.workspace。
+def _cwd_project_workspace(conn: sqlite3.Connection, client_cwd: str | None) -> str | None:
+    """客户端 cwd 命中的未归档 project。不读进程 cwd。
 
-    窗口没登记、没传客户端 cwd、两侧不在同一范围、只命中已归档项目、
-    或有多条绝对路径都算命中：一律不猜，返回 None。
+    路径正好对上（字符串或 resolve 后）且只对上一条时，用那条。
+    否则按范围命中：恰好一条，或只有一条绝对路径，才采用。
+    多条绝对路径都算命中、只命中已归档、或没有命中：不猜，返回 None。
     """
     cwd = _workspace(client_cwd)
-    if not window_id or not cwd:
+    if not cwd:
         return None
-    window_ws = _workspace(_window_workspace(conn, window_id))
-    if not window_ws:
-        return None
-    if not (_workspace_scope(window_ws, cwd) or _workspace_scope(cwd, window_ws)):
-        return None
-    hits = [
+    rows = [
         row["workspace"]
         for row in conn.execute("SELECT workspace FROM projects WHERE archived = 0").fetchall()
         if row["workspace"]
-        and _workspace_scope(window_ws, row["workspace"])
-        and _workspace_scope(cwd, row["workspace"])
     ]
-    if not hits:
+    exact: list[str] = []
+    cwd_path = Path(cwd).expanduser()
+    for ws in rows:
+        if ws == cwd:
+            exact.append(ws)
+            continue
+        try:
+            if Path(ws).expanduser().resolve() == cwd_path.resolve():
+                exact.append(ws)
+        except OSError:
+            pass
+    unique_exact = list(dict.fromkeys(exact))
+    if len(unique_exact) == 1:
+        return unique_exact[0]
+    if len(unique_exact) > 1:
         return None
-    # 同一项目常有「绝对路径 + 裸目录名」两行。有且仅有一条绝对路径时写它，
-    # 不把裸名再写进新信。多条绝对路径都命中则不猜。
-    absolutes = [ws for ws in hits if Path(ws).is_absolute()]
-    if len(absolutes) == 1:
-        return absolutes[0]
-    if len(absolutes) > 1:
-        return None
-    for candidate in (cwd, window_ws):
-        if candidate in hits:
-            return candidate
+    hits = [ws for ws in rows if _workspace_scope(cwd, ws)]
     if len(hits) == 1:
         return hits[0]
+    absolutes = [ws for ws in hits if Path(ws).is_absolute()]
+    if len(absolutes) == 1 and len(hits) == len(absolutes):
+        return absolutes[0]
     return None
 
 

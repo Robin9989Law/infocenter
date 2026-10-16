@@ -113,6 +113,7 @@ def request(
         send_pid = None
         if isinstance(send_body, dict) and "pid" in send_body:
             send_body = {key: value for key, value in send_body.items() if key != "pid"}
+    send_body = _attach_client_cwd(method, path, send_body)
     data = None if send_body is None else json.dumps(send_body, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(target, data=data, method=method)
     req.add_header("X-Agent", agent)
@@ -194,6 +195,21 @@ def request_mail(
 def call(explicit, agent: str, method: str, path: str, body=None, query=None, home=None, window: str | None = None, pid: int | None = None):
     url = ensure_server(explicit, home)
     return request_mail(url, method, path, agent, body, query, window=window, pid=pid)
+
+
+def _attach_client_cwd(method: str, path: str, body):
+    """发信/回信时带上客户端 cwd。服务端只认这个字段，不读自己的进程目录。
+
+    调用方已经放了 client_cwd（含显式 null）就不动。其它路径不改请求体。
+    """
+    if method not in {"POST", "PUT"} or not isinstance(body, dict):
+        return body
+    bare = path.split("?", 1)[0]
+    if bare != "/v1/messages" and not bare.endswith("/reply"):
+        return body
+    if "client_cwd" in body:
+        return body
+    return {**body, "client_cwd": os.getcwd()}
 
 
 def _window_header(window: str | None) -> str:

@@ -1,7 +1,7 @@
 """M6-1 / M6-2：send 不丢 workspace，出站回执只在读侧可见。
 
-按 grok 复核的顺序解析 workspace：显式 > 父信 > 案卷 >
-窗口已登记 workspace 与客户端 cwd 命中同一个未归档 project。
+解析顺序：显式 > 父信 > 案卷 > 窗口已登记 workspace >
+客户端 cwd 命中已登记 project。窗口单独有值即可，不再要求与 cwd 一致。
 不读进程 cwd，推断路径不调用 _upsert_project。
 """
 
@@ -143,7 +143,7 @@ class M6WorkspaceReceiptTest(unittest.TestCase):
         self.assertEqual(child["workspace"], self.canonical)
         self.assertEqual(child["workspace_source"], "case")
 
-    def test_window_and_cwd_write_canonical_path_without_upsert(self):
+    def test_window_workspace_is_used_verbatim_without_upsert(self):
         self.store.add_project(self.canonical)
         self.store.add_project(self.proj.name)
         self.store.touch("opencode", window_id="w-bare", workspace=self.proj.name)
@@ -156,13 +156,13 @@ class M6WorkspaceReceiptTest(unittest.TestCase):
             window_id="w-bare",
             client_cwd=self.canonical,
         )
-        self.assertEqual(sent["workspace"], self.canonical)
-        self.assertEqual(sent["workspace_source"], "project")
+        self.assertEqual(sent["workspace"], self.proj.name)
+        self.assertEqual(sent["workspace_source"], "window")
         self.assertFalse(sent["workspace_unscoped"])
         self.assertEqual(self.store.get_window("w-bare")["workspace"], self.proj.name)
         self.assertEqual(self._projects(), before)
 
-    def test_disagreement_archived_and_missing_cwd_stay_empty(self):
+    def test_window_beats_other_cwd_and_cwd_alone_hits_project(self):
         other = self.home / "ElseProj"
         other.mkdir()
         other_path = str(other.resolve())
@@ -179,15 +179,15 @@ class M6WorkspaceReceiptTest(unittest.TestCase):
             window_id="w-a",
             client_cwd=other_path,
         )
-        self.assertIsNone(mismatch["workspace"])
-        self.assertEqual(mismatch["workspace_source"], "empty")
-        self.assertTrue(mismatch["workspace_unscoped"])
+        self.assertEqual(mismatch["workspace"], self.canonical)
+        self.assertEqual(mismatch["workspace_source"], "window")
+        self.assertFalse(mismatch["workspace_unscoped"])
 
         window_only = self.store.send(
             "opencode", ["cursor"], "只有窗口", "正文", window_id="w-a"
         )
-        self.assertIsNone(window_only["workspace"])
-        self.assertTrue(window_only["workspace_unscoped"])
+        self.assertEqual(window_only["workspace"], self.canonical)
+        self.assertEqual(window_only["workspace_source"], "window")
 
         self.store.touch("opencode", window_id="w-empty", workspace=None)
         cwd_only = self.store.send(
@@ -198,7 +198,8 @@ class M6WorkspaceReceiptTest(unittest.TestCase):
             window_id="w-empty",
             client_cwd=self.canonical,
         )
-        self.assertIsNone(cwd_only["workspace"])
+        self.assertEqual(cwd_only["workspace"], self.canonical)
+        self.assertEqual(cwd_only["workspace_source"], "project")
 
         ghost = str((self.home / "not-a-project").resolve())
         self.assertNotIn(ghost, self._projects())
@@ -213,21 +214,21 @@ class M6WorkspaceReceiptTest(unittest.TestCase):
         right_path = str(right.resolve())
         self.store.add_project(left_path)
         self.store.add_project(right_path)
-        self.store.touch("opencode", window_id="w-left", workspace=left_path)
+        self.store.touch("opencode", window_id="w-blank", workspace=None)
         sent = self.store.send(
             "opencode",
             ["cursor"],
             "同名两条",
             "正文",
-            window_id="w-left",
-            client_cwd=left_path,
+            window_id="w-blank",
+            client_cwd="samename",
         )
         self.assertIsNone(sent["workspace"])
         self.assertEqual(sent["workspace_source"], "empty")
 
     def test_archived_project_is_not_adopted(self):
         self.store.add_project(self.canonical, archived=True)
-        self.store.touch("opencode", window_id="w-arch", workspace=self.canonical)
+        self.store.touch("opencode", window_id="w-arch", workspace=None)
         sent = self.store.send(
             "opencode",
             ["cursor"],
@@ -242,12 +243,17 @@ class M6WorkspaceReceiptTest(unittest.TestCase):
 
     def test_server_cwd_is_not_consulted(self):
         here = str(Path.cwd().resolve())
+        other = str((self.home / "not-here").resolve())
         self.store.add_project(here)
-        self.store.touch("opencode", window_id="w-here", workspace=here)
-        sent = self.store.send("opencode", ["cursor"], "不读服务端 cwd", "正文", window_id="w-here")
-        self.assertIsNone(sent["workspace"])
-        self.assertEqual(sent["workspace_source"], "empty")
-        self.assertTrue(sent["workspace_unscoped"])
+        self.store.touch("opencode", window_id="w-other", workspace=other)
+        sent = self.store.send("opencode", ["cursor"], "不读服务端 cwd", "正文", window_id="w-other")
+        self.assertEqual(sent["workspace"], other)
+        self.assertEqual(sent["workspace_source"], "window")
+        self.store.touch("opencode", window_id="w-blank", workspace=None)
+        blank = self.store.send("opencode", ["cursor"], "没带客户端 cwd", "正文", window_id="w-blank")
+        self.assertIsNone(blank["workspace"])
+        self.assertEqual(blank["workspace_source"], "empty")
+        self.assertTrue(blank["workspace_unscoped"])
 
     def test_explicit_send_still_registers_project(self):
         fresh = str((self.home / "brand-new").resolve())

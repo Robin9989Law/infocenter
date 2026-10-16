@@ -738,6 +738,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
             local_node=_local_node(store),
             window_id=window_id,
             pid=req_pid,
+            client_cwd=_opt_str(body, "client_cwd"),
         )
         return 201, message
 
@@ -806,6 +807,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 local_node=_local_node(store),
                 window_id=window_id,
                 pid=req_pid,
+                client_cwd=_opt_str(body, "client_cwd"),
             )
             return 201, message
 
