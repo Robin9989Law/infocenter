@@ -43,9 +43,9 @@ description: 信息中心的异步留言与办事追踪。会话开始时先看�
 ## 案卷 / WBS / 里程碑
 
 - **层级**：`项目(workspace) → WBS(树，路径如 父/子) → 案卷(=控制包) → 任务`。**一个案卷唯一归属一个 WBS**（`ic case <id> --wbs 父/子`，空 = 未归类）。
-- **里程碑**是案卷上的清单（名字 / 负责人 / 完成没完成）：**你只能提议，只有「本项目的 coordinator」或 human 能改**（`--milestone-add` / `--milestone-done`；项目没指定 coordinator 时会被拒）。一个里程碑可对应若干任务。
+- **里程碑**是案卷上的清单（名字 / 负责人 / 完成没完成）：**你只能提议，只有「本项目的 coordinator」或 manager 能改**（`--milestone-add` / `--milestone-done`；项目没指定 coordinator 时会被拒）。一个里程碑可对应若干任务。
 - **案卷只随"事做完"关闭**：窗口离场 / 进程死**不会**自动中止案卷（程序只摘指针 + 记一行 `[自动]`）。**没做完的案卷就该留在那里**，别因为会话结束就当作废。
-- 写节点（`ic case <id> --note "…"`）是**②线的备忘**；**给人看的「人话」只由 coordinator（或 human）写**——你写的节点一到，看板就会给案卷标「人话过期」，等它重写。
+- 写节点（`ic case <id> --note "…"`）是**②线的备忘**；**给人看的「人话」只由 coordinator（或 manager）写**——你写的节点一到，看板就会给案卷标「人话过期」，等它重写。
 
 ## 写文件与留痕（机器规则）
 
@@ -58,11 +58,11 @@ description: 信息中心的异步留言与办事追踪。会话开始时先看�
 
 ## 协作约定
 
-- **分两层**：`role=manager` 是**全局**管理者（名册 / hub 级）；**每个项目**另有自己的 coordinator（`projects.coordinator`，**由 human 指定**，没指定就拒），项目里的分工裁定与资源调配归**该项目**的 coordinator。它的裁定优先执行；有异议只回**一条**针对冲突点的信，不要一边争一边并行改文件。
+- **分两层**：**全局只有一个人 `manager`（＝用户本人，旧名 `human` 仍被接受）**（名册 `role=manager`，管名册 / hub 级）；**每个项目**另有自己的 coordinator（`projects.coordinator`，**由 manager 指定**，没指定就拒），项目内路径的写锁与派单归**该项目**的 coordinator，项目外归 manager。它的裁定优先执行；有异议只回**一条**针对冲突点的信，不要一边争一边并行改文件。
 - **单一写者**：每个文件/文档只有一个 owner agent 可写。你不是 owner 时，只发 diff 建议留言，由 owner 合入。
 - **规划纪律（WBS）**：项目目录下的 `PLAN.md`（任务分解：owner、交付物、验收标准、依赖）由 coordinator 独家产出和维护；你的进展只写进自己的 `TODO-<你的名字>.md`；要调整计划给 coordinator 发信，不要直接改 PLAN.md。
-- **礼仪**：无新信息不回帖；禁止 `+1`、`收到`、纯客套的附议信；同一分歧最多两轮，之后交 coordinator 或 human 裁定。想知道别人在做什么，看 `ic_agents` 的 activity，不要发「你在干嘛」问询信。
-- **`human` ≠ coordinator**：`human` 是人自己的身份（意图与拍板以它下发，也是默认 `--as` 与唯一能移除其他成员的特权身份）；coordinator 是人驱动的 agent，别把二者当同一个东西。
+- **礼仪**：无新信息不回帖；禁止 `+1`、`收到`、纯客套的附议信；同一分歧最多两轮，之后交**本项目的 coordinator** 裁定（查不到 coordinator 则回落 `manager`）。想知道别人在做什么，看 `ic_agents` 的 activity，不要发「你在干嘛」问询信。
+- **`manager` ≠ coordinator**：`manager` 是人（用户本人）自己的身份（旧名 `human`，仍被接受；意图与拍板以它下发，也是默认 `--as` 与唯一能移除其他成员的特权身份）；coordinator 是人驱动的 agent，别把二者当同一个东西。
 - **kickoff 信**（high 优先级、主题带【kickoff】）：先回一条确认认领的分工，更新 `ic_activity`，再动手。
 
 ## 双会话

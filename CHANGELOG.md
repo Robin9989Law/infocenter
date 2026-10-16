@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.6.0] - 2026-10-16
 
-> **这一版把「谁说了算」分清了**：全局叫 **manager**，**每个项目**另有自己的 **coordinator**（由 human 指定）。
+> **这一版把「谁说了算」分清了**：全局只有一个人 **`manager`**（＝用户本人，旧名 `human`），**每个项目**另有自己的 **coordinator**（由 manager 指定）。
 > 另外补了一个「接活钩子」（`--wait-for`：触发条件不许只写在信里）、`ic status` 的空钥匙灯、
 > 看板减噪（默认只列未封卷）、发布卫生（真打一个包再打开看），以及一批重复实体收尾。
 > 上一版（0.5.0）是首个公开版。
@@ -31,7 +31,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   现在 `crew._waiting_count()` 查一次共享状态，收信提示词与心跳提示词（含自定义模板）都会带一行
   `有 N 卷在等你：ic cases --wait-for <我> 看是哪些——要么接着办，要么转出去`。
 
-> **这一版把「谁说了算」分清了**：全局叫 **manager**，**每个项目**另有自己的 **coordinator**（由 human 指定）。
+> **这一版把「谁说了算」分清了**：全局只有一个人 **`manager`**（＝用户本人，旧名 `human`），**每个项目**另有自己的 **coordinator**（由 manager 指定）。
 > 另外补了一个「接活钩子」（`--wait-for`：触发条件不许只写在信里）、`ic status` 的空钥匙灯、
 > 看板减噪（默认只列未封卷）、发布卫生（真打一个包再打开看），以及一批重复实体收尾。
 > 上一版（0.5.0）是首个公开版。
@@ -54,6 +54,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **看板减噪：默认只列未封卷的，没实质内容的打 `[信]` 标（不藏）**。任何 thread 都能当案卷 ⇒ 每封派单/回信/报告都长成"卷"、还各自挂着「⚠ 没写怎样算完」（实测 148 条里大半是**已封卷的历史**，混在一起才显得吵）。现在：`_case_view` 出一个**派生标记** `substantive`（验收 / 里程碑 / WBS 三选一，**不给信加字段、不建表**）；`ic cases` 默认只列未封卷、把没实质内容的打 `[信]` 标、封卷的折成一行（`--all` 看全；`--json` 不动），控制台的案卷栏同一口径（折已封卷、给信打标签）。**判据被真数据修正过两次**，两次都记在案：①第一版按 `substantive` 过滤——查数据发现【触发 S6】那类**派单线程是活**（在办、5 封信，却啥也没有）⇒ 改成不藏；②"92% 是信"这个数我一开始读错了（里面大半是已封卷的历史，不是活）⇒ 才有"默认只列未封卷"。**已知缺口（登记）**：展示层没法可靠区分"真案卷 vs 派单线程"（三条立案路径的列完全一样）⇒ 要么立案时留显式标记、要么给派单线程一等公民身份，属改数据模型，**单开一笔**。
 
 ### Changed
+- **身份改名：`human` → `manager`（`human` 作为旧名继续被接受，不做迁移）**（manager 2026-10-16 拍：manager 与 human 合一，人的身份改名为 `manager`）。下面「coordinator 分两层」那条把**全局叫 `manager`、人叫 `human`** 分成两码事；今天裁定二者**合一**——**全局只有一个人 `manager`（＝用户本人）**，`role=manager` 的名册条目就是这个人。**两层口径定为**：全局一个 `manager`（人），每个项目一个 `coordinator`（项目内路径的写锁/派单归它，项目外归 manager）。`human` = **旧名，仍被接受**（CLI 默认 `--as`、`_must_human` 护栏、历史痕迹与哈希链里仍保留 `human`），**不做数据迁移**（`.py` 各归 cursor/grok，本轮只动 §〇 文案：README / SKILL / CHANGELOG）。配套：`--as human` 示例→`--as manager`；「请 human 裁定 / 给 human 发信」→「给**本项目的 coordinator**（查不到回落 `manager`）」；`ic agents --role` 说明同步。（真相源：名册 `manager` role=manager、`opencode` role 清空——他仍是信息中心/01_ICLR2027 的 coordinator；`~/.infocenter/config.json` 已同步；探针验过 opencode 抢项目外路径被拒、manager 放行。）
 - **重复实体收尾（L6）+ 一条纪律落地（L7）**：
   - **`crew._parse_utc` 与 `store._parse_utc` 是「同名两义」**（一个返回 `datetime`、一个返回 epoch 秒），
     而且**两边各抄了一遍时间格式串** `%Y-%m-%dT%H:%M:%SZ`——正是「改一处忘一处」那种。现在合并：
