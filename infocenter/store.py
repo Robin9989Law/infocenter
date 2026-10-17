@@ -807,8 +807,8 @@ class Store:
                 claimed_by = row["delivery_claimed_by"]
                 claimed_at = row["delivery_claimed_at"]
                 if claimed_by is None:
-                    # M6-0：只认领属于本窗 workspace 的信；他项目窗口**照常看见**但**不认领**，
-                    # 认领留给该项目自己的窗口/守护（否则它会被永久挡住）。
+                    # M6-0 / M6-10：只认领属于本窗 workspace 的信。他项目窗口照常看见但不认领；
+                    # 空 workspace 也不自动认领。认领留给该项目自己的窗口，或留给显式签收。
                     if _auto_claim_allowed(conn, window_id, row["workspace"]):
                         target = row["delivered_to"]
                         cur = conn.execute(
@@ -4205,12 +4205,21 @@ def _recipient_replied(conn: sqlite3.Connection, message_row: sqlite3.Row, recip
 
 
 def _auto_claim_allowed(conn: sqlite3.Connection, window_id: str, message_workspace: str | None) -> bool:
-    """M6-0：只允许认领「属于本窗口 workspace」的信。
+    """M6-0 / M6-10：长轮询只自动认领「属于本窗口 workspace」的信。
+
+    空 workspace 的信不自动认领（M6-10）。这类信仍出现在不带项目过滤的
+    events.new 和全量 inbox 里，claimed_by 保持空；显式 mark/read 走
+    `_claim_thread_on_touch`，谁打开谁认领。
+
+    不改 `_workspace_compatible`。那条还被 `_release_stale_claims` 用来判断
+    「认领窗口与信不相容」。空侧仍算相容，已经读过的空信不会被当成错位而放掉。
 
     否则，一个**不做 workspace 过滤**的长轮询窗口（常见于他项目的 MCP/CLI 会话）会把别的项目的
     信一并认领走；而认领一旦落在别窗，正确项目的守护/窗口在 `/v1/events` 与 `ic inbox` 里就
     **再也看不到它**（过滤条件 `claimed_by IS NULL OR = 本窗`）⇒ 派单/来信**静默丢失**。
     """
+    if not (message_workspace or "").strip():
+        return False
     return _workspace_compatible(message_workspace, _window_workspace(conn, window_id))
 
 

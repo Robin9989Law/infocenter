@@ -113,7 +113,7 @@ class M68EventCursorTest(unittest.TestCase):
         blank = self.store.send("opencode", "cursor", "空", "没有项目")
         held = self.store.events("cursor", since=0, wait=0, window_id="w-hold")
         self.assertEqual(self._ids(held), [blank["id"]])
-        self.assertEqual(self._claim(blank["id"]), "w-hold")
+        self.assertIsNone(self._claim(blank["id"]))
         self.store.events("cursor", since=0, wait=0, workspace=self.proj, window_id="w-b")
         later = self.store.send("opencode", "cursor", "项目内", "二", workspace=self.proj)
         moved = self.store.events(

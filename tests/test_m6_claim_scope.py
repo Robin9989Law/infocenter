@@ -16,7 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from infocenter.store import Store
+from infocenter.store import MailError, Store
 
 
 class ClaimScopeTest(unittest.TestCase):
@@ -106,12 +106,41 @@ class ClaimScopeTest(unittest.TestCase):
         box = self.store.inbox("grok", status="unread", window_id="w-a2", workspace=self.proj_a)
         self.assertNotIn(msg["id"], [m["id"] for m in box["messages"]])
 
-    def test_workspace_less_message_is_still_claimable(self):
-        # 无 workspace 的信（不会自动派给守护）：不做跨项目判断，行为不变
+    def test_same_project_still_auto_claims_and_cross_project_does_not(self):
+        # 反例：收紧不得波及同项目。同项目这句认领断言红了，就是门闩关过头。
+        self.store.events("grok", since=0, wait=0, workspace=self.proj_a, window_id="w-aA")
+        same = self.store.send("human", ["grok"], "同项目", "甲", workspace=self.proj_a)
+        other = self.store.send("human", ["grok"], "他项目", "乙", workspace=self.proj_b)
+        ev = self.store.events("grok", since=0, wait=0, workspace=None, window_id="w-aA")
+        seen = [m["id"] for m in ev["new"]]
+        self.assertIn(same["id"], seen)
+        self.assertIn(other["id"], seen)
+        self.assertEqual(self._claim_of(same["id"]), "w-aA")
+        self.assertIsNone(self._claim_of(other["id"]))
+
+    def test_workspace_less_message_stays_visible_and_unclaimed(self):
+        # 无 workspace 的信：可见性不变、自动认领不再发生。
         msg = self.store.send("human", ["grok"], "无 workspace", "正文")
         self.store.events("grok", since=0, wait=0, workspace=self.proj_a, window_id="w-aA")
         ev = self.store.events("grok", since=0, wait=0, workspace=None, window_id="w-aA")
         self.assertIn(msg["id"], [m["id"] for m in ev["new"]])
+        self.assertIsNone(self._claim_of(msg["id"]))
+        box = self.store.inbox("grok", status="unread")
+        self.assertIn(msg["id"], [m["id"] for m in box["messages"]])
+        self.assertIsNone(self._claim_of(msg["id"]))
+
+    def test_explicit_read_claims_workspace_less_message(self):
+        # 显式签收仍走认领：谁打开谁认领，第二个窗口走 already_claimed。
+        msg = self.store.send("human", ["grok"], "无 workspace 签收", "正文")
+        self.store.events("grok", since=0, wait=0, window_id="w-open")
+        self.assertIsNone(self._claim_of(msg["id"]))
+        opened = self.store.mark("grok", msg["id"], "read", window_id="w-open")
+        self.assertEqual(opened["claimed_by"], "w-open")
+        self.assertEqual(self._claim_of(msg["id"]), "w-open")
+        with self.assertRaises(MailError) as ctx:
+            self.store.mark("grok", msg["id"], "read", window_id="w-next")
+        self.assertEqual(ctx.exception.code, "already_claimed")
+        self.assertEqual(self._claim_of(msg["id"]), "w-open")
 
 
 if __name__ == "__main__":
