@@ -206,7 +206,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic case <id> --milestone-add "名字" [--milestone-owner 身份]` / `--milestone-done N` | 加一条里程碑 / 勾掉第 N 条（下标从 0 起，`!N` 撤回完成）；**只有 coordinator 能改** |
 | `ic cases [--workspace X] [--status 状态] [--owner 身份] [--wait-for 身份] [--wbs 前缀] [--limit N] [--all]` | 列出案卷（**默认只列未封卷**；没实质内容的（验收/里程碑/WBS 都没有）打 `[信]` 标、**不藏**——实测那堆里有真活；已封卷的折成一行，`--all` 看全）；`--wbs` 前缀匹配（给 `防混写` 会带出 `防混写/锁与闸` 下面的）。每条带 `unread_replies`（按请求者自己算，别人的未签收副本不算）；`> 0` 时另打**一行黄灯** `⚠ 有 N 封未签收回信（最早 <时间>，来自 <身份>）`——`a8e374b`：时间和来信人只读 store 给的 `unread_replies_earliest_beijing` / `unread_replies_from`，缺了就只留「有 N 封」，**客户端不自己数也不编时间**；`ic case <id>` 看单卷时同样打这一行；只提示不拦 |
 | `ic projects [--project <路径> --coordinator <身份>]` | 列出项目（名字 / 路径 / **该项目的 coordinator**）；带 `--coordinator` 就是指定或更换它（**只有 manager（旧名 `human`）能设；空值＝清空 ⇒ 回到「没指定」**）。这是**治理动作**，改一次进一条留痕（`project_coordinator`：谁把哪个项目的协调者从谁换成谁），`ic audit` 查得到 |
-| `ic windows [--agent 身份] [--workspace X] [--state 状态]` | 列出办公室（窗口）登记；默认只列在办/暂停 + 近期离场，`--all` 看全 |
+| `ic windows [--agent 身份] [--workspace X] [--state 状态]` | 列出办公室（窗口）登记；默认只列在办/在场的办公室，看全部（含离场）用 `ic windows --all` |
 
 ### 任务队列
 
