@@ -179,7 +179,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic serve [--detach] [--port N]` | 启动服务（`--detach` 表示后台常驻） |
 | `ic stop` | 停止后台服务 |
 | `ic status` | 显示服务地址、pid、你的未读数和**各家未读数**（人的两个名字算**同一个未读数**，同一封信两名都未读只数一封，`ffa605d`）；另带三盏黄灯：**有人在这卷里等你**（未封卷、状态「待你」；**全局总账**——不筛项目，别的项目和没标 workspace 的卷都算进来。守护按项目跑，提示词里那句「有 N 卷在等你」只计本项目（`18cd882`），**两处不混**）、**空钥匙**（盘上有改动但没人持锁）、**SKILL 副本漂移**（**只提示不拦**） |
-| `ic agents` | 显示名单：角色、未读数（**人的两名合并成同一个数**，`ffa605d`）、activity 和最后活动（北京时间） |
+| `ic agents [--all]` | 显示名单：角色、未读数（**人的两名合并成同一个数**，`ffa605d`）、activity 和最后活动（北京时间）；名单里每个身份底下另列他自己的办公室，**默认不列已离场的**（`state` 为 `left` / `offline`，展示标「离场」），有遮挡时末尾提示「另有 N 间未列出；--all 看全」；`--all` 连离场的一起列（`a664ef2`，与 `ic windows --all` 同一口径） |
 | `ic agents add <名字> [-d 描述] [--role manager]` | 加入名单（同时写入 config 并同步到服务） |
 | `ic agents remove <名字>` | 移出名单 |
 | `ic register [-d 描述] [--activity "一句话"]` | 注册或更新自己，并做状态自报 |
@@ -206,7 +206,7 @@ agent 一侧不必学习命令行：客户端配好 MCP 后，模型可以像调
 | `ic case <id> --milestone-add "名字" [--milestone-owner 身份]` / `--milestone-done N` | 加一条里程碑 / 勾掉第 N 条（下标从 0 起，`!N` 撤回完成）；**只有 coordinator 能改** |
 | `ic cases [--workspace X] [--status 状态] [--owner 身份] [--wait-for 身份] [--wbs 前缀] [--limit N] [--all]` | 列出案卷（**默认只列未封卷**；没实质内容的（验收/里程碑/WBS 都没有）打 `[信]` 标、**不藏**——实测那堆里有真活；已封卷的折成一行，`--all` 看全）；`--wbs` 前缀匹配（给 `防混写` 会带出 `防混写/锁与闸` 下面的）。每条带 `unread_replies`（按请求者自己算，别人的未签收副本不算）；`> 0` 时另打**一行黄灯** `⚠ 有 N 封未签收回信（最早 <时间>，来自 <身份>）`——`a8e374b`：时间和来信人只读 store 给的 `unread_replies_earliest_beijing` / `unread_replies_from`，缺了就只留「有 N 封」，**客户端不自己数也不编时间**；`ic case <id>` 看单卷时同样打这一行；只提示不拦 |
 | `ic projects [--project <路径> --coordinator <身份>]` | 列出项目（名字 / 路径 / **该项目的 coordinator**）；带 `--coordinator` 就是指定或更换它（**只有 manager（旧名 `human`）能设；空值＝清空 ⇒ 回到「没指定」**）。这是**治理动作**，改一次进一条留痕（`project_coordinator`：谁把哪个项目的协调者从谁换成谁），`ic audit` 查得到 |
-| `ic windows [--agent 身份] [--workspace X] [--state 状态]` | 列出办公室（窗口）登记；默认只列在办/在场的办公室，看全部（含离场）用 `ic windows --all` |
+| `ic windows [--agent 身份] [--workspace X] [--state 状态]` | 列出办公室（窗口）登记；默认只列在办/在场的办公室（「离场」＝`state` 为 `left` / `offline`），看全部（含离场）用 `ic windows --all`；显式 `--state left` 照样按该状态列全（`a664ef2`） |
 
 ### 任务队列
 
