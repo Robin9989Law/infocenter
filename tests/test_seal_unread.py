@@ -54,9 +54,12 @@ class SealUnreadTest(unittest.TestCase):
         finally:
             conn.close()
 
-    def _open_with_reply_to_sealer(self) -> tuple[dict, dict]:
-        """cursor 发开工信，kimi 回一封还没被 cursor 签收。"""
-        root = self.store.send("cursor", "kimi", "开工", "请办")
+    def _open_with_reply_to_sealer(self, body: str = "请办") -> tuple[dict, dict]:
+        """cursor 发开工信，kimi 回一封还没被 cursor 签收。
+
+        同一库里再开一卷时正文必须不同：M6-3 对正文全同的重发返回同一封。
+        """
+        root = self.store.send("cursor", "kimi", "开工", body)
         case = self.store.create_case(
             agent="cursor",
             title="开工",
@@ -215,7 +218,7 @@ class SealUnreadTest(unittest.TestCase):
             store_mod._block_unread_replies = real
         sealed = self.store.get_case(case["id"])
         self.assertEqual(sealed["status"], "done", "短路后办结应已通过，否则 T1 不会红")
-        fresh, _reply = self._open_with_reply_to_sealer()
+        fresh, _reply = self._open_with_reply_to_sealer(body="请办·第二封")
         self._assert_t1_rejects(fresh["id"])
 
 
@@ -258,9 +261,12 @@ class SealUnreadAliasTest(unittest.TestCase):
         finally:
             conn.close()
 
-    def _open_alias_only(self, to_agent: str = "human") -> tuple[dict, dict]:
-        """寄给一个名字、另一个名字名下没有行。立案人是发信人（线程当事人）。"""
-        root = self.store.send("opencode", to_agent, "探针", f"寄给 {to_agent}")
+    def _open_alias_only(self, to_agent: str = "human", body: str | None = None) -> tuple[dict, dict]:
+        """寄给一个名字、另一个名字名下没有行。立案人是发信人（线程当事人）。
+
+        同一库里再开一卷时正文必须不同：M6-3 对正文全同的重发返回同一封。
+        """
+        root = self.store.send("opencode", to_agent, "探针", body or f"寄给 {to_agent}")
         case = self.store.create_case(
             agent="opencode",
             title="探针",
@@ -344,7 +350,7 @@ class SealUnreadAliasTest(unittest.TestCase):
             store_mod._own_delivery_fallback_names = real
         self.assertEqual(self.store.get_case(case["id"])["status"], "done")
         self.assertEqual(self._delivery(root["id"], "human")["status"], "unread")
-        fresh, _root = self._open_alias_only("human")
+        fresh, _root = self._open_alias_only("human", body="寄给 human · 第二封")
         self._assert_alias_blocks(fresh["id"])
 
     def test_两行都未读时签一次后另一行不再卡住办结(self):

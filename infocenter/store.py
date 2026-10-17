@@ -877,6 +877,7 @@ class Store:
         reply_to = _reply_to(reply_to)
         recipients_in = parse_recipients(to)
         node_text = str(local_node).strip().lower() if isinstance(local_node, str) and local_node.strip() else None
+        replay_id = None
         with self._session(immediate=True) as conn:
             _upsert(conn, sender, None)
             now = utcnow()
@@ -907,128 +908,136 @@ class Store:
                 window_id=window_id,
                 client_cwd=client_cwd,
             )
-            # 只有显式传入才登记项目。父信/案卷/窗口/cwd 的推断不得 _upsert_project，
-            # 否则 cwd 兜底会继续造出垃圾项目。
-            if workspace_source == "explicit" and workspace:
-                _upsert_project(conn, workspace, None, now)
-            if recipients_in == ["*"]:
-                rows = conn.execute(
-                    "SELECT name FROM agents WHERE name != ? ORDER BY name",
-                    (sender,),
-                ).fetchall()
-                recipients = [row["name"] for row in rows]
-                if node_text:
-                    recipients = [name for name in recipients if not _is_wire_name(name)]
-                if not recipients:
-                    raise MailError(
-                        "delivers_to_nobody",
-                        "除了你自己，还没有其他 agent，广播没有人可收",
-                        422,
-                    )
+            # M6-3：同一发件人 + 同一 reply_to + 同一主题 + 正文逐字节相同 ⇒ 不新建。
+            # 不看收件人、优先级、workspace。命中就静默返回最早那条，不报错、不加开关。
+            replay_id = _exact_send_id(conn, sender, parent_id, subject, body)
+            if replay_id is not None:
+                message_id = replay_id
             else:
-                recipients = recipients_in
-                # 第 5 道兜底（human 2026-10-16 定；kimi 2026-10-15 提的「死信拒收」）：
-                # 发给**不存在**（打错名字 / 已退休）的身份，程序会当作成功——而那封信谁也收不到，
-                # 话说了没人听是不可逆的损失。所以在这里直接拒（422）。
-                # 在册 = 库里注册过 ∪ 名册（config.json）里列着（kickoff 按名册群发，
-                # 新同事可能一次都还没开口，只看库会误拒）。
-                # 带点的「跨节点名」（`robin.kimi`）不归本地名册管，交给同步层导出。
-                known = _known_names(conn, self.path.parent)
-                unknown = [
-                    name for name in recipients
-                    if not _is_wire_name(name) and name not in known
-                ]
-                if unknown:
-                    raise MailError(
-                        "no_such_recipient",
-                        "没有这些身份：" + "、".join(unknown)
-                        + "（先核对名字；新同事让他 `ic register --as <名字>` 报个到，"
-                        + "或把人加进 config.json 的名册）",
-                        422,
-                    )
+                # 只有显式传入才登记项目。父信/案卷/窗口/cwd 的推断不得 _upsert_project，
+                # 否则 cwd 兜底会继续造出垃圾项目。
+                if workspace_source == "explicit" and workspace:
+                    _upsert_project(conn, workspace, None, now)
+                if recipients_in == ["*"]:
+                    rows = conn.execute(
+                        "SELECT name FROM agents WHERE name != ? ORDER BY name",
+                        (sender,),
+                    ).fetchall()
+                    recipients = [row["name"] for row in rows]
+                    if node_text:
+                        recipients = [name for name in recipients if not _is_wire_name(name)]
+                    if not recipients:
+                        raise MailError(
+                            "delivers_to_nobody",
+                            "除了你自己，还没有其他 agent，广播没有人可收",
+                            422,
+                        )
+                else:
+                    recipients = recipients_in
+                    # 第 5 道兜底（human 2026-10-16 定；kimi 2026-10-15 提的「死信拒收」）：
+                    # 发给**不存在**（打错名字 / 已退休）的身份，程序会当作成功——而那封信谁也收不到，
+                    # 话说了没人听是不可逆的损失。所以在这里直接拒（422）。
+                    # 在册 = 库里注册过 ∪ 名册（config.json）里列着（kickoff 按名册群发，
+                    # 新同事可能一次都还没开口，只看库会误拒）。
+                    # 带点的「跨节点名」（`robin.kimi`）不归本地名册管，交给同步层导出。
+                    known = _known_names(conn, self.path.parent)
+                    unknown = [
+                        name for name in recipients
+                        if not _is_wire_name(name) and name not in known
+                    ]
+                    if unknown:
+                        raise MailError(
+                            "no_such_recipient",
+                            "没有这些身份：" + "、".join(unknown)
+                            + "（先核对名字；新同事让他 `ic register --as <名字>` 报个到，"
+                            + "或把人加进 config.json 的名册）",
+                            422,
+                        )
+                    for name in recipients:
+                        _upsert(conn, name, None)
+                message_id = new_id()
+                created = now
+                final_thread_id = thread_id or message_id
+                conn.execute(
+                    """
+                    INSERT INTO messages(
+                        id, thread_id, from_agent, subject, body, priority,
+                        workspace, reply_to, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        message_id,
+                        final_thread_id,
+                        sender,
+                        subject,
+                        body,
+                        priority,
+                        workspace,
+                        parent_id,
+                        created,
+                    ),
+                )
+                delivery_rows = []
                 for name in recipients:
-                    _upsert(conn, name, None)
-            message_id = new_id()
-            created = now
-            final_thread_id = thread_id or message_id
-            conn.execute(
-                """
-                INSERT INTO messages(
-                    id, thread_id, from_agent, subject, body, priority,
-                    workspace, reply_to, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    message_id,
-                    final_thread_id,
-                    sender,
-                    subject,
-                    body,
-                    priority,
-                    workspace,
-                    parent_id,
-                    created,
-                ),
-            )
-            delivery_rows = []
-            for name in recipients:
-                inherited_claim = None
-                inherited_at = None
-                if thread_id and not _is_thread_sealed(conn, final_thread_id):
-                    inherited_claim = _effective_thread_claim(conn, final_thread_id, name, None)
-                    if inherited_claim:
-                        inherited_at = created
-                delivery_rows.append((message_id, name, inherited_claim, inherited_at))
-            conn.executemany(
-                """
-                INSERT INTO deliveries(message_id, to_agent, status, read_at, claimed_by, claimed_at)
-                VALUES (?, ?, 'unread', NULL, ?, ?)
-                """,
-                delivery_rows,
-            )
-            if thread_id:
-                case_row = _find_case(conn, final_thread_id)
-                if case_row is not None and not case_row["sealed"] and case_row["status"] not in SEALED_STATUSES:
-                    owner_name = case_row["owner_agent"] or ""
-                    owner_addressed = any(_same_agent(owner_name, name) for name in recipients)
-                    if case_row["status"] == "waiting" and owner_addressed and not _same_agent(sender, owner_name):
-                        conn.execute(
-                            "UPDATE cases SET status = 'open', waiting_for = NULL, updated_at = ? WHERE id = ?",
-                            (created, case_row["id"]),
-                        )
-                        _insert_node(
-                            conn,
-                            case_id=case_row["id"],
-                            agent=sender,
-                            window_id=window_id,
-                            action="reply",
-                            note=f"收到 {sender} 回复 → 在办",
-                            status="open",
-                            auto=False,
-                            now=created,
-                        )
-                    elif case_row["status"] == "open" and _same_agent(sender, owner_name):
-                        wait_for = next((r for r in recipients if not _same_agent(r, sender)), None)
-                        conn.execute(
-                            "UPDATE cases SET status = 'waiting', waiting_for = ?, updated_at = ? WHERE id = ?",
-                            (wait_for, created, case_row["id"]),
-                        )
-                        _insert_node(
-                            conn,
-                            case_id=case_row["id"],
-                            agent=sender,
-                            window_id=window_id or case_row["owner_window"],
-                            action="reply",
-                            note=f"回复 {wait_for or ''} → 待谁".strip(),
-                            status="waiting",
-                            auto=False,
-                            now=created,
-                        )
-        # 投递已经提交。趁这次写信，把死窗口的认领放掉。
+                    inherited_claim = None
+                    inherited_at = None
+                    if thread_id and not _is_thread_sealed(conn, final_thread_id):
+                        inherited_claim = _effective_thread_claim(conn, final_thread_id, name, None)
+                        if inherited_claim:
+                            inherited_at = created
+                    delivery_rows.append((message_id, name, inherited_claim, inherited_at))
+                conn.executemany(
+                    """
+                    INSERT INTO deliveries(message_id, to_agent, status, read_at, claimed_by, claimed_at)
+                    VALUES (?, ?, 'unread', NULL, ?, ?)
+                    """,
+                    delivery_rows,
+                )
+                if thread_id:
+                    case_row = _find_case(conn, final_thread_id)
+                    if case_row is not None and not case_row["sealed"] and case_row["status"] not in SEALED_STATUSES:
+                        owner_name = case_row["owner_agent"] or ""
+                        owner_addressed = any(_same_agent(owner_name, name) for name in recipients)
+                        if case_row["status"] == "waiting" and owner_addressed and not _same_agent(sender, owner_name):
+                            conn.execute(
+                                "UPDATE cases SET status = 'open', waiting_for = NULL, updated_at = ? WHERE id = ?",
+                                (created, case_row["id"]),
+                            )
+                            _insert_node(
+                                conn,
+                                case_id=case_row["id"],
+                                agent=sender,
+                                window_id=window_id,
+                                action="reply",
+                                note=f"收到 {sender} 回复 → 在办",
+                                status="open",
+                                auto=False,
+                                now=created,
+                            )
+                        elif case_row["status"] == "open" and _same_agent(sender, owner_name):
+                            wait_for = next((r for r in recipients if not _same_agent(r, sender)), None)
+                            conn.execute(
+                                "UPDATE cases SET status = 'waiting', waiting_for = ?, updated_at = ? WHERE id = ?",
+                                (wait_for, created, case_row["id"]),
+                            )
+                            _insert_node(
+                                conn,
+                                case_id=case_row["id"],
+                                agent=sender,
+                                window_id=window_id or case_row["owner_window"],
+                                action="reply",
+                                note=f"回复 {wait_for or ''} → 待谁".strip(),
+                                status="waiting",
+                                auto=False,
+                                now=created,
+                            )
+        # 新投递提交之后，趁这次写信把死窗口的认领放掉。
         # 不改 events 游标，也不把已经越过的未读塞回 new。
-        with self._session(immediate=True) as conn:
-            _release_stale_claims(conn)
-        self._signal()
+        # 正文全同的重放不新建：不对账，也不叫醒。
+        if replay_id is None:
+            with self._session(immediate=True) as conn:
+                _release_stale_claims(conn)
+            self._signal()
         result = self.get_message(sender, message_id, full=True)
         # 留空时给调用方一个可提示的信号。CLI 文案不在这里拼。
         result["workspace_source"] = workspace_source
@@ -4023,6 +4032,36 @@ def _is_window_gone(win_row: sqlite3.Row | None) -> bool:
     if win_row["pid"] is not None and not pid_alive(win_row["pid"], policy="not_dead"):
         return True
     return False
+
+
+def _exact_send_id(
+    conn: sqlite3.Connection,
+    sender: str,
+    reply_to: str | None,
+    subject: str,
+    body: str,
+) -> str | None:
+    """同一发件人、同一 reply_to、同一主题、正文逐字节相同的最早一封。
+
+    键不含收件人、优先级、workspace。正文按存储后的字节比，不模糊、不哈希落列。
+    没有就返回 None。已有多条全同的，返回最早那条，不合并旧行。
+    """
+    row = conn.execute(
+        """
+        SELECT id FROM messages
+        WHERE from_agent = ?
+          AND subject = ?
+          AND body = ?
+          AND (
+            (? IS NULL AND reply_to IS NULL)
+            OR reply_to = ?
+          )
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+        """,
+        (sender, subject, body, reply_to, reply_to),
+    ).fetchone()
+    return row["id"] if row else None
 
 
 def _workspace_compatible(message_workspace: str | None, window_workspace: str | None) -> bool:
