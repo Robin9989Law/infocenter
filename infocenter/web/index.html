@@ -369,6 +369,15 @@ function sameWs(a, b) {
   const bb = String(b).split("/").filter(Boolean).pop();
   return !!ba && ba === bb;
 }
+function isDepartedOffice(w) {
+  if (!w) return false;
+  const state = w.state || "";
+  const label = w.state_label || "";
+  return state === "left" || state === "offline" || label === "离场";
+}
+function presentOffices(rows) {
+  return (rows || []).filter(w => !isDepartedOffice(w));
+}
 
 function selectProject(ws) {
   state.selectedProject = (state.selectedProject === ws) ? null : ws;
@@ -617,7 +626,9 @@ function openSettings(kind, id) {
 
   if (kind === "project") {
     const p = state.projects.find(x => x.workspace === id) || { workspace: id };
-    const wins = state.windows.filter(w => sameWs(w.workspace, id));
+    const allWins = state.windows.filter(w => sameWs(w.workspace, id));
+    const wins = presentOffices(allWins);
+    const hiddenWins = allWins.length - wins.length;
     titleEl.textContent = "项目设置 · " + (p.name || id);
     bodyEl.innerHTML = `
       <div class="section-title">概览</div>
@@ -641,7 +652,7 @@ function openSettings(kind, id) {
       <button class="btn-primary" data-act="create-case">立案</button>
 
       <div class="section-title">② 守护（再让 agent 上线接活）</div>
-      <div class="kv"><b>在跑</b>${wins.filter(w => (w.state_label || w.state) === "在办").length} 个会话</div>
+      <div class="kv"><b>在跑</b>${allWins.filter(w => (w.state_label || w.state) === "在办").length} 个会话</div>
       <div class="settings-actions">
         <button class="btn resume" data-act="crew-up">启动守护</button>
         <button class="btn abort" data-act="crew-down">停止守护</button>
@@ -667,6 +678,7 @@ function openSettings(kind, id) {
       </div>
 
       <div class="section-title">该项目的项目团队会话（${wins.length}）</div>
+      ${hiddenWins ? `<div class="empty">另有 ${hiddenWins} 间未列出——全量用 <code>ic windows --all</code></div>` : ""}
       ${wins.length === 0 ? '<div class="empty">暂无</div>' : wins.map(w => `
         <div class="mini" data-act="goto-window" data-wid="${escapeHtml(w.window_id || w.id)}">
           ${escapeHtml(showName(w.agent))} · ${escapeHtml(w.window_id || w.id)} · ${escapeHtml(w.state_label || w.state || "")}
@@ -740,7 +752,7 @@ function openSettings(kind, id) {
 
   if (kind === "human") {
     const opts = state.agents.filter(a => a.roster !== false && a.name !== "human").map(a => `<option value="${escapeHtml(a.name)}">${escapeHtml(showName(a.name))}</option>`).join("");
-    const offices = state.windows.filter(w => w.state !== "left");
+    const offices = presentOffices(state.windows);
     const openCases = state.cases.filter(c => !c.sealed);
     titleEl.textContent = "manager · 干预中枢";
     bodyEl.innerHTML = `
@@ -884,13 +896,16 @@ function openSessions() {
   const overlay = document.getElementById("modal-overlay");
   const titleEl = document.getElementById("modal-title");
   const bodyEl = document.getElementById("modal-body");
-  const wins = state.selectedProject
+  const scoped = state.selectedProject
     ? state.windows.filter(w => sameWs(w.workspace, state.selectedProject))
     : state.windows;
+  const hidden = scoped.filter(isDepartedOffice).length;
+  const wins = presentOffices(scoped);
   titleEl.textContent = "项目团队会话（" + wins.length + "）";
   bodyEl.innerHTML = `
     <div class="kv quiet">会话 = 人和 agent 的一次运行上下文（原「办公室」）。它只负责并发隔离与认领，**不是业务概念**，所以不进控制台三层（项目 / WBS / 案卷）。</div>
     <hr>
+    ${hidden ? `<div class="empty">另有 ${hidden} 间未列出——全量用 <code>ic windows --all</code></div>` : ""}
     ${wins.length === 0 ? '<div class="empty">暂无会话</div>' : wins.map(w => {
       const wid = escapeHtml(w.window_id || w.id);
       const st = escapeHtml(w.state_label || w.state || "");

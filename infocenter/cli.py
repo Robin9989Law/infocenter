@@ -41,36 +41,58 @@ _GLOBAL.add_argument("--home", default=None, help="信息中心主目录")
 _GLOBAL.add_argument("--json", action="store_true", help="JSON 输出")
 
 
-# M6-4 列表收口：默认只留在办、暂停，以及这段时间内离场的。
-# 时间界与计划里「离场超过 1 小时」相同，但只藏列表，不删行。
-_RECENT_LEFT_SECONDS = 3600
-_RECENT_LEFT_TEXT = "1 小时"
-_PRESENT_WINDOW_STATES = {"active", "paused"}
+# M6-4 列表收口：默认不列已离开的办公室（state=left / offline，展示标是「离场」）。
+# 只藏列表，不删行、不加列。要看全用现成的 --all，不另造参数。
 _DEPARTED_WINDOW_STATES = {"left", "offline"}
+_DEPARTED_WINDOW_LABEL = "离场"
 
 
-def _window_kept_by_default(item: dict, now: datetime) -> bool:
-    state = item.get("state") or ""
-    if state in _PRESENT_WINDOW_STATES:
+def _window_is_departed(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if (item.get("state") or "") in _DEPARTED_WINDOW_STATES:
         return True
-    if state not in _DEPARTED_WINDOW_STATES:
-        return False
-    moment = _parse_utc(item.get("left_at")) or _parse_utc(item.get("last_seen_at"))
-    if moment is None:
-        return False
-    return (now - moment).total_seconds() <= _RECENT_LEFT_SECONDS
+    return (item.get("state_label") or "") == _DEPARTED_WINDOW_LABEL
 
 
-def _collapse_windows(payload: dict, now: datetime | None = None) -> dict:
-    """默认列表。服务端 `state` 是精确匹配，没有离场时间参数，所以整表拉回再滤。"""
+def _collapse_windows(payload: dict) -> dict:
+    """默认列表。服务端 `state` 是精确匹配，没有「去掉已离开」的参数，所以整表拉回再滤。"""
     rows = list(payload.get("windows") or [])
-    moment = now or datetime.now(timezone.utc)
-    kept = [row for row in rows if _window_kept_by_default(row, moment)]
+    kept = [row for row in rows if not _window_is_departed(row)]
     out = dict(payload)
     out["windows"] = kept
     out["count"] = len(kept)
     out["collapsed"] = True
     out["hidden"] = len(rows) - len(kept)
+    return out
+
+
+def _collapse_agent_offices(payload: dict) -> dict:
+    """`ic agents` 每个身份底下的办公室。默认收掉已离开的，其余字段不动。"""
+    if not isinstance(payload, dict):
+        return payload
+    agents = payload.get("agents")
+    if not isinstance(agents, list):
+        return payload
+    hidden = 0
+    new_agents = []
+    for item in agents:
+        if not isinstance(item, dict):
+            new_agents.append(item)
+            continue
+        offices = item.get("windows")
+        if not isinstance(offices, list):
+            new_agents.append(item)
+            continue
+        kept = [office for office in offices if not _window_is_departed(office)]
+        hidden += len(offices) - len(kept)
+        cloned = dict(item)
+        cloned["windows"] = kept
+        new_agents.append(cloned)
+    out = dict(payload)
+    out["agents"] = new_agents
+    out["windows_collapsed"] = True
+    out["windows_hidden"] = hidden
     return out
 
 
@@ -141,6 +163,11 @@ def build_parser() -> argparse.ArgumentParser:
     agents_p.add_argument("name", nargs="?", default=None, help="add/remove 的 agent 名字")
     agents_p.add_argument("--description", "-d", default="", help="add 时的描述")
     agents_p.add_argument("--role", default="", help="add 时的角色：manager（全局管理者）或留空。人的身份名是 manager（旧名 human 仍被接受）")
+    agents_p.add_argument(
+        "--all",
+        action="store_true",
+        help="各身份下连已离开的办公室也列出（默认不列；与 ic windows --all 同一口径）",
+    )
 
     reg = sub.add_parser("register", help="注册或更新自己")
     reg.add_argument("--description", default=None)
@@ -287,19 +314,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     windows = sub.add_parser(
         "windows",
-        help=f"列出办公室（默认：在办、暂停、{_RECENT_LEFT_TEXT}内离场；--all 看全）",
+        help="列出办公室（默认不列已离开的；--all 看全）",
     )
     windows.add_argument("--agent", dest="window_agent", default=None, help="只看这个身份")
     windows.add_argument("--workspace", default=None, help="只看这个项目目录")
     windows.add_argument(
         "--state",
         default=None,
-        help="按状态精确筛选（active、paused、left）。指定后列出该状态的全部，不再按离场时间收口",
+        help="按状态精确筛选（active、paused、left）。指定后列出该状态的全部，不再隐藏已离开的",
     )
     windows.add_argument(
         "--all",
         action="store_true",
-        help=f"列出全部办公室，包含离场超过 {_RECENT_LEFT_TEXT}的。不指定时默认隐藏这些",
+        help="列出全部办公室，包含已离开的。不指定时默认不列这些",
     )
 
     projects = sub.add_parser("projects", help="列出项目；**manager** 可指定项目的 coordinator（旧名 human 仍被接受）")
@@ -389,6 +416,8 @@ def main(argv=None) -> int:
         if args.cmd == "agents":
             if args.action == "list":
                 payload = call(args.url, agent, "GET", "/v1/agents", home=home)
+                if not args.all:
+                    payload = _collapse_agent_offices(payload)
             elif args.action == "add":
                 if not args.name:
                     parser.error("agents add 需要一个名字")
@@ -734,8 +763,8 @@ def main(argv=None) -> int:
                 },
                 home=home,
             )
-            # 显式 --state / --all 保持原语义。默认不改传 state=active：
-            # 那样近期离场不在返回里，客户端滤不出来。
+            # 显式 --state / --all 保持原语义。默认不传 state：
+            # 服务端 state 是精确匹配，整表拉回再在显示层滤掉已离开的。
             if not args.all and not args.state:
                 payload = _collapse_windows(payload)
         else:
@@ -2023,6 +2052,9 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 label = office.get("state_label") or office.get("state") or ""
                 where = office.get("workspace") or ""
                 print(f"    办公室 {office.get('window_id')}  {label}  {where}".rstrip())
+        hidden = payload.get("windows_hidden") or 0
+        if payload.get("windows_collapsed") and hidden:
+            print(f"另有 {hidden} 间未列出；--all 看全")
         return
     if as_json or cmd in {"agents", "thread"}:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -2338,7 +2370,7 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
         hidden = payload.get("hidden") or 0
         if payload.get("collapsed") and hidden:
             print(
-                f"办公室 {count} 间（默认只列在办、暂停和 {_RECENT_LEFT_TEXT}内离场，"
+                f"办公室 {count} 间（默认不列已离开的，"
                 f"另有 {hidden} 间未列出；--all 看全）"
             )
         else:
