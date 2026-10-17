@@ -393,7 +393,7 @@ OPENAPI = {
         },
         "/v1/open": {
             "post": {
-                "summary": "在访达 / 文件管理器里打开目录。body.path（或 dir）必填",
+                "summary": "在访达 / 文件管理器里打开已登记的项目目录。body.path（或 dir）必填；未登记 403",
                 "responses": {"200": {"description": "opened"}},
             }
         },
@@ -581,17 +581,17 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = root + (_os.pathsep + pp if pp else "")
         dirs = sorted({d.get("dir") for d in _crew5.running_daemons(store.path.parent) if d.get("dir")})
-        py = _sys.executable
+        py = _shlex.quote(_sys.executable)
         log = store.path.parent / "restart.log"
         parts = [
             "sleep 0.5",
-            f'"{py}" -m infocenter crew down',
-            f'"{py}" -m infocenter stop',
-            f'"{py}" -m infocenter serve --detach',
+            f"{py} -m infocenter crew down",
+            f"{py} -m infocenter stop",
+            f"{py} -m infocenter serve --detach",
             "sleep 1",
         ]
         for d in dirs:
-            parts.append(f'"{py}" -m infocenter crew up --dir {_shlex.quote(d)}')
+            parts.append(f"{py} -m infocenter crew up --dir {_shlex.quote(d)}")
         script = "{ " + " ; ".join(parts) + " ; } >> " + _shlex.quote(str(log)) + " 2>&1"
         if body.get("dry_run"):
             return 200, {"ok": True, "dry_run": True, "projects": dirs, "log": str(log), "script": script}
@@ -622,6 +622,24 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         d = _os.path.expanduser(target)
         if not _os.path.isdir(d):
             raise MailError("invalid_path", "目录不存在", 400)
+        allowed: set[str] = set()
+        for item in store.list_projects():
+            ws = item.get("workspace") if isinstance(item, dict) else None
+            if not isinstance(ws, str) or not ws.strip():
+                continue
+            expanded = _os.path.expanduser(ws.strip())
+            allowed.add(_os.path.normpath(expanded))
+            try:
+                allowed.add(_os.path.normpath(_os.path.realpath(expanded)))
+            except OSError:
+                pass
+        norm = _os.path.normpath(d)
+        try:
+            real = _os.path.normpath(_os.path.realpath(d))
+        except OSError:
+            real = norm
+        if norm not in allowed and real not in allowed:
+            raise MailError("not_a_project", "只能打开已登记的项目目录", 403)
         opener = "open" if _sys.platform == "darwin" else ("explorer" if _os.name == "nt" else "xdg-open")
         try:
             _subprocess.Popen(

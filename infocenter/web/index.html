@@ -691,13 +691,13 @@ function openSettings(kind, id) {
       <div class="kv"><b>最近活动</b>${escapeHtml(w.activity_at_beijing || w.last_seen_beijing || "")}</div>
       ${w.activity ? `<div class="kv"><b>在做什么</b>${escapeHtml(w.activity)}</div>` : ""}
       <div class="kv"><b>进程</b>${w.pid != null ? escapeHtml(String(w.pid)) : "—"}</div>
-      <div class="kv quiet">状态：在办=会话在线；暂停=已叫停（可恢复）；离场=已退出（名下未封卷案卷自动中止封卷）。</div>
+      <div class="kv quiet">状态：在办=会话在线；暂停=已叫停（可恢复）；离场=已退出（写一行自动节点，释放锁与认领；案卷保持未封）。</div>
 
       <div class="section-title">操作</div>
       <div class="settings-actions">
         ${canPause ? '<button class="btn pause" data-act="pause-window">暂停</button>' : ""}
         ${canResume ? '<button class="btn resume" data-act="resume-window">恢复</button>' : ""}
-        <button class="btn disable" data-act="disable-window">离场并封卷</button>
+        <button class="btn disable" data-act="disable-window">离场</button>
       </div>
 
       <div class="section-title">名下案卷（${winCases.length}）</div>
@@ -1024,7 +1024,7 @@ async function toggleDaemons(ws) {
   const dcount = state.daemons.filter(d => d.alive && sameWs(d.dir, ws)).length;
   const action = dcount > 0 ? "down" : "up";
   const name = (state.projects.find(p => p.workspace === ws) || {}).name || ws;
-  if (action === "down" && !confirm("停止项目「" + name + "」的全部收信守护？\n会离场，并自动中止且封卷其名下全部未封卷案卷。")) return;
+  if (action === "down" && !confirm("停止项目「" + name + "」的全部收信守护？\n会离场：写一行自动节点，并释放写锁与认领。案卷保持未封。")) return;
   if (action === "up" && !confirm("启动项目「" + name + "」的全部收信守护（让 agent 上线开工）？")) return;
   try {
     const r = await api("/v1/crew", { method: "POST", body: { action, dir: ws } });

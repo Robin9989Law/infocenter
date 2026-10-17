@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+import re
 import sqlite3
 import tempfile
 import threading
@@ -473,10 +474,14 @@ class WindowAndCaseQualityTest(unittest.TestCase):
             # D3-b: 按原始 c.status 判断可暂停状态（open/doing/pending/waiting）
             self.assertIn('"open", "doing", "pending", "waiting"', html)
             # D3-c: 停用会话前有 confirm() 二次确认；**文案必须与 M7 新口径一致**
-            # （会话离场不再自动封卷，所以不能再写"离场并封卷"这种已经不成立的话）
+            # 假文案类＝声称会「自动…封卷」或按钮「离场并封卷」（逗号、「且」都不能漏）。
+            # 否定句是正确口径，要留：不会被自动封卷 / 不再自动封卷。别把「已封卷」这类无关文案算进去。
             self.assertIn("confirm(", html)
             self.assertIn("不会被自动封卷", html)
-            self.assertNotIn("离场并自动中止且封卷", html)
+            self.assertIn("不再自动封卷", html)
+            self.assertNotIn("离场并封卷", html)
+            false_seal = re.search(r"(?<!不会被)(?<!不再)自动(?:中止)?(?:且|并)?封卷", html)
+            self.assertIsNone(false_seal, f"看板仍有自动封卷假文案：{false_seal.group(0) if false_seal else ''}")
 
             # M7-3: 控制台三层 = 项目 / WBS / 案卷；会话不进控制台
             self.assertIn('id="wbs"', html)
