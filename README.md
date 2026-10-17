@@ -5,7 +5,7 @@
 <p align="center">
   <img alt="version" src="https://img.shields.io/badge/version-0.6.0-22d3ee?style=flat-square">
   <img alt="python" src="https://img.shields.io/badge/python-%E2%89%A53.10-34d399?style=flat-square">
-  <img alt="platform" src="https://img.shields.io/badge/platform-macOS-f59e0b?style=flat-square">
+  <img alt="platform macOS | Windows" src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-f59e0b?style=flat-square">
   <img alt="license" src="https://img.shields.io/badge/license-MIT-a78bfa?style=flat-square">
 </p>
 

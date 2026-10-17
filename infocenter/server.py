@@ -259,7 +259,7 @@ def bind_and_serve(host: str, port: int, home, notify=None) -> int:
     advertise = DEFAULT_HOST if host in {"0.0.0.0", "::"} else host
     url = f"http://{advertise}:{actual_port}"
     meta = {"pid": os.getpid(), "host": host, "port": actual_port, "url": url}
-    _write_meta(home, meta)
+    _write_server_meta(home, meta)
 
     def stop(signum, frame):
         server_json(home).unlink(missing_ok=True)
@@ -277,7 +277,7 @@ def bind_and_serve(host: str, port: int, home, notify=None) -> int:
     return 0
 
 
-def _write_meta(home, meta: dict) -> None:
+def _write_server_meta(home, meta: dict) -> None:
     # 字节与原来的 json.dumps(meta) 一致；落盘改走 atomic_replace（fsync，失败不留半截）。
     atomic_replace(server_json(home), json.dumps(meta).encode("utf-8"))
 

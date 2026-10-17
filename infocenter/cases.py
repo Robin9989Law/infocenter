@@ -270,7 +270,14 @@ def _orphan_window_cases(
     agent: str,
     now: str,
 ) -> list[str]:
-    """窗口离场：案卷不因此中止、不封卷。"""
+    """窗口离场：**案卷不因此中止、不封卷**。
+
+    宪法（human 定稿）：案卷 = 一件事的持久记录，**只随"事做完"关闭，与办公室/agent 在不在无关**。
+    所以程序只做两件**无争议**的事：
+      ① 摘掉主办窗口指针（窗口没了，那个指针就是假的）；
+      ② 记一行**只增**的说明节点（**状态不动、不封卷**）——把"主办窗口没了"说出来，别让人猜。
+    要中止/办结，必须由人/coordinator 显式做（`ic case --abort/--close`）。
+    """
     open_cases = conn.execute(
         "SELECT * FROM cases WHERE owner_window = ? AND sealed = 0",
         (window_id,),
@@ -297,7 +304,7 @@ def _orphan_window_cases(
             window_id=window_id,
             action="note",
             note=(
-                "主办窗口离场：案卷保持未封卷（不自动中止）。"
+                "主办窗口离场：案卷**保持未封卷**（不自动中止）。"
                 "要继续办就接手（写节点/转办），要收工就显式中止或办结。"
             ),
             status=c_row["status"],

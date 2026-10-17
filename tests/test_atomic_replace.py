@@ -49,7 +49,7 @@ class AtomicReplaceTest(unittest.TestCase):
         self.assertEqual(list(self.home.glob(".*tmp")), [])
 
     def test_server_meta_stays_ascii_escaped(self):
-        server._write_meta(self.home, {"url": "http://127.0.0.1:9", "note": "甲"})
+        server._write_server_meta(self.home, {"url": "http://127.0.0.1:9", "note": "甲"})
         raw = (self.home / "server.json").read_bytes()
         self.assertEqual(raw, json.dumps({"url": "http://127.0.0.1:9", "note": "甲"}).encode("utf-8"))
         self.assertNotIn("甲".encode("utf-8"), raw)

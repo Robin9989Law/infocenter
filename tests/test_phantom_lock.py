@@ -9,7 +9,6 @@ import contextlib
 import io
 import json
 import os
-import select
 import subprocess
 import sys
 import tempfile
@@ -140,11 +139,9 @@ class SplitCwdServerTest(unittest.TestCase):
             text=True,
         )
         assert self.proc.stdout is not None
-        if sys.platform == "win32":
-            line = self.proc.stdout.readline().strip()
-        else:
-            ready, _, _ = select.select([self.proc.stdout], [], [], 15)
-            line = self.proc.stdout.readline().strip() if ready else ""
+        from tests.test_quality_mcp import _wait_readable
+
+        line = self.proc.stdout.readline().strip() if _wait_readable(self.proc.stdout, 15) else ""
         if not line.startswith("http"):
             err = ""
             if self.proc.stderr is not None:

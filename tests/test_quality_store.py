@@ -20,6 +20,16 @@ from infocenter.store import MailError, Store, normalize_name, parse_recipients
 
 
 class StoreBoundaryAndConcurrencyTest(unittest.TestCase):
+    def test_workspace_rejects_newlines_and_caps_at_500(self):
+        from infocenter.store import _workspace
+
+        self.assertEqual(_workspace("x" * 500), "x" * 500)
+        for raw in ("a\nb", "a\rb", "a\r\nb", "x" * 501, "x" * 1024):
+            with self.subTest(raw=raw):
+                with self.assertRaises(MailError) as ctx:
+                    _workspace(raw)
+                self.assertEqual(ctx.exception.code, "invalid_workspace")
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)

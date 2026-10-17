@@ -570,7 +570,6 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         if method != "POST":
             raise MailError("method_not_allowed", "只支持 POST", 405)
         import os as _os
-        import shlex as _shlex
         import subprocess as _subprocess
         import sys as _sys
         from infocenter import __file__ as _initfile
@@ -581,23 +580,18 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         pp = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = root + (_os.pathsep + pp if pp else "")
         dirs = sorted({d.get("dir") for d in _crew5.running_daemons(store.path.parent) if d.get("dir")})
-        py = _shlex.quote(_sys.executable)
+        py = _sys.executable
         log = store.path.parent / "restart.log"
-        parts = [
-            "sleep 0.5",
-            f"{py} -m infocenter crew down",
-            f"{py} -m infocenter stop",
-            f"{py} -m infocenter serve --detach",
-            "sleep 1",
-        ]
-        for d in dirs:
-            parts.append(f"{py} -m infocenter crew up --dir {_shlex.quote(d)}")
-        script = "{ " + " ; ".join(parts) + " ; } >> " + _shlex.quote(str(log)) + " 2>&1"
+        from infocenter.crew import _restart_script
+
+        script = _restart_script(py, str(log), dirs)
         if body.get("dry_run"):
             return 200, {"ok": True, "dry_run": True, "projects": dirs, "log": str(log), "script": script}
         try:
+            from infocenter.crew import _shell_argv
+
             _subprocess.Popen(
-                ["/bin/sh", "-c", script],
+                _shell_argv(script),
                 cwd=root,
                 env=env,
                 start_new_session=True,

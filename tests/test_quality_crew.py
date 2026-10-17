@@ -470,5 +470,111 @@ class CrewQualityTest(unittest.TestCase):
 
 
 
+class PlatformCrewTest(unittest.TestCase):
+    def test_shell_and_mac_launchers_follow_platform(self):
+        with mock.patch("infocenter.crew.sys.platform", "win32"):
+            argv = crew._shell_argv("echo hi")
+            self.assertEqual(argv[0], "powershell")
+            self.assertNotIn("/bin/sh", argv)
+        with mock.patch("infocenter.crew.sys.platform", "darwin"):
+            argv = crew._shell_argv("echo hi")
+            self.assertEqual(argv[:2], ["/bin/sh", "-c"])
+        with mock.patch("infocenter.crew.sys.platform", "win32"):
+            script = crew._restart_script("python", "restart.log", ["C:/proj"])
+            argv = crew._shell_argv(script)
+            self.assertEqual(argv[0], "powershell")
+            self.assertNotIn("/bin/sh", argv)
+            self.assertTrue(script.startswith("& { "))
+            inside, _, after = script.partition(" } *>> ")
+            self.assertIn("Start-Sleep -Milliseconds 500", inside)
+            self.assertIn("infocenter crew down", inside)
+            self.assertIn("infocenter stop", inside)
+            self.assertIn("infocenter serve --detach", inside)
+            self.assertIn("Start-Sleep -Seconds 1", inside)
+            self.assertIn("infocenter crew up", inside)
+            self.assertNotIn("*>>", inside)
+            self.assertNotIn("infocenter", after)
+        with mock.patch("infocenter.crew.sys.platform", "darwin"):
+            script = crew._restart_script("python", "restart.log", ["/tmp/proj"])
+            argv = crew._shell_argv(script)
+            self.assertEqual(argv[:2], ["/bin/sh", "-c"])
+            self.assertTrue(script.startswith("{ "))
+
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        (home / "config.json").write_text(json.dumps({"agents": [
+            {"name": "deskbot", "app": "Safari"},
+            {"name": "clibot", "launch": "echo hi"},
+        ]}), encoding="utf-8")
+        project = str(home / "proj")
+
+        def notes(actions):
+            return " ".join((item.get("note") or "") for item in actions)
+
+        def commands(actions):
+            return [" ".join(item["command"]) for item in actions if item["command"]]
+
+        with mock.patch("infocenter.crew.sys.platform", "win32"), \
+                mock.patch("infocenter.crew.shutil.which", return_value=None):
+            actions = crew.plan_up(home, "http://127.0.0.1:9", project)
+            text = notes(actions)
+            joined = " ".join(commands(actions))
+            self.assertIn("macOS", text)
+            self.assertIn("tmux", text)
+            self.assertNotIn("open -a", joined)
+            self.assertNotIn("osascript", joined)
+        with mock.patch("infocenter.crew.sys.platform", "darwin"), \
+                mock.patch("infocenter.crew.shutil.which", return_value=None):
+            actions = crew.plan_up(home, "http://127.0.0.1:9", project)
+            joined = " ".join(commands(actions))
+            self.assertIn("open -a Safari", joined)
+            self.assertIn("osascript", joined)
+
+    def test_windows_restart_quotes_one_path_and_redirects_every_step(self):
+        path = "C:\\O'Brien\\My Projects\\proj"
+        python = "C:\\Program Files\\O'Brien\\python.exe"
+
+        def ps_strings(text: str) -> list[str]:
+            found = []
+            index = 0
+            while index < len(text):
+                if text[index] != "'":
+                    index += 1
+                    continue
+                start = index
+                index += 1
+                while index < len(text):
+                    if text[index] == "'":
+                        if index + 1 < len(text) and text[index + 1] == "'":
+                            index += 2
+                            continue
+                        index += 1
+                        break
+                    index += 1
+                found.append(text[start:index])
+            return found
+
+        def ps_value(token: str) -> str:
+            decoded = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", f"Write-Output {token}"],
+                capture_output=True, text=True, check=True,
+            )
+            return decoded.stdout.strip()
+
+        with mock.patch("infocenter.crew.sys.platform", "win32"):
+            script = crew._restart_script(python, "C:\\logs\\restart.log", [path])
+        inside, _, after = script.partition(" } *>> ")
+        self.assertTrue(script.startswith("& { "))
+        for step in ("infocenter crew down", "infocenter stop", "infocenter serve --detach", "infocenter crew up"):
+            self.assertIn(step, inside)
+        self.assertNotIn("*>>", inside)
+        self.assertNotIn("infocenter", after)
+        dir_at = inside.find("--dir ")
+        self.assertGreaterEqual(dir_at, 0)
+        self.assertEqual(ps_value(ps_strings(inside[dir_at:])[0]), path)
+        self.assertEqual(ps_value(ps_strings(inside)[0]), python)
+
+
 if __name__ == "__main__":
     unittest.main()

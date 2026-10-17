@@ -9,6 +9,8 @@
 `build/`、`*.egg-info/` 都已在 .gitignore 里。
 """
 
+import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -78,6 +80,43 @@ class PackagingTest(unittest.TestCase):
             "governance.py", "flock.py", "common.py", "cases.py", "windows.py",
         ):
             self.assertIn(f"infocenter/{mod}", names)
+
+
+def _hook_scan_code() -> str:
+    hook = (ROOT / ".githooks" / "pre-commit").read_text(encoding="utf-8")
+    match = re.search(r'python -c "(.+)"', hook)
+    if match is None:
+        raise AssertionError("pre-commit 里没有同名函数检查")
+    return match.group(1)
+
+
+class DuplicateDefTest(unittest.TestCase):
+    def test_tree_passes_and_a_second_def_fails(self):
+        from infocenter.common import duplicate_module_level_defs
+
+        self.assertEqual(duplicate_module_level_defs(ROOT / "infocenter"), {})
+        tiny = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tiny, True)
+        (tiny / "a.py").write_text("class A:\n    def run(self):\n        return 1\n", encoding="utf-8")
+        (tiny / "b.py").write_text("class B:\n    def run(self):\n        return 2\n", encoding="utf-8")
+        self.assertEqual(duplicate_module_level_defs(tiny), {})
+
+        code = _hook_scan_code()
+        clean = subprocess.run(
+            [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True,
+        )
+        self.assertEqual(clean.returncode, 0, clean.stdout + clean.stderr)
+
+        scratch = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, scratch, True)
+        shutil.copytree(ROOT / "infocenter", scratch / "infocenter")
+        extra = scratch / "infocenter" / "extra_dup.py"
+        extra.write_text("def pid_alive(pid, *, policy):\n    return False\n", encoding="utf-8")
+        dirty = subprocess.run(
+            [sys.executable, "-c", code], cwd=scratch, capture_output=True, text=True,
+        )
+        self.assertNotEqual(dirty.returncode, 0)
+        self.assertIn("pid_alive", dirty.stdout)
 
 
 if __name__ == "__main__":

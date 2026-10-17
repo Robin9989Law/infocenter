@@ -269,7 +269,7 @@ class CrewP2Test(unittest.TestCase):
 
     def test_c10_signal_group_falls_back_to_kill(self):
         calls = []
-        with patch.object(crew.os, "killpg", side_effect=ProcessLookupError), \
+        with patch.object(crew.os, "killpg", side_effect=ProcessLookupError, create=True), \
                 patch.object(crew.os, "kill", side_effect=lambda pid, sig: calls.append((pid, sig))):
             ok = crew._signal_group(4321, signal.SIGTERM)
         self.assertTrue(ok)
@@ -294,7 +294,10 @@ class CrewP2Test(unittest.TestCase):
             self.assertIsNotNone(proc.poll())
         finally:
             if proc.poll() is None:
-                os.killpg(proc.pid, signal.SIGKILL)
+                if hasattr(os, "killpg"):
+                    os.killpg(proc.pid, signal.SIGKILL)
+                else:
+                    os.kill(proc.pid, signal.SIGKILL)
                 proc.wait(timeout=5)
 
     def test_c12_empty_agent_rejected(self):

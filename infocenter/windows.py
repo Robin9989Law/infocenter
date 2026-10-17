@@ -5,18 +5,15 @@
 """
 
 import sqlite3
-from datetime import datetime, timezone
 from pathlib import Path
 
 from infocenter.common import (
-    CLAIM_TTL,
     HUMAN,
     HUMAN_NAMES,
     NAME_RE,
     WINDOW_RE,
     MailError,
     _limit,
-    _parse_utc,
     _same_agent,
     _workspace,
     _workspace_scope,
@@ -28,7 +25,6 @@ from infocenter.common import (
     pid_alive,
     _pid_value,
     utcnow,
-    _is_window_gone,
     _upsert_project,
 )
 from infocenter.cases import (
@@ -40,7 +36,6 @@ from infocenter.cases import (
 )
 from infocenter.governance import (
     _release_window_locks,
-    _emit_task_event,
 )
 
 WINDOW_STATE_LABELS = {
@@ -56,8 +51,10 @@ def _activity(value) -> str:
         return ""
     if not isinstance(value, str):
         raise MailError("invalid_activity", "activity 必须是字符串")
-    text = value.strip().replace("\n", " ").replace("\r", " ")
-    return text[:200]
+    text = " ".join(value.split())
+    if len(text) > 200:
+        raise MailError("invalid_activity", "activity 太长了，200 字以内说清楚你在做什么")
+    return text
 
 
 def _workspace_compatible(message_workspace: str | None, window_workspace: str | None) -> bool:
@@ -83,95 +80,14 @@ def _auto_claim_allowed(conn: sqlite3.Connection, window_id: str, message_worksp
     return _workspace_compatible(message_workspace, _window_workspace(conn, window_id))
 
 
-def _mark_dead_windows(conn: sqlite3.Connection, now: str) -> int:
-    """把 pid 已死的窗口标成离场，并替它放锁（留痕）。返回处理了几个窗口。"""
-    active_wins = conn.execute(
-        "SELECT * FROM windows WHERE state != 'left' AND pid IS NOT NULL"
-    ).fetchall()
-    marked = 0
-    for w_row in active_wins:
-        if w_row["pid"] is None or pid_alive(w_row["pid"], policy="not_dead"):
-            continue
-        conn.execute(
-            "UPDATE windows SET state = 'left', left_at = COALESCE(left_at, ?) WHERE window_id = ?",
-            (now, w_row["window_id"]),
-        )
-        _release_window_locks(conn, w_row["window_id"], now, "窗口进程已死")
-        marked += 1
-    return marked
-
-
-def _release_stale_claims(conn: sqlite3.Connection, now: str | None = None, ttl: int = CLAIM_TTL) -> int:
-    """释放僵尸认领（无争议回收），并逐条留痕。"""
-    now = now or utcnow()
-    moment = _parse_utc(now)
-    cutoff = (
-        (moment - datetime.resolution * ttl).strftime("%Y-%m-%dT%H:%M:%SZ")
-        if moment
-        else now
-    )
-    rows = conn.execute(
-        """
-        SELECT d.message_id, d.to_agent, d.claimed_by, d.claimed_at,
-               w.workspace, w.last_seen_at, w.state, w.left_at, w.pid,
-               m.workspace AS message_workspace
-        FROM deliveries d
-        LEFT JOIN windows w ON w.window_id = d.claimed_by
-        JOIN messages m ON m.id = d.message_id
-        WHERE d.claimed_by IS NOT NULL
-        """
-    ).fetchall()
-    released = 0
-    for row in rows:
-        stale = _is_window_gone(row) or not _workspace_compatible(
-            row["message_workspace"], row["workspace"]
-        )
-        why = "认领窗口已离场/已死或与项目不相容"
-        if not stale:
-            silent_since = row["last_seen_at"] or row["claimed_at"] or ""
-            if (row["claimed_at"] or "") < cutoff and silent_since < cutoff:
-                stale = True
-                why = f"认领超时（窗口 {ttl // 60} 分钟没跟服务说过话）"
-        if not stale:
-            continue
-        conn.execute(
-            """
-            UPDATE deliveries SET claimed_by = NULL, claimed_at = NULL
-            WHERE message_id = ? AND to_agent = ? AND claimed_by = ?
-            """,
-            (row["message_id"], row["to_agent"], row["claimed_by"]),
-        )
-        _emit_task_event(
-            conn, "", row["to_agent"], "claim_release", "", "",
-            {
-                "message_id": row["message_id"], "window_id": row["claimed_by"],
-                "claimed_at": row["claimed_at"] or "", "why": why,
-            },
-            now,
-        )
-        released += 1
-    return released
-
-
-def _lazy_reconcile_all(conn: sqlite3.Connection, now: str | None = None) -> None:
-    now = now or utcnow()
-    open_cases = conn.execute(
-        "SELECT * FROM cases WHERE sealed = 0 AND owner_window IS NOT NULL"
-    ).fetchall()
-    for c_row in open_cases:
-        _lazy_reconcile_case(conn, c_row, now)
-    _mark_dead_windows(conn, now)
-    _release_stale_claims(conn, now)
-
-
 def _upsert_window(
     conn: sqlite3.Connection,
     window_id: str,
     agent: str,
     workspace: str | None,
     activity: str | None,
+    pid: int | None,
     now: str,
-    pid: int | None = None,
     state: str | None = None,
     revive: bool = False,
 ) -> None:
@@ -197,6 +113,14 @@ def _upsert_window(
             ),
         )
         return
+    # D-8：窗口与 agent 首次绑定后不再改写归属。这里保留既有 agent，
+    # 从源头堵住「凭 X-Window 冒用他人窗口号改写 windows.agent」；
+    # HTTP 边界另用 _guard_window_agent 对异 agent 的 X-Window 直接 409。
+    # 窗口状态规则（D-4 + 离场不可被软触达复活）：
+    # - 显式 state 一律照办；
+    # - 只有「本人到场」的 touch / touch_window（revive=True）可把 left 复活为 active；
+    #   events/inbox/mark/reply 等软触达（revive=False）不得复活已离场窗口，
+    #   否则残留的长轮询会在离场后把它重新点亮。
     if state is not None:
         next_state = state
     elif revive and row["state"] in {"left", "offline"}:
@@ -207,6 +131,11 @@ def _upsert_window(
     next_workspace = workspace if workspace is not None else row["workspace"]
     next_activity = activity if activity is not None else row["activity"]
     next_activity_at = now if activity is not None else row["activity_at"]
+    # D-4：离场（left/offline）窗口复活为 active 时，旧 pid 多半已死，置 NULL，
+    # 除非本次显式带了新 pid，否则会让后续对账把复活窗口又判死、误自动封卷。
+    # M6-0b：已有且仍活着的 pid 不被这次 touch 改写。headless 里的短命进程会继承
+    # 宿主窗口号并带上自己的 pid；若照单覆盖，进程一退出，活窗口就被判离场，
+    # 名下未封卷案卷自动中止、未读认领被释放。只在新建行，或原 pid 为空/已死时写入。
     reviving = row["state"] in {"left", "offline"} and next_state == "active"
     incoming = _pid_value(pid)
     stored = row["pid"]
@@ -355,7 +284,7 @@ class WindowsMixin:
                         pid=pid,
                         now=now,
                     )
-            _lazy_reconcile_all(conn, now)
+            self._lazy_reconcile_all(conn, now)
         if conflict_owner:
             raise MailError(
                 "window_conflict",
@@ -369,7 +298,7 @@ class WindowsMixin:
             raise MailError("not_found", "缺少窗口号", 404)
         now = utcnow()
         with self._session(immediate=True) as conn:
-            _lazy_reconcile_all(conn, now)
+            self._lazy_reconcile_all(conn, now)
             row = conn.execute("SELECT * FROM windows WHERE window_id = ?", (wid,)).fetchone()
             if row is None:
                 raise MailError("not_found", f"没有找到窗口：{wid}", 404)
@@ -384,7 +313,7 @@ class WindowsMixin:
         agent_filter = normalize_name(agent) if agent else None
         now = utcnow()
         with self._session(immediate=True) as conn:
-            _lazy_reconcile_all(conn, now)
+            self._lazy_reconcile_all(conn, now)
             rows = conn.execute(
                 "SELECT * FROM windows ORDER BY last_seen_at DESC, window_id ASC"
             ).fetchall()
@@ -528,4 +457,6 @@ class WindowsMixin:
         return view
 
     def _lazy_reconcile_all(self, conn: sqlite3.Connection, now: str | None = None) -> None:
+        from infocenter.store import _lazy_reconcile_all
+
         _lazy_reconcile_all(conn, now)

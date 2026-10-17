@@ -24,7 +24,7 @@ class PidPolicyTest(unittest.TestCase):
         self.assertFalse(pid_alive(-5, policy="managed"))
 
     def test_low_pids_do_not_signal(self):
-        with patch("infocenter.store.os.kill") as kill:
+        with patch("infocenter.common.os.kill") as kill:
             self.assertFalse(pid_alive(0, policy="not_dead"))
             self.assertFalse(pid_alive(-3, policy="running"))
             self.assertFalse(pid_alive(1, policy="managed"))
@@ -64,13 +64,13 @@ class PidPolicyTest(unittest.TestCase):
             self.assertTrue(pid_alive(1, policy="not_dead"))
 
     def test_permission_is_not_death(self):
-        with patch("infocenter.store.os.kill", side_effect=PermissionError):
+        with patch("infocenter.common.os.kill", side_effect=PermissionError):
             self.assertTrue(pid_alive(os.getpid(), policy="not_dead"))
             self.assertFalse(pid_alive(os.getpid(), policy="running"))
             self.assertFalse(pid_alive(os.getpid(), policy="managed"))
 
     def test_missing_process_is_dead_for_every_policy(self):
-        with patch("infocenter.store.os.kill", side_effect=ProcessLookupError):
+        with patch("infocenter.common.os.kill", side_effect=ProcessLookupError):
             self.assertFalse(pid_alive(12345, policy="not_dead"))
             self.assertFalse(pid_alive(12345, policy="running"))
             self.assertFalse(pid_alive(12345, policy="managed"))

@@ -1,8 +1,14 @@
 #!/bin/sh
-# 程序防火墙（M9/M10）：提交前两道机械检查。
+# 程序防火墙（M9/M10）：提交前的机械检查。
+#   0) 模块级同名函数只准一处（不访问服务，服务不在线也执行）
 #   1) 提交闸：**本次暂存**的改动是否都被写锁覆盖（coordinator 可替成员落地）
 #   2) 留痕校验：哈希链是否完整、重放是否与任务现状一致、外锚是否对得上
-# 离线或服务不可达时不阻断，避免被锁死；确需绕过用 `git commit --no-verify`。
+# 写锁与留痕在离线或服务不可达时不阻断，避免被锁死；确需绕过用 `git commit --no-verify`。
+python -c "import sys; from pathlib import Path; from infocenter.common import duplicate_module_level_defs; d = duplicate_module_level_defs(Path('infocenter')); [print('duplicate module-level def', name, 'in', ', '.join(files)) for name, files in sorted(d.items())]; sys.exit(1 if d else 0)"
+if [ $? -ne 0 ]; then
+  echo "⛔ 提交被挡住：infocenter 里有两个文件定义了同一个模块级函数。"
+  exit 1
+fi
 if command -v ic >/dev/null 2>&1 && ic status >/dev/null 2>&1; then
   if ! ic guard --quiet --any-holder --staged; then
     echo ""

@@ -57,7 +57,10 @@ from infocenter.common import (
     normalize_case_id,
     normalize_name,
     normalize_window,
+    pid_alive,
     utcnow,
+    _pid_kill_alive,
+    _pid_value,
     _resolve_own_delivery,
     _is_window_gone,
     _upsert_project,
@@ -207,9 +210,6 @@ from infocenter.windows import (
     _workspace_compatible,
     _window_workspace,
     _auto_claim_allowed,
-    _mark_dead_windows,
-    _release_stale_claims,
-    _lazy_reconcile_all,
     _upsert_window,
     _window_summary,
     _window_view,
@@ -2752,7 +2752,7 @@ def atomic_replace(path, data: bytes) -> None:
     失败删掉临时文件。不创建父目录，也不 fsync 目录项（原先 sync 也没有）。
     最终字节由调用方自己序列化，因为 indent / ensure_ascii 各处不同。
 
-    相对 config.save、server._write_meta、crew._write_meta（固定 *.json.tmp、不 fsync）
+    相对 config.save、server._write_server_meta、crew._write_meta（固定 *.json.tmp、不 fsync）
     和 crew._write_pid_record（直接 write_text）的变化：
     - 临时文件改成 `.原名.<pid>.<随机>.tmp`，不再占用固定的 `*.json.tmp`。
     - 写入会 fsync；失败清掉临时文件。
@@ -2775,96 +2775,12 @@ def atomic_replace(path, data: bytes) -> None:
         raise
 
 
-def pid_alive(pid, *, policy: str) -> bool:
-    """进程是否按调用方的口径算「还在」。四套旧判断收成这一处，口径必须写明。
-
-    三种口径对 None、非法值、pid==1、EPERM 的答案不一样，不能用其中一种的否定去代替另一种。
-
-    policy="managed"
-        守护和停服务。只认真正的 int（bool 不算），且 pid>1，并且 os.kill(pid, 0) 成功。
-        None、字符串、bool、pid<=1、进程不存在、EPERM、其他 OSError 都是 False。
-        相对旧 server.pid_alive 的变化：pid<=1 一律 False。旧实现没有这道护栏，
-        os.kill(0, 0) 在 POSIX 上会成功，缺失 pid（int(meta.get("pid") or 0)）会被当成服务还活着。
-
-    policy="running"
-        窗口展示字段 pid_alive。先 int()（字符串 "12" 可以），pid>1 且 kill 成功才 True。
-        None、非法、bool、pid<=1、EPERM、进程不存在都是 False。与旧 store._pid_running 相同。
-
-    policy="not_dead"
-        对账用的「没有证据表明这个 pid 已经死了」。返回 True 表示先别把它当死的。
-        None → True（没有 pid，不算死，也不是「在跑」）。
-        转不成整数 → True（不算死）。
-        pid<=0 → False（算死，而且不发信号；0 会打到整个进程组）。
-        pid>=1 且 kill 成功 → True（含 pid==1；managed/running 把 1 排除）。
-        PermissionError → True（权限不够，不算死）。
-        其他 OSError → False（算死）。
-        与旧 store._pid_dead 取反后逐输入相同。
-    """
-    if policy == "managed":
-        if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 1:
-            return False
-        return _pid_kill_alive(pid, permission_counts_alive=False)
-    if policy == "running":
-        try:
-            number = int(pid)
-        except (TypeError, ValueError):
-            return False
-        if number <= 1:
-            return False
-        return _pid_kill_alive(number, permission_counts_alive=False)
-    if policy == "not_dead":
-        if pid is None:
-            return True
-        try:
-            number = int(pid)
-        except (TypeError, ValueError):
-            return True
-        if number <= 0:
-            return False
-        return _pid_kill_alive(number, permission_counts_alive=True)
-    raise ValueError(f"未知的 pid 判活口径：{policy}")
 
 
-def _pid_kill_alive(pid: int, *, permission_counts_alive: bool) -> bool:
-    try:
-        os.kill(pid, 0)
-    except PermissionError:
-        return permission_counts_alive
-    except OSError:
-        return False
-    return True
 
 
-def _pid_value(pid) -> int | None:
-    """pid 归一化：None 透传，其余必须是正整数（或可转正整数的字符串），否则 400。"""
-    if pid is None:
-        return None
-    if isinstance(pid, bool) or not isinstance(pid, (int, str)):
-        raise MailError("invalid_pid", "pid 必须是整数")
-    try:
-        val = int(pid)
-    except (TypeError, ValueError):
-        raise MailError("invalid_pid", "pid 必须是整数") from None
-    if val <= 0:
-        raise MailError("invalid_pid", "pid 必须是正整数")
-    return val
 
 
-def _is_window_gone(win_row: sqlite3.Row | None) -> bool:
-    """窗口是否已离场：没有这行、显式离场（state / left_at），或记录中的 pid 已死。
-
-    不用 last_seen_at 空闲当离场。活着的守护可以很久不写库，空闲阈值会把安静的活窗口误封。
-    pid 被短命进程改写的误判，堵在 _upsert_window（不覆盖仍活着的 pid），不在这里再加一套启发式。
-    """
-    if win_row is None:
-        return True
-    if win_row["state"] in {"left", "offline", "crashed", "dead", "exited", "aborted", "stopped"}:
-        return True
-    if win_row["left_at"]:
-        return True
-    if win_row["pid"] is not None and not pid_alive(win_row["pid"], policy="not_dead"):
-        return True
-    return False
 
 
 def _exact_send_id(
@@ -2897,23 +2813,8 @@ def _exact_send_id(
     return row["id"] if row else None
 
 
-def _workspace_compatible(message_workspace: str | None, window_workspace: str | None) -> bool:
-    """信的 workspace 与窗口的 workspace 是否相容。
-
-    任一侧为空 ⇒ 相容（信息不足，不下「跨项目」判断，保持既有行为）。
-    """
-    if not (message_workspace or "").strip() or not (window_workspace or "").strip():
-        return True
-    return _workspace_scope(message_workspace, window_workspace)
 
 
-def _window_workspace(conn: sqlite3.Connection, window_id: str | None) -> str | None:
-    if not window_id:
-        return None
-    row = conn.execute(
-        "SELECT workspace FROM windows WHERE window_id = ?", (window_id,)
-    ).fetchone()
-    return row["workspace"] if row else None
 
 
 def _resolve_outgoing_workspace(
@@ -3037,23 +2938,6 @@ def _recipient_replied(conn: sqlite3.Connection, message_row: sqlite3.Row, recip
     return found is not None
 
 
-def _auto_claim_allowed(conn: sqlite3.Connection, window_id: str, message_workspace: str | None) -> bool:
-    """M6-0 / M6-10：长轮询只自动认领「属于本窗口 workspace」的信。
-
-    空 workspace 的信不自动认领（M6-10）。这类信仍出现在不带项目过滤的
-    events.new 和全量 inbox 里，claimed_by 保持空；显式 mark/read 走
-    `_claim_thread_on_touch`，谁打开谁认领。
-
-    不改 `_workspace_compatible`。那条还被 `_release_stale_claims` 用来判断
-    「认领窗口与信不相容」。空侧仍算相容，已经读过的空信不会被当成错位而放掉。
-
-    否则，一个**不做 workspace 过滤**的长轮询窗口（常见于他项目的 MCP/CLI 会话）会把别的项目的
-    信一并认领走；而认领一旦落在别窗，正确项目的守护/窗口在 `/v1/events` 与 `ic inbox` 里就
-    **再也看不到它**（过滤条件 `claimed_by IS NULL OR = 本窗`）⇒ 派单/来信**静默丢失**。
-    """
-    if not (message_workspace or "").strip():
-        return False
-    return _workspace_compatible(message_workspace, _window_workspace(conn, window_id))
 
 
 def _release_stale_claims(conn: sqlite3.Connection, now: str | None = None, ttl: int = CLAIM_TTL) -> int:
@@ -3128,28 +3012,6 @@ def _mark_dead_windows(conn: sqlite3.Connection, now: str) -> int:
     return marked
 
 
-def _lazy_reconcile_case(conn: sqlite3.Connection, case_row: sqlite3.Row, now: str | None = None) -> sqlite3.Row:
-    """崩溃惰性补齐：主办窗口已不在（进程死/窗口被删/状态已离场）时**只摘指针 + 记一行**。
-
-    绝不自动中止/封卷（宪法：案卷只随"事做完"关闭，与办公室/agent 在不在无关）。
-    """
-    if case_row["sealed"] or case_row["status"] in SEALED_STATUSES:
-        return case_row
-    owner_window = case_row["owner_window"]
-    if not owner_window:
-        return case_row
-    win_row = conn.execute("SELECT * FROM windows WHERE window_id = ?", (owner_window,)).fetchone()
-    if not _is_window_gone(win_row):
-        return case_row
-    now = now or utcnow()
-    if win_row is not None and win_row["state"] != "left":
-        conn.execute(
-            "UPDATE windows SET state = 'left', left_at = COALESCE(left_at, ?), last_seen_at = ? WHERE window_id = ?",
-            (now, now, owner_window),
-        )
-    # 宪法：案卷只随"事做完"关闭。主办窗口死了**不封卷**——只摘指针 + 记一行说明。
-    _orphan_window_cases(conn, window_id=owner_window, agent="system", now=now)
-    return conn.execute("SELECT * FROM cases WHERE id = ?", (case_row["id"],)).fetchone()
 
 
 def _lazy_reconcile_all(conn: sqlite3.Connection, now: str | None = None) -> None:
@@ -3164,173 +3026,18 @@ def _lazy_reconcile_all(conn: sqlite3.Connection, now: str | None = None) -> Non
     _release_stale_claims(conn, now)
 
 
-def _orphan_window_cases(
-    conn: sqlite3.Connection,
-    window_id: str,
-    agent: str,
-    now: str,
-) -> list[str]:
-    """窗口离场：**案卷不因此中止、不封卷**。
-
-    宪法（human 定稿）：案卷 = 一件事的持久记录，**只随"事做完"关闭，与办公室/agent 在不在无关**。
-    所以程序只做两件**无争议**的事：
-      ① 摘掉主办窗口指针（窗口没了，那个指针就是假的）；
-      ② 记一行**只增**的说明节点（**状态不动、不封卷**）——把"主办窗口没了"说出来，别让人猜。
-    要中止/办结，必须由人/coordinator 显式做（`ic case --abort/--close`）。
-    """
-    open_cases = conn.execute(
-        "SELECT * FROM cases WHERE owner_window = ? AND sealed = 0",
-        (window_id,),
-    ).fetchall()
-    orphaned: list[str] = []
-    for c_row in open_cases:
-        conn.execute(
-            "UPDATE cases SET owner_window = NULL, updated_at = ? WHERE id = ?",
-            (now, c_row["id"]),
-        )
-        conn.execute(
-            """
-            UPDATE deliveries
-            SET claimed_by = NULL
-            WHERE message_id IN (SELECT id FROM messages WHERE thread_id = ?)
-              AND claimed_by = ?
-            """,
-            (c_row["thread_id"], window_id),
-        )
-        _insert_node(
-            conn,
-            case_id=c_row["id"],
-            agent=c_row["owner_agent"] or agent,
-            window_id=window_id,
-            action="note",
-            note=(
-                "主办窗口离场：案卷**保持未封卷**（不自动中止）。"
-                "要继续办就接手（写节点/转办），要收工就显式中止或办结。"
-            ),
-            status=c_row["status"],
-            auto=True,
-            now=now,
-        )
-        orphaned.append(c_row["id"])
-    return orphaned
 
 
-def _find_case(conn: sqlite3.Connection, case_id: str) -> sqlite3.Row | None:
-    return conn.execute(
-        "SELECT * FROM cases WHERE id = ? OR thread_id = ?",
-        (case_id, case_id),
-    ).fetchone()
 
 
-def _must_case(conn: sqlite3.Connection, case_id: str, now: str | None = None) -> sqlite3.Row:
-    row = _find_case(conn, case_id)
-    if row is None:
-        raise MailError("not_found", f"没有找到案卷：{case_id}", 404)
-    return _lazy_reconcile_case(conn, row, now)
 
 
-def _ensure_case_from_thread(
-    conn: sqlite3.Connection,
-    case_id: str,
-    agent: str,
-    now: str,
-) -> sqlite3.Row:
-    """案卷不存在、但 case_id 指向一条既有线程时，按线程补建一份 pending 案卷。
-
-    供 pause/resume 这类「直接作用于线程」的管理动作使用；线程不存在则 404。"""
-    msg = conn.execute(
-        "SELECT * FROM messages WHERE thread_id = ? OR id = ? ORDER BY created_at ASC, id ASC LIMIT 1",
-        (case_id, case_id),
-    ).fetchone()
-    if msg is None:
-        raise MailError("not_found", f"没有找到案卷或线程：{case_id}", 404)
-    thread_id = msg["thread_id"]
-    root = conn.execute(
-        "SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC, id ASC LIMIT 1",
-        (thread_id,),
-    ).fetchone()
-    source = root or msg
-    workspace = source["workspace"]
-    if workspace:
-        _upsert_project(conn, workspace, None, now)
-    conn.execute(
-        """
-        INSERT INTO cases(
-            id, thread_id, title, workspace, status, owner_agent, owner_window,
-            waiting_for, sealed, created_at, updated_at, closed_at
-        ) VALUES (?, ?, ?, ?, 'pending', NULL, NULL, NULL, 0, ?, ?, NULL)
-        """,
-        (thread_id, thread_id, source["subject"], workspace, now, now),
-    )
-    _insert_node(
-        conn,
-        case_id=thread_id,
-        agent=agent,
-        window_id=None,
-        action="create",
-        note="立案",
-        status="pending",
-        auto=False,
-        now=now,
-    )
-    _emit_case_event(conn, agent, "create", "", "pending", thread_id, None, "立案", now)
-    return conn.execute("SELECT * FROM cases WHERE id = ?", (thread_id,)).fetchone()
 
 
-def _must_unsealed(row: sqlite3.Row) -> None:
-    if row["sealed"] or row["status"] in SEALED_STATUSES:
-        raise MailError("case_sealed", f"案卷 {row['id']} 已封卷（{row['status']}），只读不可修改", 409)
 
 
-def _own_unread_replies(conn: sqlite3.Connection, thread_id: str, agent: str) -> list[sqlite3.Row]:
-    """这条线程上「我的那一份」还没签收的信（按时间从早到晚）。
-
-    与签收同一口径：先找本名那一行；本名没有，才找另一个别名那一行。
-    两行都在时只认本名，避免一封信算成两封。read 会把这个人还没签的行一起标掉。
-    别人的未读不算（他签不了，拿它卡人＝死锁）。
-    """
-    if not thread_id or not agent:
-        return []
-    try:
-        agent = normalize_name(agent)
-    except MailError:
-        return []
-    messages = conn.execute(
-        """
-        SELECT id, from_agent, created_at
-        FROM messages
-        WHERE thread_id = ?
-        ORDER BY created_at ASC, id ASC
-        """,
-        (thread_id,),
-    ).fetchall()
-    hits: list[sqlite3.Row] = []
-    for msg in messages:
-        delivery = _resolve_own_delivery(conn, msg["id"], agent)
-        if delivery is not None and delivery["status"] == "unread":
-            hits.append(msg)
-    return hits
 
 
-def _block_unread_replies(conn: sqlite3.Connection, row: sqlite3.Row, agent: str) -> None:
-    """办结门槛：封卷人自己在这条线程上还有未签收信 ⇒ 409 unread_replies。
-
-    只算封卷人自己那一份：别人未签收的副本他签不了，拿它卡人＝死锁。
-    中止（aborted）不走这里。
-    """
-    hits = _own_unread_replies(conn, row["thread_id"], agent)
-    if not hits:
-        return
-    earliest = hits[0]
-    when = beijing_time(str(earliest["created_at"] or ""))
-    who = earliest["from_agent"]
-    raise MailError(
-        "unread_replies",
-        f"案卷 {row['id']} 这条线上你还有 {len(hits)} 封没收"
-        f"（最早 {when}，来自 {who}）。"
-        "先把回信看完再封卷（`ic inbox --status unread`）。中止不要求。",
-        409,
-    )
 
 
 def _signoff_read_targets(conn: sqlite3.Connection, message_id: str, agent: str) -> list[sqlite3.Row]:
@@ -3602,127 +3309,8 @@ def _claim_thread_on_touch(
             )
 
 
-def _upsert_window(
-    conn: sqlite3.Connection,
-    window_id: str,
-    agent: str,
-    workspace: str | None,
-    activity: str | None,
-    pid: int | None,
-    now: str,
-    state: str | None = None,
-    revive: bool = False,
-) -> None:
-    row = conn.execute("SELECT * FROM windows WHERE window_id = ?", (window_id,)).fetchone()
-    if row is None:
-        conn.execute(
-            """
-            INSERT INTO windows(
-                window_id, agent, workspace, state, activity, activity_at,
-                pid, first_seen_at, last_seen_at, left_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-            """,
-            (
-                window_id,
-                agent,
-                workspace,
-                state or "active",
-                activity or "",
-                now if activity else "",
-                _pid_value(pid),
-                now,
-                now,
-            ),
-        )
-        return
-    # D-8：窗口与 agent 首次绑定后不再改写归属。这里保留既有 agent，
-    # 从源头堵住「凭 X-Window 冒用他人窗口号改写 windows.agent」；
-    # HTTP 边界另用 _guard_window_agent 对异 agent 的 X-Window 直接 409。
-    # 窗口状态规则（D-4 + 离场不可被软触达复活）：
-    # - 显式 state 一律照办；
-    # - 只有「本人到场」的 touch / touch_window（revive=True）可把 left 复活为 active；
-    #   events/inbox/mark/reply 等软触达（revive=False）不得复活已离场窗口，
-    #   否则残留的长轮询会在离场后把它重新点亮。
-    if state is not None:
-        next_state = state
-    elif revive and row["state"] in {"left", "offline"}:
-        next_state = "active"
-    else:
-        next_state = row["state"]
-    next_left_at = None if next_state != "left" else row["left_at"]
-    next_workspace = workspace if workspace is not None else row["workspace"]
-    next_activity = activity if activity is not None else row["activity"]
-    next_activity_at = now if activity is not None else row["activity_at"]
-    # D-4：离场（left/offline）窗口复活为 active 时，旧 pid 多半已死，置 NULL，
-    # 除非本次显式带了新 pid，否则会让后续对账把复活窗口又判死、误自动封卷。
-    # M6-0b：已有且仍活着的 pid 不被这次 touch 改写。headless 里的短命进程会继承
-    # 宿主窗口号并带上自己的 pid；若照单覆盖，进程一退出，活窗口就被判离场，
-    # 名下未封卷案卷自动中止、未读认领被释放。只在新建行，或原 pid 为空/已死时写入。
-    reviving = row["state"] in {"left", "offline"} and next_state == "active"
-    incoming = _pid_value(pid)
-    stored = row["pid"]
-    if stored is not None and pid_alive(stored, policy="not_dead"):
-        next_pid = stored
-    elif incoming is not None:
-        next_pid = incoming
-    elif reviving:
-        next_pid = None
-    else:
-        next_pid = stored
-    conn.execute(
-        """
-        UPDATE windows
-        SET workspace = ?, state = ?, activity = ?, activity_at = ?,
-            pid = ?, last_seen_at = ?, left_at = ?
-        WHERE window_id = ?
-        """,
-        (
-            next_workspace,
-            next_state,
-            next_activity,
-            next_activity_at,
-            next_pid,
-            now,
-            next_left_at,
-            window_id,
-        ),
-    )
 
 
-def _upsert_project(
-    conn: sqlite3.Connection, workspace: str, name: str | None, now: str,
-    archived: bool | None = None, coordinator: str | None = None,
-) -> None:
-    ws = _workspace(workspace)
-    if not ws:
-        return
-    proj_name = (name or "").strip() or Path(ws).name or ws
-    arc = None if archived is None else (1 if archived else 0)
-    existing = conn.execute("SELECT * FROM projects WHERE workspace = ?", (ws,)).fetchone()
-    if existing is None:
-        conn.execute(
-            "INSERT INTO projects(workspace, name, created_at, updated_at, archived, coordinator) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (ws, proj_name, now, now, arc or 0, (coordinator or "").strip()),
-        )
-    else:
-        final_name = proj_name if name else (existing["name"] or proj_name)
-        if coordinator is not None:
-            # 只有**显式**传才动 coordinator（消息/案卷顺带登记项目时绝不能碰它）
-            conn.execute(
-                "UPDATE projects SET coordinator = ?, updated_at = ? WHERE workspace = ?",
-                (coordinator.strip(), now, ws),
-            )
-        if arc is None:
-            conn.execute(
-                "UPDATE projects SET name = ?, updated_at = ? WHERE workspace = ?",
-                (final_name, now, ws),
-            )
-        else:
-            conn.execute(
-                "UPDATE projects SET name = ?, updated_at = ?, archived = ? WHERE workspace = ?",
-                (final_name, now, arc, ws),
-            )
 
 
 def _collect_projects(conn: sqlite3.Connection) -> list[dict]:
@@ -3808,233 +3396,18 @@ def _collect_projects(conn: sqlite3.Connection) -> list[dict]:
     return out
 
 
-def _insert_node(
-    conn: sqlite3.Connection,
-    case_id: str,
-    agent: str,
-    window_id: str | None,
-    action: str,
-    note: str,
-    status: str,
-    auto: bool,
-    now: str,
-) -> None:
-    final_note = f"[自动] {note}" if (auto and not note.startswith("[自动]")) else note
-    conn.execute(
-        """
-        INSERT INTO case_nodes(case_id, agent, window_id, action, note, status, auto, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (case_id, agent, window_id, action, final_note, status, 1 if auto else 0, now),
-    )
 
 
-def _node_view(row: sqlite3.Row) -> dict:
-    status = row["status"]
-    status_label = CASE_STATUS_LABELS.get(status, status)
-    auto = bool(row["auto"])
-    actor = "系统" if auto and row["agent"] == "system" else row["agent"]
-    if row["window_id"] and not auto:
-        actor_display = f"{actor}({row['window_id']})"
-    elif row["window_id"] and auto:
-        actor_display = f"{actor}({row['window_id']})"
-    else:
-        actor_display = actor
-    hhmm = beijing_hhmm(row["created_at"])
-    note = row["note"]
-    if "→" in note:
-        line = f"{hhmm} {actor_display} · {note}"
-    else:
-        line = f"{hhmm} {actor_display} · {note} → {status_label}"
-    if auto:
-        line += " [自动]"
-    return {
-        "id": row["id"],
-        "case_id": row["case_id"],
-        "agent": row["agent"],
-        "window_id": row["window_id"],
-        "action": row["action"],
-        "note": note,
-        "summary": note,
-        "status": status,
-        "status_label": status_label,
-        "auto": auto,
-        "created_at": row["created_at"],
-        "created_at_beijing": beijing_time(row["created_at"]),
-        "line": line,
-    }
 
 
 # ── M8/M9/M10 治理线常量与底层函数已抽取至 infocenter.governance ──
 
-def _case_view(conn: sqlite3.Connection, row: sqlite3.Row, viewer: str | None = None) -> dict:
-    node_rows = conn.execute(
-        "SELECT * FROM case_nodes WHERE case_id = ? ORDER BY id ASC",
-        (row["id"],),
-    ).fetchall()
-    nodes = [_node_view(n) for n in node_rows]
-    status = row["status"]
-    status_label = CASE_STATUS_LABELS.get(status, status)
-    if status == "waiting" and row["waiting_for"]:
-        status_display = f"待 {row['waiting_for']}"
-    else:
-        status_display = status_label
-    sealed = bool(row["sealed"]) or status in SEALED_STATUSES
-    try:
-        milestones = _milestones(row["milestones"])
-    except (MailError, TypeError, KeyError):
-        milestones = []
-    # 「人话」（第 1 条线）：coordinator 写的最后一行节点。**不新增字段**——
-    # 机器只做一件事：看这行之后还有没有别人的节点（有 ⇒ 人话过期，该重写了）。
-    voices = _human_voices(conn)
-    human = None
-    for node in reversed(nodes):
-        if node.get("agent") in voices and not node.get("auto"):
-            human = node
-            break
-    human_stale = bool(human and nodes and nodes[-1].get("id") != human.get("id"))
-    # 停滞黄灯：未封卷 + 最后一个节点超过 STALL_HOURS 没动 ⇒ 看板标黄（**只提示**，程序不处置）。
-    stalled_hours = 0.0
-    last_at = (nodes[-1].get("created_at") if nodes else row["created_at"]) or ""
-    moment = _parse_utc(last_at)
-    if moment is not None:
-        stalled_hours = max(0.0, (datetime.now(timezone.utc) - moment).total_seconds() / 3600)
-    stalled = bool(not sealed and moment is not None and stalled_hours >= STALL_HOURS)
-    header_line = f"状态：{status_display}" + ("（已封卷）" if sealed else "")
-    lines = [header_line, *(n["line"] for n in nodes)]
-    # 「有实质内容」= 有人写过验收 / 里程碑 / WBS 之一。**任何 thread 都能当案卷**，
-    # 所以信（派单、回信、报告）也会出现在案卷列表里。它只是个**标记**（看板拿它打 `[信]`），
-    # **不是过滤条件**——实测那堆里有真活（派单线程可以是"在办"、有 5 封信、三样全无）；
-    # 看板默认折的是**已封卷**（归档；实测 100 条里 52 条是它）。
-    substantive = bool((row["acceptance"] or "").strip() or milestones or (row["wbs_path"] or "").strip())
-    # 发给请求者自己、还没签收的信。别人那份不算（他签不了，拿它卡人＝死锁）。
-    # 最早一封的时间与来信人一并带上，CLI 黄灯才能印「最早 / 来自」。零新列，现查。
-    unread_hits = _own_unread_replies(conn, row["thread_id"], viewer or "")
-    earliest = unread_hits[0] if unread_hits else None
-    earliest_at = str(earliest["created_at"] or "") if earliest is not None else ""
-    earliest_from = str(earliest["from_agent"] or "") if earliest is not None else ""
-    return {
-        "substantive": substantive,
-        "unread_replies": len(unread_hits),
-        "unread_replies_earliest": earliest_at,
-        "unread_replies_earliest_beijing": beijing_time(earliest_at) if earliest_at else "",
-        "unread_replies_from": earliest_from,
-        "id": row["id"],
-        "thread_id": row["thread_id"],
-        "title": row["title"],
-        "workspace": row["workspace"],
-        "status": status,
-        "status_label": status_display,
-        "sealed": sealed,
-        "owner_agent": row["owner_agent"],
-        "owner_window": row["owner_window"],
-        "waiting_for": row["waiting_for"],
-        "wbs_path": row["wbs_path"] or "",
-        # 「怎样算完」：空 = 这事没有说清做成什么算做成（看板标出来，不拦）
-        "acceptance": row["acceptance"] or "",
-        "human_note": (human or {}).get("note", ""),
-        "human_by": (human or {}).get("agent", ""),
-        "human_at": (human or {}).get("created_at", ""),
-        "human_at_beijing": (human or {}).get("created_at_beijing", ""),
-        # 人话过期 = 这行之后又发生了别的事 ⇒ 看板上的说法可能已经不准，该由 coordinator 重写
-        "human_stale": human_stale or (human is None and bool(nodes)),
-        "stalled": stalled,
-        "stalled_hours": round(stalled_hours, 1),
-        "milestones": milestones,
-        "milestones_total": len(milestones),
-        "milestones_done": sum(1 for item in milestones if item["done"]),
-        "created_at": row["created_at"],
-        "created_at_beijing": beijing_time(row["created_at"]),
-        "updated_at": row["updated_at"],
-        "updated_at_beijing": beijing_time(row["updated_at"]),
-        "closed_at": row["closed_at"],
-        "node_count": len(nodes),
-        "last_note": nodes[-1]["note"] if nodes else "",
-        "last_node": nodes[-1] if nodes else None,
-        "nodes": nodes,
-        "text": "\n".join(lines),
-    }
 
 
-def _window_summary(row: sqlite3.Row) -> dict:
-    state = row["state"]
-    return {
-        "window_id": row["window_id"],
-        "agent": row["agent"],
-        "workspace": row["workspace"],
-        "state": state,
-        "state_label": WINDOW_STATE_LABELS.get(state, state),
-        "activity": row["activity"],
-        "activity_at": row["activity_at"],
-        "activity_at_beijing": beijing_time(row["activity_at"]) if row["activity_at"] else "",
-        "pid": row["pid"],
-        "pid_alive": pid_alive(row["pid"], policy="running"),
-        "first_seen_at": row["first_seen_at"],
-        "first_seen_beijing": beijing_time(row["first_seen_at"]),
-        "last_seen_at": row["last_seen_at"],
-        "last_seen_beijing": beijing_time(row["last_seen_at"]),
-        "left_at": row["left_at"],
-    }
 
 
-def _window_view(conn: sqlite3.Connection, row: sqlite3.Row) -> dict:
-    view = _window_summary(row)
-    case_rows = conn.execute(
-        """
-        SELECT id, thread_id, title, workspace, status, sealed, updated_at
-        FROM cases
-        WHERE owner_window = ? AND sealed = 0
-        ORDER BY updated_at DESC, id DESC
-        """,
-        (row["window_id"],),
-    ).fetchall()
-    view["cases"] = [
-        {
-            "id": c["id"],
-            "thread_id": c["thread_id"],
-            "title": c["title"],
-            "workspace": c["workspace"],
-            "status": c["status"],
-            "status_label": CASE_STATUS_LABELS.get(c["status"], c["status"]),
-            "updated_at": c["updated_at"],
-        }
-        for c in case_rows
-    ]
-    view["case_count"] = len(view["cases"])
-    return view
 
 
-def _workspace_scope(value: str | None, scope: str | None) -> bool:
-    """workspace 是否属于项目 scope：全路径、解析后路径、或目录 basename（不区分大小写）都算命中。
-    scope 为 None 不过滤；workspace 为空的信不属于任何项目范围。
-
-    M3：basename 回退只在**有一侧是裸目录名**（不含路径分隔符）时启用，
-    因此 `"proj"`（守护上报的裸名）能命中 `"/a/proj"`，
-    但 `"work/proj"` 与 `"other/proj"`、`"/a/proj"` 与 `"/b/proj"` 不再互串。"""
-    if scope is None:
-        return True
-    text = (value or "").strip()
-    target = str(scope).strip()
-    if not text or not target:
-        return False
-    if text == target:
-        return True
-    left = Path(text).expanduser()
-    right = Path(target).expanduser()
-    try:
-        if left.resolve() == right.resolve():
-            return True
-    except OSError:
-        pass
-    # 退化为 basename 比较的条件收紧（M3）：
-    # - 至少一侧是「裸名」（不含路径分隔符，守护/CLI 上报的常见形式）；或
-    # - 两侧都是绝对路径（跨机联邦导出按同名目录对齐的既有约定，见 test_basename_scope_still_exports）。
-    # 其余情况（如 `work/proj` 与 `other/proj` 两条相对路径）不再按同名串在一起。
-    left_bare = bool(text) and left.name == text
-    right_bare = bool(target) and right.name == target
-    if not (left_bare or right_bare or (left.is_absolute() and right.is_absolute())):
-        return False
-    return bool(right.name) and left.name.casefold() == right.name.casefold()
 
 
 def _known_names(conn: sqlite3.Connection, home=None) -> set[str]:
@@ -4223,13 +3596,6 @@ def _agent(row: sqlite3.Row, unread: int = 0, windows: list[dict] | None = None)
     return out
 
 
-def _subject(value: str) -> str:
-    if not isinstance(value, str):
-        raise MailError("invalid_subject", "主题必须是字符串")
-    text = value.strip()
-    if not text or len(text) > 200 or "\n" in text or "\r" in text:
-        raise MailError("invalid_subject", "主题不能为空，不能换行，最长 200 字")
-    return text
 
 
 def _body(value: str) -> str:
@@ -4251,17 +3617,6 @@ def _priority(value: str) -> str:
     return text
 
 
-def _workspace(value: str | None) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise MailError("invalid_workspace", "workspace 必须是字符串")
-    text = value.strip()
-    if not text:
-        return None
-    if len(text) > 1024:
-        raise MailError("invalid_workspace", "workspace 最长 1024 字")
-    return text
 
 
 def _reply_to(value: str | None) -> str | None:
@@ -4273,14 +3628,6 @@ def _reply_to(value: str | None) -> str | None:
     return text or None
 
 
-def _limit(value) -> int:
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        raise MailError("invalid_limit", "limit 必须是整数") from None
-    if number < 1 or number > 100:
-        raise MailError("invalid_limit", "limit 必须在 1 到 100 之间")
-    return number
 
 
 WBS_MAX = 200
@@ -4288,88 +3635,16 @@ MILESTONE_MAX = 200
 MILESTONE_MAX_COUNT = 50
 
 
-def _wbs_path(value) -> str:
-    """WBS 树路径：`/` 分隔（如 `防混写/锁与闸`）。空 = 未归类（老案卷只归档不转）。"""
-    if value is None:
-        return ""
-    text = str(value).strip().strip("/")
-    if not text:
-        return ""
-    parts = [part.strip() for part in text.split("/")]
-    if any(not part for part in parts):
-        raise MailError("invalid_wbs", "WBS 路径不能有空段（如 a//b）")
-    joined = "/".join(parts)
-    if len(joined) > WBS_MAX:
-        raise MailError("invalid_wbs", f"WBS 路径太长（≤ {WBS_MAX}）")
-    return joined
 
 
-def _milestones(value) -> list[dict]:
-    """里程碑：案卷上**一列 JSON**（不建表）。`[{"name","owner","done"}]`，只有 coordinator 能改。"""
-    if value in (None, ""):
-        return []
-    if isinstance(value, str):
-        try:
-            data = json.loads(value)
-        except ValueError:
-            raise MailError("invalid_milestones", "里程碑必须是 JSON 数组")
-    else:
-        data = value
-    if not isinstance(data, (list, tuple)):
-        raise MailError("invalid_milestones", "里程碑必须是 JSON 数组")
-    if len(data) > MILESTONE_MAX_COUNT:
-        raise MailError("invalid_milestones", f"里程碑太多（≤ {MILESTONE_MAX_COUNT} 条）")
-    out: list[dict] = []
-    for item in data:
-        if not isinstance(item, dict) or not str(item.get("name") or "").strip():
-            raise MailError("invalid_milestones", "每个里程碑都必须有名字 name")
-        out.append(
-            {
-                "name": str(item["name"]).strip()[:MILESTONE_MAX],
-                "owner": str(item.get("owner") or "").strip(),
-                "done": bool(item.get("done")),
-            }
-        )
-    return out
 
 
-def _milestones_json(items) -> str:
-    return json.dumps(_milestones(items), ensure_ascii=False, sort_keys=True)
 
 
-def _case_status(value: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise MailError("invalid_status", "案卷状态不能为空")
-    text = value.strip()
-    lower = text.lower()
-    if lower in {"doing", "open", "active"}:
-        return "open"
-    if lower in CASE_STATUS_LABELS:
-        return lower
-    if text in _LABEL_TO_CASE_STATUS:
-        return _LABEL_TO_CASE_STATUS[text]
-    raise MailError(
-        "invalid_status",
-        "案卷状态只能是 open/doing/waiting/paused/aborted/done（或 待办/在办/待谁/暂停/中止/办结）",
-    )
 
 
-def _node_note(value: str) -> str:
-    if not isinstance(value, str):
-        raise MailError("invalid_node", "案卷节点内容必须是字符串")
-    text = value.strip()
-    if not text or len(text) > 200 or "\n" in text or "\r" in text:
-        raise MailError("invalid_node", "案卷节点必须是一行（不能换行），非空且最长 200 字")
-    return text
 
 
-def _node_action(value: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        return "note"
-    text = value.strip().lower()
-    if "\n" in text or "\r" in text or len(text) > 64:
-        raise MailError("invalid_node", "action 必须是单行短标识")
-    return text
 
 
 _REPLY_PREFIX_RE = re.compile(r"^(?:\s*(?:re|fw|fwd|回复|答复)\s*[:：]\s*)+", re.IGNORECASE)
@@ -4394,12 +3669,3 @@ def _role(value) -> str:
     raise MailError("invalid_role", "role 只能是空（成员）或 manager")
 
 
-def _activity(value) -> str:
-    if value is None:
-        return ""
-    if not isinstance(value, str):
-        raise MailError("invalid_activity", "activity 必须是字符串")
-    text = " ".join(value.split())
-    if len(text) > 200:
-        raise MailError("invalid_activity", "activity 太长了，200 字以内说清楚你在做什么")
-    return text

@@ -1,8 +1,9 @@
-"""笔5：重启脚本解释器用 shlex 包；POST /v1/open 只开已登记项目目录。"""
+"""笔5：重启脚本按当前系统引用解释器；POST /v1/open 只开已登记项目目录。"""
 
 import json
 import os
 import shlex
+import subprocess
 import sys
 import tempfile
 import threading
@@ -78,18 +79,63 @@ class Pen5BoardOpenTest(unittest.TestCase):
         self.assertEqual(body.get("error"), "invalid_path")
 
     def test_restart_dry_run_quotes_interpreter(self):
-        weird = "/tmp/py bin/python"
-        spaced = str(self.home / "has space")
+        """POST /v1/restart 收到的是原始路径，引用发生在重启脚本里。"""
+        weird = "C:\\Program Files\\O'Brien\\python.exe"
+        spaced = str(self.home / "O'Brien Projects")
+
+        def ps_strings(text: str) -> list[str]:
+            found = []
+            index = 0
+            while index < len(text):
+                if text[index] != "'":
+                    index += 1
+                    continue
+                start = index
+                index += 1
+                while index < len(text):
+                    if text[index] == "'":
+                        if index + 1 < len(text) and text[index + 1] == "'":
+                            index += 2
+                            continue
+                        index += 1
+                        break
+                    index += 1
+                found.append(text[start:index])
+            return found
+
         with patch("sys.executable", weird), patch(
             "infocenter.crew.running_daemons",
             return_value=[{"dir": spaced, "alive": True}],
-        ):
+        ), patch("infocenter.crew.sys.platform", "win32"):
             st, body = _http_json(self.url, "POST", "/v1/restart", body={"dry_run": True})
         self.assertEqual(st, 200, body)
         script = body["script"]
+        inside, _, after = script.partition(" } *>> ")
+        self.assertTrue(script.startswith("& { "), script)
+        for step in ("infocenter crew down", "infocenter stop", "infocenter serve --detach", "infocenter crew up"):
+            self.assertIn(step, inside)
+        self.assertNotIn("*>>", inside)
+        self.assertNotIn("infocenter", after)
+        dir_token = ps_strings(inside[inside.find("--dir "):])[0]
+        py_token = ps_strings(inside)[0]
+        for token, raw in ((dir_token, spaced), (py_token, weird)):
+            decoded = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", f"Write-Output {token}"],
+                capture_output=True, text=True, check=True,
+            )
+            self.assertEqual(decoded.stdout.strip(), raw)
+
+        with patch("sys.executable", weird), patch(
+            "infocenter.crew.running_daemons",
+            return_value=[{"dir": spaced, "alive": True}],
+        ), patch("infocenter.crew.sys.platform", "darwin"):
+            st, body = _http_json(self.url, "POST", "/v1/restart", body={"dry_run": True})
+        self.assertEqual(st, 200, body)
+        posix = body["script"]
         quoted = shlex.quote(weird)
-        self.assertIn(f"{quoted} -m infocenter crew down", script)
-        self.assertIn(f"{quoted} -m infocenter stop", script)
-        self.assertIn(f"{quoted} -m infocenter serve --detach", script)
-        self.assertIn(f"{quoted} -m infocenter crew up --dir {shlex.quote(spaced)}", script)
-        self.assertNotIn(f'"{weird}"', script)
+        self.assertTrue(posix.startswith("{ "), posix)
+        self.assertIn(f"{quoted} -m infocenter crew down", posix)
+        self.assertIn(f"{quoted} -m infocenter stop", posix)
+        self.assertIn(f"{quoted} -m infocenter serve --detach", posix)
+        self.assertIn(f"{quoted} -m infocenter crew up --dir {shlex.quote(spaced)}", posix)
+        self.assertIn(" } >> ", posix)

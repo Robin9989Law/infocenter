@@ -1,10 +1,12 @@
 """信息中心基础常量、异常与通用工具函数（无依赖层）。"""
 
+import ast
 import os
 import re
 import secrets
 import sqlite3
 import time
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -323,13 +325,18 @@ def _resolve_own_delivery(conn: sqlite3.Connection, message_id: str, agent: str)
 
 
 def _is_window_gone(win_row: sqlite3.Row | None) -> bool:
-    """窗口是否已离场：没有这行、显式离场（state / left_at），或记录中的 pid 已死。"""
+    """窗口是否已离场：没有这行、显式离场（state / left_at），或记录中的 pid 已死。
+
+    不用 last_seen_at 空闲当离场。活着的守护可以很久不写库，空闲阈值会把安静的活窗口误封。
+    pid 被短命进程改写的误判，堵在 _upsert_window（不覆盖仍活着的 pid），不在这里再加一套启发式。
+    """
     if win_row is None:
         return True
-    if (win_row["state"] or "") == "left" or win_row["left_at"] is not None:
+    if win_row["state"] in {"left", "offline", "crashed", "dead", "exited", "aborted", "stopped"}:
         return True
-    pid = win_row["pid"]
-    if pid is not None and not pid_alive(pid, policy="not_dead"):
+    if win_row["left_at"]:
+        return True
+    if win_row["pid"] is not None and not pid_alive(win_row["pid"], policy="not_dead"):
         return True
     return False
 
@@ -353,6 +360,7 @@ def _upsert_project(
     else:
         final_name = proj_name if name else (existing["name"] or proj_name)
         if coordinator is not None:
+            # 只有**显式**传才动 coordinator（消息/案卷顺带登记项目时绝不能碰它）
             conn.execute(
                 "UPDATE projects SET coordinator = ?, updated_at = ? WHERE workspace = ?",
                 (coordinator.strip(), now, ws),
@@ -364,7 +372,18 @@ def _upsert_project(
             )
         else:
             conn.execute(
-                "UPDATE projects SET name = ?, archived = ?, updated_at = ? WHERE workspace = ?",
-                (final_name, arc, now, ws),
+                "UPDATE projects SET name = ?, updated_at = ?, archived = ? WHERE workspace = ?",
+                (final_name, now, arc, ws),
             )
+
+
+def duplicate_module_level_defs(package: Path) -> dict[str, list[str]]:
+    """模块级函数同名出现在两个文件里。类方法不算。"""
+    found: dict[str, list[str]] = defaultdict(list)
+    for path in sorted(Path(package).glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                found[node.name].append(path.name)
+    return {name: files for name, files in found.items() if len(files) > 1}
 

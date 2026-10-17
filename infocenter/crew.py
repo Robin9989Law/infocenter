@@ -555,7 +555,13 @@ def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
             # 只警告不阻断：纪律写进 README 也要每次起守护当着你面提醒一次。
             actions.append({"agent": agent, "kind": "warn", "command": [], "note": warn})
         if app:
-            actions.append({"agent": agent, "kind": "app", "command": ["open", "-a", app, project]})
+            if sys.platform == "win32":
+                actions.append({
+                    "agent": agent, "kind": "skip", "command": [],
+                    "note": "打开桌面应用需要 macOS（open -a）",
+                })
+            else:
+                actions.append({"agent": agent, "kind": "app", "command": ["open", "-a", app, project]})
         if launch:
             if use_tmux:
                 window = _window_name(project, agent)
@@ -566,6 +572,11 @@ def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
                         "agent": agent, "kind": "tmux",
                         "command": ["tmux", "new-window", "-t", session, "-n", window, "-c", project, launch],
                     })
+            elif sys.platform == "win32":
+                actions.append({
+                    "agent": agent, "kind": "skip", "command": [],
+                    "note": "没有 tmux。Windows 上不打开 Terminal，请安装 tmux 或在 macOS 上启动",
+                })
             else:
                 inner = f"cd {shlex.quote(project)} && {launch}"
                 actions.append({
@@ -1153,16 +1164,18 @@ def _signal_group(pid: int, sig: int) -> bool:
     """向 headless 所在进程组发信号。pid 必须是该组组长，不能是守护自己。"""
     if not isinstance(pid, int) or pid <= 1 or pid == os.getpid():
         return False
-    try:
-        os.killpg(pid, sig)
-        return True
-    except OSError:
-        # C-10：进程组不存在（ProcessLookupError）或不是组长时，回落到直接给该 pid 发信号。
+    if hasattr(os, "killpg"):
         try:
-            os.kill(pid, sig)
+            os.killpg(pid, sig)
             return True
         except OSError:
-            return False
+            # 进程组不存在，或这个 pid 不是组长。改打到进程本身。
+            pass
+    try:
+        os.kill(pid, sig)
+        return True
+    except OSError:
+        return False
 
 
 def _interrupt_headless(home, agent: str, project: str | None) -> list[str]:
@@ -1944,6 +1957,46 @@ def _substitute_prompt(template: str, prompt: str) -> str:
     return "".join(out)
 
 
+def _ps_quote(value: str) -> str:
+    """PowerShell 单引号字符串。内部的单引号写成两个，整段仍是一个参数。"""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _shell_argv(script: str) -> list[str]:
+    """同一条命令字符串：Windows 用 PowerShell，其他系统用 /bin/sh。"""
+    if sys.platform == "win32":
+        return ["powershell", "-NoProfile", "-Command", script]
+    return ["/bin/sh", "-c", script]
+
+
+def _restart_script(python: str, log: str, projects: list[str]) -> str:
+    """重启脚本。参数在这里按当前系统引用，调用方传原始路径。"""
+    if sys.platform == "win32":
+        py = _ps_quote(python)
+        steps = [
+            "Start-Sleep -Milliseconds 500",
+            f"& {py} -m infocenter crew down",
+            f"& {py} -m infocenter stop",
+            f"& {py} -m infocenter serve --detach",
+            "Start-Sleep -Seconds 1",
+        ]
+        for directory in projects:
+            steps.append(f"& {py} -m infocenter crew up --dir {_ps_quote(directory)}")
+        # 整段进一个脚本块再重定向，否则 *>> 只套住最后一条语句。
+        return "& { " + "; ".join(steps) + " } *>> " + _ps_quote(log)
+    py = shlex.quote(python)
+    steps = [
+        "sleep 0.5",
+        f"{py} -m infocenter crew down",
+        f"{py} -m infocenter stop",
+        f"{py} -m infocenter serve --detach",
+        "sleep 1",
+    ]
+    for directory in projects:
+        steps.append(f"{py} -m infocenter crew up --dir {shlex.quote(directory)}")
+    return "{ " + " ; ".join(steps) + " ; } >> " + shlex.quote(log) + " 2>&1"
+
+
 def _run_headless(
     template: str, prompt: str, project: str, agent: str | None = None,
     timeout: int = HEADLESS_TIMEOUT,
@@ -1966,7 +2019,7 @@ def _run_headless(
         stdin_text = prompt
     try:
         proc = subprocess.Popen(
-            ["/bin/sh", "-c", command],
+            _shell_argv(command),
             cwd=project,
             stdin=subprocess.PIPE if stdin_text is not None else subprocess.DEVNULL,
             stdout=subprocess.PIPE,

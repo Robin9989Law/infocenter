@@ -1,6 +1,5 @@
 import json
 import os
-import select
 import shutil
 import socket
 import subprocess
@@ -19,6 +18,7 @@ from http.server import ThreadingHTTPServer
 from infocenter.client import ApiError, request
 from infocenter.server import healthy, make_handler
 from infocenter.store import MailError, Store
+from tests.test_quality_mcp import _read_some
 
 IC = str(ROOT / "bin" / "ic")
 
@@ -39,15 +39,10 @@ def line_frame(obj) -> bytes:
 
 
 def read_line_message(stream, timeout=5):
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     buf = b""
     while b"\n" not in buf:
-        if time.time() > deadline:
-            raise TimeoutError(buf)
-        ready, _, _ = select.select([stream], [], [], 0.2)
-        if not ready:
-            continue
-        chunk = stream.read(1)
+        chunk = _read_some(stream, 1, deadline, buf)
         if not chunk:
             raise EOFError(buf)
         buf += chunk
@@ -56,15 +51,10 @@ def read_line_message(stream, timeout=5):
 
 
 def read_frame(stream, timeout=5):
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     buf = b""
     while b"\r\n\r\n" not in buf:
-        if time.time() > deadline:
-            raise TimeoutError(buf)
-        ready, _, _ = select.select([stream], [], [], 0.2)
-        if not ready:
-            continue
-        chunk = stream.read(1)
+        chunk = _read_some(stream, 1, deadline, buf)
         if not chunk:
             raise EOFError(buf)
         buf += chunk
@@ -74,12 +64,7 @@ def read_frame(stream, timeout=5):
         if line.lower().startswith(b"content-length:"):
             length = int(line.split(b":", 1)[1].strip())
     while len(rest) < length:
-        if time.time() > deadline:
-            raise TimeoutError(rest)
-        ready, _, _ = select.select([stream], [], [], 0.2)
-        if not ready:
-            continue
-        chunk = stream.read(length - len(rest))
+        chunk = _read_some(stream, length - len(rest), deadline, rest)
         if not chunk:
             raise EOFError(rest)
         rest += chunk
@@ -438,12 +423,19 @@ class HubTest(unittest.TestCase):
              "--dir", str(project), "--dry-run"],
             check=True, capture_output=True, text=True, env=self._env(),
         )
-        self.assertIn("open -a Safari", dry.stdout)
         self.assertIn("crew watch fakebot", dry.stdout)
-        if shutil.which("tmux"):
-            self.assertIn("new-window", dry.stdout)
+        if sys.platform == "win32":
+            self.assertNotIn("open -a Safari", dry.stdout)
+            self.assertIn("需要 macOS", dry.stdout)
+            if not shutil.which("tmux"):
+                self.assertNotIn("osascript", dry.stdout)
+                self.assertIn("没有 tmux", dry.stdout)
         else:
-            self.assertIn("osascript", dry.stdout)
+            self.assertIn("open -a Safari", dry.stdout)
+            if shutil.which("tmux"):
+                self.assertIn("new-window", dry.stdout)
+            else:
+                self.assertIn("osascript", dry.stdout)
         status = subprocess.run(
             [sys.executable, IC, "--home", str(home), "crew", "status"],
             check=True, capture_output=True, text=True, env=self._env(),

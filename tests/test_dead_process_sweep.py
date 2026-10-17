@@ -90,6 +90,24 @@ class DeadProcessSweepTest(unittest.TestCase):
         self.store.sweep()
         self.assertEqual(self._claim_of(msg["id"]), "w-live", "还在干活的窗口的认领不许被动")
 
+    def test_list_windows_keeps_fresh_claim_and_releases_silent_one(self):
+        """列办公室会跑对账。年轻认领留下；超时且窗口也静默的认领释放并留痕。"""
+        from infocenter.windows import WindowsMixin
+
+        fresh = self._claimed_message("w-fresh")
+        WindowsMixin.list_windows(self.store)
+        self.assertEqual(self._claim_of(fresh["id"]), "w-fresh")
+        self.store.touch("cursor", window_id="w-stale", workspace=WS)
+        stale = self.store.send("opencode", ["cursor"], "另一单", "另一正文", workspace=WS)
+        self.store.events("cursor", since=0, wait=0, workspace=WS, window_id="w-stale")
+        old = "2020-01-01T00:00:00Z"
+        _age(self.db, "UPDATE deliveries SET claimed_at = ? WHERE message_id = ?", (old, stale["id"]))
+        _age(self.db, "UPDATE windows SET last_seen_at = ? WHERE window_id = 'w-stale'", (old,))
+        self.store.list_windows()
+        self.assertEqual(self._claim_of(fresh["id"]), "w-fresh", "未过期的认领不能被列办公室清掉")
+        self.assertIsNone(self._claim_of(stale["id"]), "超时且窗口静默的认领要释放")
+        self.assertIn("claim_release", _actions(self.db))
+
     def test_long_headless_run_is_not_touched(self):
         """TTL 必须大于 headless 单轮上限：长任务跑起来时窗口是安静、不轮询的。"""
         self.assertGreater(CLAIM_TTL, 1800, "TTL 要比 headless_timeout 大，否则会误收正在跑的认领")
