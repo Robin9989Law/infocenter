@@ -197,15 +197,24 @@ def call(explicit, agent: str, method: str, path: str, body=None, query=None, ho
     return request_mail(url, method, path, agent, body, query, window=window, pid=pid)
 
 
+def _wants_client_cwd(path: str) -> bool:
+    """哪些写请求要带上敲命令时的目录。
+
+    发信/回信用它补 workspace。拿写锁只把它交给服务端写人话：
+    相对路径仍按服务端目录解析，**不**拿这个字段改锁键。
+    """
+    bare = path.split("?", 1)[0]
+    return bare == "/v1/messages" or bare.endswith("/reply") or bare == "/v1/locks"
+
+
 def _attach_client_cwd(method: str, path: str, body):
-    """发信/回信时带上客户端 cwd。服务端只认这个字段，不读自己的进程目录。
+    """发信、回信、拿写锁时带上客户端 cwd。服务端不读自己的进程目录来猜这是哪。
 
     调用方已经放了 client_cwd（含显式 null）就不动。其它路径不改请求体。
     """
     if method not in {"POST", "PUT"} or not isinstance(body, dict):
         return body
-    bare = path.split("?", 1)[0]
-    if bare != "/v1/messages" and not bare.endswith("/reply"):
+    if not _wants_client_cwd(path):
         return body
     if "client_cwd" in body:
         return body

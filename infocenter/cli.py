@@ -242,7 +242,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="把本仓库的提交闸钩子装上（git config core.hooksPath .githooks），幂等")
 
     queue = sub.add_parser("queue", help="拿不到钥匙时把要改的事记下来（进只增链，并写入自己的 TODO）")
-    queue.add_argument("path", nargs="?", default=None, help="要改的文件（不填＝列全部排队）")
+    queue.add_argument("path", nargs="?", default=None, help="要改的文件（相对路径按敲命令的目录解析；不填＝列全部排队）")
     queue.add_argument("--note", default=None, help="我要改什么（提议内容）")
     queue.add_argument("--patch-file", dest="patch_file", default=None, help="改动补丁（可选，从文件读）")
     queue.add_argument("--merge", action="store_true",
@@ -255,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     locks = sub.add_parser("locks", help="看现在谁锁了什么（写锁）")
     lock = sub.add_parser("lock", help="拿写锁：同一时间只有一个 agent 能改同一路径")
-    lock.add_argument("paths", nargs="*", help="要锁的路径（相对路径会解析成绝对路径）")
+    lock.add_argument("paths", nargs="*", help="要锁的路径（相对路径按敲命令的目录解析成绝对路径；文件可以还不存在）")
     lock.add_argument("--ttl", type=int, default=None, help="锁的有效秒数（默认 1800，最短 30，最长 12h）")
     lock.add_argument("--task", dest="task_id", default=None, help="这次改的是哪个任务")
     lock.add_argument("--note", default=None, help="为什么锁")
@@ -266,7 +266,7 @@ def build_parser() -> argparse.ArgumentParser:
                       help="盘上没动过时，到顶前可以多次再要一段；不刷新计时，到期时间截到拿锁后 1 小时")
 
     unlock = sub.add_parser("unlock", help="放写锁（默认只放自己的）")
-    unlock.add_argument("paths", nargs="*", help="要放的路径；不填 = 放掉自己的全部锁")
+    unlock.add_argument("paths", nargs="*", help="要放的路径（相对路径按敲命令的目录解析）；不填 = 放掉自己的全部锁")
     unlock.add_argument("--force", action="store_true", help="清场：不带路径时是 hub 级（要 manager＝用户本人）；带路径按路径找项目（找不到回落 manager）。旧名 human 仍被接受")
 
     probe = sub.add_parser(
@@ -545,7 +545,7 @@ def main(argv=None) -> int:
 
             if args.install_hook:
                 return _install_commit_hook(subprocess)
-            paths = args.paths
+            paths = _abs_client_paths(args.paths) if args.paths else None
             if not paths:
                 paths = (_staged_paths if getattr(args, "staged", False) else _changed_paths)(subprocess)
                 if not paths:
@@ -560,7 +560,11 @@ def main(argv=None) -> int:
         elif args.cmd == "lock":
             import subprocess
 
-            lock_paths = list(args.paths or [])
+            # 相对路径按**敲命令的目录**收成绝对路径再发。服务端的 resolve()
+            # 用的是它自己的进程目录——不转的话，锁会静默落在别处（omp 报的幻影锁）。
+            # 文件还不存在也要能锁：resolve 默认不要求目标存在。
+            named = _abs_client_paths(args.paths)
+            lock_paths = list(named)
             if args.changed:
                 # `--changed` 与显式路径是**并集**（不是二选一）：既要锁住所有改动，
                 # 也要能顺手锁住"马上要写、但还没改"的文件（如外锚文件）。
@@ -572,7 +576,7 @@ def main(argv=None) -> int:
                     return 0
             # 只嗅**命令行点名**的路径：`--changed` 带进来的，是"我自己刚改完的那批"，
             # 本来就该是脏的，说了也是噪音。
-            dirty = _preexisting_dirt(subprocess, args.paths or [])
+            dirty = _preexisting_dirt(subprocess, named)
             payload = call(
                 args.url, agent, "POST", "/v1/locks",
                 {
@@ -592,10 +596,11 @@ def main(argv=None) -> int:
         elif args.cmd == "unlock":
             payload = call(
                 args.url, agent, "POST", "/v1/locks/release",
-                {"paths": args.paths or None, "force": bool(args.force)},
+                {"paths": _abs_client_paths(args.paths) or None, "force": bool(args.force)},
                 home=home,
             )
         elif args.cmd == "queue":
+            qpath = _abs_client_path(args.path) if args.path else None
             if args.merge:
                 ids = _split_ids(args.ids)
                 if args.ids is not None and not ids:
@@ -608,12 +613,12 @@ def main(argv=None) -> int:
                     )
                 payload = call(
                     args.url, agent, "POST", "/v1/locks/queue/merge",
-                    {"path": args.path, "ids": ids}, home=home,
+                    {"path": qpath, "ids": ids}, home=home,
                 )
             elif args.note or args.patch_file:
                 payload = call(
                     args.url, agent, "POST", "/v1/locks/queue",
-                    {"path": args.path, "note": args.note, "patch_file": args.patch_file,
+                    {"path": qpath, "note": args.note, "patch_file": args.patch_file,
                      "task": args.task},
                     home=home,
                 )
@@ -636,7 +641,7 @@ def main(argv=None) -> int:
             else:
                 payload = call(
                     args.url, agent, "GET", "/v1/locks/queue",
-                    query={"path": args.path}, home=home,
+                    query={"path": qpath}, home=home,
                 )
         elif args.cmd == "locks":
             payload = _attach_lock_lights(
@@ -1199,6 +1204,19 @@ def _staged_paths(subprocess) -> list[str]:
         ["diff", "--cached", "--name-only", "-z", "--diff-filter=ACMR"],
         status_in_record=False,
     )
+
+
+def _abs_client_path(path: str) -> str:
+    """锁键按敲命令时的目录算，不按服务端进程目录。
+
+    与 `_preexisting_dirt` 同一口径：`expanduser().resolve()`。
+    `resolve()` 默认不要求目标存在，所以「先锁、后建」仍然成立。
+    """
+    return str(Path(path).expanduser().resolve())
+
+
+def _abs_client_paths(paths) -> list[str]:
+    return [_abs_client_path(path) for path in (paths or []) if str(path).strip()]
 
 
 def _preexisting_dirt(subprocess, paths) -> dict[str, str]:
@@ -2187,6 +2205,9 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
             f"{payload.get('expires_at_beijing') or payload.get('expires_at')} 过期）——只有你能改这些路径"
             f"（有进度再执行同一命令即续期；盘上没动过要用 --stay，最多到拿锁后 1 小时）"
         )
+        hint = payload.get("path_hint")
+        if isinstance(hint, str) and hint.strip():
+            print(f"  ⚠ {hint.strip()}")
         for item in rows:
             tail = f"（任务 {item['task_id']}）" if item.get("task_id") else ""
             print(f"  {item['path']}{tail}")

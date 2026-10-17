@@ -434,7 +434,7 @@ OPENAPI = {
         "/v1/locks": {
             "get": {"summary": "列出写锁", "responses": {"200": {"description": "locks"}}},
             "post": {
-                "summary": "拿写锁。body.paths 必填；可带 ttl、task_id、note、skip_locked、force、stay。被他人锁着返回 409；自己的锁盘上没动再拿返回 409 no_progress",
+                "summary": "拿写锁。body.paths 必填；可带 ttl、task_id、note、skip_locked、force、stay、client_cwd。相对路径仍收下，响应 path_hint 说明按服务端目录解析（不拒绝）。被他人锁着返回 409；自己的锁盘上没动再拿返回 409 no_progress",
                 "parameters": [
                     {"$ref": "#/components/parameters/Agent"},
                     {"$ref": "#/components/parameters/Window"},
@@ -871,6 +871,7 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 force=_flag(query.get("force", ["0"])[0]) or bool(body.get("force")),
                 dirty=body.get("dirty") if isinstance(body.get("dirty"), dict) else None,
                 stay=_stay_flag(body.get("stay")),
+                client_cwd=_opt_str(body, "client_cwd"),
             )
 
     if path == "/v1/guard":

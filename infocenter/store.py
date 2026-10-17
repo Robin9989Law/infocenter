@@ -2686,6 +2686,7 @@ class Store:
         skip_locked: bool = False,
         dirty: dict | None = None,
         stay: bool = False,
+        client_cwd: str | None = None,
     ) -> dict:
         """拿锁（可一次拿多个路径）。
 
@@ -2903,6 +2904,9 @@ class Store:
                 # 提交那一刻由 `ic guard` 再提醒一句
                 "dirty_at_lock": {r["path"]: r["dirty_at_lock"] for r in rows if r["dirty_at_lock"]},
             }
+            hint = _relative_lock_hint(paths, client_cwd)
+            if hint:
+                res["path_hint"] = hint
         self._signal()
         return res
 
@@ -5018,6 +5022,42 @@ def _task_text(value, limit: int = TASK_TEXT_MAX) -> str:
 
 
 
+
+
+def _relative_lock_hint(paths, client_cwd: str | None = None) -> str:
+    """相对路径仍按服务端目录收下，但必须说出来。不拒绝。
+
+    新客户端会先转成绝对路径，正常走不到这里。老客户端、手写 HTTP、
+    以及还在发相对路径的调用方，靠这句人话知道锁可能落在别处。
+    """
+    if isinstance(paths, str):
+        items = [part for part in re.split(r"[\s,]+", paths) if part.strip()]
+    elif isinstance(paths, (list, tuple, set)):
+        items = [str(part).strip() for part in paths if str(part).strip()]
+    else:
+        return ""
+    shown: list[str] = []
+    for item in items:
+        expanded = Path(item).expanduser()
+        if expanded.is_absolute():
+            continue
+        try:
+            landed = str(expanded.resolve())
+        except OSError:
+            landed = str(expanded)
+        shown.append(f"{item} → {landed}")
+    if not shown:
+        return ""
+    head = "；".join(shown[:4])
+    more = f"（另有 {len(shown) - 4} 个）" if len(shown) > 4 else ""
+    text = (
+        f"收到相对路径，按服务端所在目录解析（{head}{more}）。"
+        "这可能不是你敲命令的那个文件。没有拒绝。请先转成绝对路径再发。"
+    )
+    cwd = str(client_cwd or "").strip()
+    if cwd:
+        text += f" 客户端目录是 {cwd}。"
+    return text
 
 
 def _lock_paths(paths) -> list[str]:
