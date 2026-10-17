@@ -499,7 +499,7 @@ curl -s -X POST http://127.0.0.1:8787/v1/messages \
 | `GET` | `/v1/headless`、`/v1/headless/runs`、`/v1/daemons` | 在跑的 headless、headless 运行上下文（提示词与输出尾部）、守护进程实况 |
 | `GET` | `/v1/agents/{name}/messages` | 某个身份的信件往来历史（收发方向、对方、主题、状态） |
 | `POST` | `/v1/restart` | 一键重启：停掉全部守护与服务端，重新 `serve --detach` 并按项目 `crew up`（`dry_run=true` 只预览脚本；日志写 `~/.infocenter/restart.log`） |
-| `POST` | `/v1/open` | 在访达 / 文件管理器里打开一个目录（`path` 必填；非目录 400） |
+| `POST` | `/v1/open` | 在访达 / 文件管理器里打开**已登记的项目目录**（`path` 必填；非目录 400；**未登记为项目 403**，只允许打开名册里 `workspace` 已登记的目录，按 normpath + realpath 双重比对） |
 | `GET` `POST` | `/v1/tasks` | 列出任务队列（`owner` / `workspace` / `status` / `all` / `limit`）；建任务（`title` 必填、`workspace` 必填，**仅 coordinator**） |
 | `GET` | `/v1/tasks/{id}` | 任务详情，含完整 `supersedes` 链 |
 | `POST` | `/v1/tasks/{id}/start\|status\|update\|bump` | 开工 / 改状态（`status`；`blocked` 带 `reason`，`done`\|`stopped` 带 `handoff`）/ 改规格 / 调优先级（`by`） |
