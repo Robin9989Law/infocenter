@@ -1,5 +1,6 @@
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -8,6 +9,7 @@ import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -15,7 +17,7 @@ sys.path.insert(0, str(ROOT))
 from infocenter import crew
 from infocenter.client import request
 from infocenter.server import make_handler
-from infocenter.store import Store, _workspace_scope
+from infocenter.store import MailError, Store, _workspace_scope
 
 IC = str(ROOT / "bin" / "ic")
 
@@ -84,6 +86,80 @@ class CrewQualityTest(unittest.TestCase):
         ev = self.store.events("cursor", since=0, wait=0, workspace=str(proj))
         self.assertEqual(ev["unread_total"], 1)
         self.assertEqual([m["id"] for m in ev["new"]], [hit["id"]])
+
+    def test_waiting_count_只计本项目未封卷_空workspace不算(self):
+        # 守护按项目跑。「有 N 卷在等你」必须是本项目未封卷，别的项目和空 workspace 不催。
+        proj_a = Path(tempfile.mkdtemp(dir=str(self.home), prefix="projA")).resolve()
+        proj_b = Path(tempfile.mkdtemp(dir=str(self.home), prefix="projB")).resolve()
+
+        def waiting(title: str, workspace: str | None, who: str = "grok") -> str:
+            case = self.store.create_case(
+                agent="opencode", title=title, workspace=workspace, acceptance="办完",
+            )
+            self.store.append_case_node(
+                case["id"], agent="opencode", note=f"等 {who}", status="待谁", waiting_for=who,
+            )
+            return case["id"]
+
+        waiting("本项目待你", str(proj_a))
+        waiting("别的项目待你", str(proj_b))
+        waiting("空workspace待你", None)
+        sealed = waiting("本项目已封仍写着等你", str(proj_a))
+        self.store.close_case(sealed, agent="opencode", note="收工")
+        # 状态仍是「待谁」、但已封：列表接口还会把它交出来，计数必须丢掉。
+        stuck = waiting("本项目待你但已封", str(proj_a))
+        conn = sqlite3.connect(self.store.path)
+        try:
+            conn.execute("UPDATE cases SET sealed = 1 WHERE id = ?", (stuck,))
+            conn.commit()
+        finally:
+            conn.close()
+        waiting("本项目等别人", str(proj_a), who="kimi")
+        self.store.create_case(
+            agent="opencode", title="本项目在办", workspace=str(proj_a), acceptance="还没等谁",
+        )
+
+        self.assertEqual(crew._waiting_count(self.url, "grok", str(proj_a)), 1)
+        self.assertEqual(crew._waiting_count(self.url, "grok", str(proj_b)), 1)
+        # ② 连不上仍是 0。端口 1 没有服务，走的是原来那条 except。
+        self.assertEqual(crew._waiting_count("http://127.0.0.1:1", "grok", str(proj_a)), 0)
+
+        want = "另外有 1 卷在等你（状态「待你」，只计本项目）"
+        look = f"cases --wait-for grok --workspace {proj_a}"
+        for text in (
+            crew.build_heartbeat_prompt("grok", str(proj_a), waiting=1),
+            crew.build_heartbeat_prompt("grok", str(proj_a), coordinator=True, waiting=1),
+            crew.build_prompt("grok", str(proj_a), [], 0, waiting=1),
+            crew.build_unread_fallback_prompt("grok", str(proj_a), [], waiting=1),
+        ):
+            self.assertIn(want, text)
+            self.assertIn(look, text)
+        # 没有等你的卷时一个字都不加，原提示词不变。
+        self.assertNotIn("卷在等你", crew.build_prompt("grok", str(proj_a), [], 0, waiting=0))
+        self.assertNotIn("卷在等你", crew.build_heartbeat_prompt("grok", str(proj_a), waiting=0))
+
+    def test_waiting_count_查询带workspace_异常仍返回0(self):
+        with mock.patch.object(crew, "_api", return_value={"cases": [
+            {"sealed": False},
+            {"sealed": True},
+            {"sealed": 0},
+        ]}) as api:
+            self.assertEqual(crew._waiting_count("http://127.0.0.1:9", "grok", "/proj-a"), 2)
+        self.assertEqual(api.call_args.kwargs["query"], {
+            "status": "waiting",
+            "waiting_for": "grok",
+            "workspace": "/proj-a",
+            "limit": "50",
+        })
+        for exc in (
+            SystemExit("连不上"),
+            MailError("down", "连不上"),
+            OSError("down"),
+            ValueError("bad"),
+            KeyError("x"),
+        ):
+            with mock.patch.object(crew, "_api", side_effect=exc):
+                self.assertEqual(crew._waiting_count("http://127.0.0.1:9", "grok", "/proj-a"), 0)
 
     def test_heartbeat_prompt_custom_override_and_agent_env(self):
         # A5-1 + A5-2：验证配置了 heartbeat_prompt 时采用自定义模板（展开 {agent}/{project}），

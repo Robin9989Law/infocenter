@@ -1247,12 +1247,20 @@ def _api(url: str, method: str, path: str, agent: str, body=None, query=None):
     return request_mail(url, method, path, agent, body, query)
 
 
-def _waiting_count(url: str, agent: str) -> int:
-    """**有 N 卷在等你**（状态「待你」、未封卷）。给提示词用——这是共享状态里现成的一个数，
-    和「未读数」同类；**不是通知、不是点名、不发信**（`--wait-for` 那一半缺的就是它）。"""
+def _waiting_count(url: str, agent: str, project: str) -> int:
+    """本项目**有 N 卷在等你**（状态「待你」、未封卷）。给提示词用——和「未读数」同类；
+    **不是通知、不是点名、不发信**。
+
+    查询带 `workspace=project`（`/v1/cases` 已有的参数，与 `_workspace_scope` 同一口径）：
+    别的项目不算，空 workspace 也不算。`ic status` 那盏灯仍是全局总账，不走这里。"""
     try:
         payload = _api(url, "GET", "/v1/cases", agent,
-                       query={"status": "waiting", "waiting_for": agent, "limit": "50"})
+                       query={
+                           "status": "waiting",
+                           "waiting_for": agent,
+                           "workspace": project,
+                           "limit": "50",
+                       })
     except (MailError, SystemExit, OSError, ValueError, KeyError):
         # **一个数而已，绝不能把守护弄崩**（2026-10-16 实测踩到：连不上时 request 抛的不是 MailError，
         # 异常冒出循环 ⇒ 守护不再响应 ⇒ 两个"热加载"测试红）。跟别处同口径：拿不到就说"没有"。
@@ -1260,12 +1268,18 @@ def _waiting_count(url: str, agent: str) -> int:
     return sum(1 for row in (payload or {}).get("cases") or [] if not row.get("sealed"))
 
 
-def _waiting_line(agent: str, waiting: int) -> str:
-    """一行提示（塞进已经在跑的提示词里；没有等你的卷就一个字符都不加）。"""
+def _waiting_line(agent: str, waiting: int, project: str = "") -> str:
+    """一行提示（塞进已经在跑的提示词里；没有等你的卷就一个字符都不加）。
+
+    project 给定时，这一行的数和「看是哪些」都只指本项目（与 `_waiting_count` 同一口径）。
+    """
     if not waiting:
         return ""
+    scope = "，只计本项目" if project else ""
+    where = f" --workspace {project}" if project else ""
     return (
-        f"另外有 {waiting} 卷在等你（状态「待你」）：`ic --as {agent} cases --wait-for {agent}` 看是哪些；"
+        f"另外有 {waiting} 卷在等你（状态「待你」{scope}）："
+        f"`ic --as {agent} cases --wait-for {agent}{where}` 看是哪些；"
         f"要么接着办，要么转出去：`ic --as {agent} case <id> --note \"为什么\" --wait-for <别人>`。\n"
     )
 
@@ -1279,7 +1293,7 @@ def build_prompt(agent: str, project: str, fresh: list[dict], unread_total: int,
         for item in fresh
     )
     return (
-        _waiting_line(agent, waiting)
+        _waiting_line(agent, waiting, project)
         + f"你是 {agent}，项目目录 {project}。信息中心有 {unread_total} 封属于本项目的未读留言，最新 {len(fresh)} 封：\n"
         f"{listing}\n"
         f"本轮动作固定为：读案卷 → 干活 → 写回一行节点。\n"
@@ -1304,7 +1318,7 @@ def build_heartbeat_prompt(
     coordinator_name: str | None = None,
     waiting: int = 0,
 ) -> str:
-    wait_line = _waiting_line(agent, waiting)
+    wait_line = _waiting_line(agent, waiting, project)
     if custom_prompt and str(custom_prompt).strip():
         return (
             wait_line
@@ -1331,7 +1345,8 @@ def build_heartbeat_prompt(
         else "主协调 agent（`ic agents` 里 role=manager 的那位）"
     )
     return (
-        f"你是 {agent}，项目目录 {project}。心跳检查（没有新信件）："
+        wait_line
+        + f"你是 {agent}，项目目录 {project}。心跳检查（没有新信件）："
         f"1）先看有没有该办的事：`ic --as {agent} inbox`（本项目未读）；再读你自己的 TODO-{agent}.md（只读这一份）。"
         f"2）若本项目 0 未读、TODO-{agent}.md 里也没有可推进的下一步 ⇒ 立即结束本次运行："
         f"不要读 PLAN.md、不要写文件、不要发信。"
@@ -1398,7 +1413,7 @@ def build_unread_fallback_prompt(
         for item in missed
     )
     return (
-        _waiting_line(agent, waiting)
+        _waiting_line(agent, waiting, project)
         + f"你是 {agent}，项目目录 {project}。事件流这轮没有新信，"
         f"但本项目还有 {len(missed)} 封未读。这些是事件流没再送出的未读：\n"
         f"{listing}\n"
@@ -1606,7 +1621,7 @@ def watch(
                     prompt = build_prompt(
                         agent, project, fresh,
                         int(payload.get("unread_total") or len(fresh)),
-                        waiting=_waiting_count(url, agent),
+                        waiting=_waiting_count(url, agent, project),
                     )
                     print(f"[{beijing_stamp()}] 本项目新信 {len(fresh)} 封，触发 headless", flush=True)
                     outcome = _run_headless(template, prompt, project, agent=agent, timeout=htimeout)
@@ -1678,7 +1693,7 @@ def watch(
                     else:
                         last_run = now_fb
                         prompt = build_unread_fallback_prompt(
-                            agent, project, missed, waiting=_waiting_count(url, agent),
+                            agent, project, missed, waiting=_waiting_count(url, agent, project),
                         )
                         print(
                             f"[{beijing_stamp()}] 事件流没有新信，本项目还有 {len(missed)} 封未读"
@@ -1729,7 +1744,7 @@ def watch(
                         template,
                         build_heartbeat_prompt(
                             agent, project, is_coord, custom_prompt,
-                            coordinator_name=coord_name, waiting=_waiting_count(url, agent),
+                            coordinator_name=coord_name, waiting=_waiting_count(url, agent, project),
                         ),
                         project,
                         agent=agent,

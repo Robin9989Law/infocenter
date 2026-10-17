@@ -133,6 +133,22 @@ class WaitForStoreAndLightTest(unittest.TestCase):
         self.store.close_case(cid, agent="opencode", note="收工")
         self.assertNotIn("在等你", self._status("kimi"))
 
+    def test_status灯仍是全局数_不分项目也不丢空workspace(self):
+        # 守护提示词里的数按项目收；这一盏灯是给人看的总账，两处不要混成一个口径。
+        for title, workspace in (
+            ("A项目", "/tmp/proj-status-a"),
+            ("B项目", "/tmp/proj-status-b"),
+            ("无项目", None),
+        ):
+            case = self.store.create_case(
+                agent="opencode", title=title, workspace=workspace, acceptance="收工后不再催",
+            )
+            self.store.append_case_node(
+                case["id"], agent="opencode", note=f"等 kimi：{title}", status="待谁", waiting_for="kimi",
+            )
+        out = self._status("kimi")
+        self.assertIn("有 3 卷在等你", out)
+
     def test_json_里带上卷号(self):
         cid = self._case_waiting_on("kimi")
         import json
