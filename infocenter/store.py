@@ -1024,6 +1024,10 @@ class Store:
                             auto=False,
                             now=created,
                         )
+        # 投递已经提交。趁这次写信，把死窗口的认领放掉。
+        # 不改 events 游标，也不把已经越过的未读塞回 new。
+        with self._session(immediate=True) as conn:
+            _release_stale_claims(conn)
         self._signal()
         result = self.get_message(sender, message_id, full=True)
         # 留空时给调用方一个可提示的信号。CLI 文案不在这里拼。
