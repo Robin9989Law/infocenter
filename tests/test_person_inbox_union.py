@@ -3,7 +3,8 @@
 口径（派单 m1a1443051085b5655）：
 - 「是不是人」只用 store.is_person()。
 - inbox(agent=人) 把收件人是 manager 或 human 的 delivery 都算进来，每条带 delivered_to。
-- read / archive：先找本名那一份，没有再找另一个别名；只改那一行的状态，不改名、不新建行。
+- read：先找本名那一份，没有再找另一个别名。两行都未读时一次都标已读；本名已不是未读而别名仍未读时改签别名。不改名、不新建行。
+- archive：仍只改先找到的那一行。
 - /v1/agents/{name}/messages 在 name 是人时同样合并。
 - 非人的邮箱不动。
 
@@ -122,16 +123,18 @@ class PersonInboxUnionTest(unittest.TestCase):
         self.assertEqual(marked["delivery_status"], "read")
         self.assertEqual(marked["delivered_to"], "human")
 
-    def test_t2_两边都有时只改本名(self):
+    def test_t2_两边都未读时一次签收两行(self):
         self._seed()
         both = self.store.send("opencode", "human,manager", "两份", "各一份")
         before_count = len(self._deliveries())
+        names = self._agent_names()
         self.store.mark("manager", both["id"], "read")
         rows = [row for row in self._deliveries() if row[0] == both["id"]]
         self.assertEqual(len(self._deliveries()), before_count)
+        self.assertEqual(self._agent_names(), names)
         self.assertEqual(
             sorted((row[1], row[2]) for row in rows),
-            [("human", "unread"), ("manager", "read")],
+            [("human", "read"), ("manager", "read")],
         )
 
     def test_t2_带窗口签收也落在别名那一行(self):

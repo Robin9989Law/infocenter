@@ -1333,6 +1333,8 @@ class Store:
             # 过滤放在 LIMIT 之前，被滤掉的行不占配额，也不计入 unread_total。
             if workspace is not None:
                 rows = [row for row in rows if _workspace_scope(row["workspace"], workspace)]
+            # 双投同一封信时两行都在。折掉之后列表和 unread_total 都只算一份。
+            rows = _collapse_alias_deliveries(rows, agent)
             messages = []
             for row in rows:
                 holder = row["delivered_to"]
@@ -1424,10 +1426,14 @@ class Store:
             now = utcnow()
             read_at = delivery["read_at"] or now
             if window_id is None:
-                conn.execute(
-                    "UPDATE deliveries SET status = ?, read_at = ? WHERE message_id = ? AND to_agent = ?",
-                    (status, read_at, message_id, target),
-                )
+                if status == "read":
+                    _mark_own_delivery_read(conn, message_id, agent, now)
+                else:
+                    # 归档仍只动先找到的那一行（本名在就本名）。不连带清另一个名字。
+                    conn.execute(
+                        "UPDATE deliveries SET status = ?, read_at = ? WHERE message_id = ? AND to_agent = ?",
+                        (status, read_at, message_id, target),
+                    )
             else:
                 _upsert_window(
                     conn,
@@ -4391,7 +4397,7 @@ def _own_unread_replies(conn: sqlite3.Connection, thread_id: str, agent: str) ->
     """这条线程上「我的那一份」还没签收的信（按时间从早到晚）。
 
     与签收同一口径：先找本名那一行；本名没有，才找另一个别名那一行。
-    两行都在时只认本名——签收不会动另一行，两行都算会把人卡死。
+    两行都在时只认本名，避免一封信算成两封。read 会把这个人还没签的行一起标掉。
     别人的未读不算（他签不了，拿它卡人＝死锁）。
     """
     if not thread_id or not agent:
@@ -4438,20 +4444,51 @@ def _block_unread_replies(conn: sqlite3.Connection, row: sqlite3.Row, agent: str
     )
 
 
+def _signoff_read_targets(conn: sqlite3.Connection, message_id: str, agent: str) -> list[sqlite3.Row]:
+    """这次 read 要改状态的已有行。不插入、不改 to_agent。
+
+    只有一行，或不是人：就是那一行。
+    人的两行都未读：一次都标上。
+    调用名那行已经不是未读、另一个名字仍未读：改签另一个名字那一行。
+    其余：只动调用名那一行；调用名没有行时，沿用别名回退。
+    """
+    agent = normalize_name(agent)
+    names = _recipient_names(agent)
+    name_sql = ",".join("?" for _ in names)
+    rows = list(
+        conn.execute(
+            f"""
+            SELECT message_id, to_agent, status, read_at, claimed_by, claimed_at
+            FROM deliveries
+            WHERE message_id = ? AND to_agent IN ({name_sql})
+            """,
+            (message_id, *names),
+        ).fetchall()
+    )
+    if not rows:
+        return []
+    if len(rows) == 1 or not is_person(agent):
+        return rows
+    own = next((row for row in rows if row["to_agent"] == agent), None)
+    others_unread = [row for row in rows if row["to_agent"] != agent and row["status"] == "unread"]
+    if own is None:
+        return others_unread or rows[:1]
+    if own["status"] == "unread" and others_unread:
+        return [own, *others_unread]
+    if own["status"] != "unread" and others_unread:
+        return others_unread
+    return [own]
+
+
 def _mark_own_delivery_read(
     conn: sqlite3.Connection, message_id: str, agent: str, now: str
 ) -> None:
-    """只把收件人自己的那一份标成已读。不改认领，不动案卷，不改名字，不新建行。
-
-    人先找本名那一份，没有再找另一个别名。
-    """
-    row = _resolve_own_delivery(conn, message_id, agent)
-    if row is None:
-        return
-    conn.execute(
-        "UPDATE deliveries SET status = 'read', read_at = ? WHERE message_id = ? AND to_agent = ?",
-        (row["read_at"] or now, message_id, row["to_agent"]),
-    )
+    """把这次 read 该清的行标成已读。不改认领，不动案卷，不改名字，不新建行。"""
+    for row in _signoff_read_targets(conn, message_id, agent):
+        conn.execute(
+            "UPDATE deliveries SET status = 'read', read_at = ? WHERE message_id = ? AND to_agent = ?",
+            (row["read_at"] or now, message_id, row["to_agent"]),
+        )
 
 
 def _is_thread_sealed(conn: sqlite3.Connection, thread_id: str) -> bool:
@@ -4550,6 +4587,10 @@ def _claim_thread_on_touch(
             _mark_own_delivery_read(conn, msg_id, agent, now)
             return
         _must_unsealed(case_row)
+
+    if mark_read:
+        # 封卷分支已经在上面标过并返回。这里清掉同一人其余未读行，认领仍写在解析到的那一行。
+        _mark_own_delivery_read(conn, msg_id, agent, now)
 
     direct_claim = delivery["claimed_by"] if delivery else None
     existing_claim = _effective_thread_claim(conn, thread_id, agent, direct_claim)

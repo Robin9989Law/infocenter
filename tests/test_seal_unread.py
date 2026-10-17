@@ -347,7 +347,7 @@ class SealUnreadAliasTest(unittest.TestCase):
         fresh, _root = self._open_alias_only("human")
         self._assert_alias_blocks(fresh["id"])
 
-    def test_两行都在时签收本名后可办结_另一行未读不卡(self):
+    def test_两行都未读时签一次后另一行不再卡住办结(self):
         both = self.store.send("opencode", "human,manager", "两份", "各一份")
         case = self.store.create_case(
             agent="opencode",
@@ -362,17 +362,14 @@ class SealUnreadAliasTest(unittest.TestCase):
 
         self.store.mark("manager", both["id"], "read")
         self.assertEqual(self._delivery(both["id"], "manager")["status"], "read")
-        self.assertEqual(self._delivery(both["id"], "human")["status"], "unread")
+        self.assertEqual(self._delivery(both["id"], "human")["status"], "read")
         self.assertEqual(self.store.get_case(case["id"], viewer="manager")["unread_replies"], 0)
-        self.assertEqual(self.store.get_case(case["id"], viewer="human")["unread_replies"], 1)
-        with self.assertRaises(MailError) as ctx:
-            self.store.close_case(case["id"], agent="human", note="办结")
-        self.assertEqual(ctx.exception.code, "unread_replies")
+        self.assertEqual(self.store.get_case(case["id"], viewer="human")["unread_replies"], 0)
 
         closed = self.store.close_case(case["id"], agent="manager", note="办结")
         self.assertEqual(closed["status"], "done")
         self.assertTrue(closed["sealed"])
-        self.assertEqual(self._delivery(both["id"], "human")["status"], "unread")
+        self.assertEqual(self._delivery(both["id"], "human")["status"], "read")
 
     def test_别人的未读仍不卡人(self):
         root = self.store.send("manager", "kimi", "给你看", "别人还没签收")
