@@ -1339,6 +1339,69 @@ def build_heartbeat_prompt(
     )
 
 
+def _unread_fallback_interval(heartbeat: int, poll: int) -> int:
+    """new 为空但仍有未读时，隔多久读一次收件箱。
+
+    有心跳就用心跳；心跳为 0 时用 poll。间隔不得短于 poll，避免每轮长轮询都起一次 headless。
+    """
+    floor = max(0, int(poll))
+    beat = max(0, int(heartbeat or 0))
+    if beat <= 0:
+        return floor
+    return max(beat, floor)
+
+
+def _inbox_unread(url: str, agent: str, project: str) -> list[dict]:
+    """本项目未读。读失败就当没有，收件箱抖一下不能把守护打出循环。"""
+    try:
+        payload = request(
+            url, "GET", "/v1/inbox", agent,
+            query={"status": "unread", "workspace": project, "limit": "20"},
+            timeout=15,
+        )
+    except SystemExit as exc:
+        if exc.code in (0, None):
+            raise
+        print(f"[{beijing_stamp()}] 未读兜底读收件箱失败：{exc}", flush=True)
+        return []
+    except (ApiError, OSError, ValueError, KeyError, MailError) as exc:
+        print(f"[{beijing_stamp()}] 未读兜底读收件箱失败：{exc}", flush=True)
+        return []
+    messages = payload.get("messages") if isinstance(payload, dict) else None
+    return [item for item in (messages or []) if isinstance(item, dict) and item.get("id")]
+
+
+def build_unread_fallback_prompt(
+    agent: str,
+    project: str,
+    missed: list[dict],
+    waiting: int = 0,
+) -> str:
+    """事件流没再送出的未读。单独一条提示，不走 build_prompt，也不放宽那句「只处理上面列出的信」。"""
+    listing = "\n".join(
+        f"- [{item.get('id')}] 来自 {item.get('from') or '?'}《{item.get('subject') or ''}》"
+        + ("（high）" if item.get("priority") == "high" else "")
+        + (f" workspace {item['workspace']}" if item.get("workspace") else "")
+        for item in missed
+    )
+    return (
+        _waiting_line(agent, waiting)
+        + f"你是 {agent}，项目目录 {project}。事件流这轮没有新信，"
+        f"但本项目还有 {len(missed)} 封未读。这些是事件流没再送出的未读：\n"
+        f"{listing}\n"
+        f"本轮只办这几封被越过的未读。先 `ic --as {agent} case <thread>` 读案卷"
+        f"（没有案卷就按信本身办）；办完对每一封 `ic --as {agent} read <id>` 签收。"
+        f"签收后收件箱不再列出，下一轮就不会再投。\n"
+        f"**改文件前先拿写锁**：`ic --as {agent} lock <路径>`（可一次给多个）；拿不到（已被别人锁）就"
+        f"`ic queue <路径> --note \"要改什么\"` 写进自己的 TODO，然后做别的，不要发信、不要干等，**不要硬写**；"
+        f"改完 `ic --as {agent} unlock <路径>`。\n"
+        f"需要回应时 `ic --as {agent} reply <id> -b \"...\"`。无新信息不回帖，禁止 +1 附议。\n"
+        f"办完写回一行节点：`ic --as {agent} case <thread> --note \"结论\"`。\n"
+        f"写时间一律用**北京时间**（UTC+8）：`ic` 输出里的 `*_beijing` 就是北京时间；不要写机器本地时间、不要写 UTC。\n"
+        f"无 workspace 的未读不要在本轮动手（留给交互会话）。"
+    )
+
+
 def watch(
     home,
     agent: str,
@@ -1350,6 +1413,8 @@ def watch(
 ) -> int:
     """守护进程本体：长轮询 /v1/events（限定本项目 workspace），新信即时触发一次 headless 运行；
     没有信时每隔 heartbeat 秒触发一次 headless 规划运行（0=关闭，纯信件驱动）。
+    new 为空但本项目仍有未读时，另按心跳间隔读一次收件箱兜底（心跳为 0 时用 poll，且不比 poll 更密）。
+    这条在进程里：已经在跑的守护要重启才吃到新码（config 里的 heartbeat 仍按轮热读）。
     状态键 = 身份 × 项目：同一身份可以在多个项目各跑一个守护，互不抢信。"""
     agent = normalize_name(agent)
     key = _key(agent, project)
@@ -1416,6 +1481,9 @@ def watch(
             print(f"[{beijing_stamp()}] 办公室登记连续失败，守护退出，不进入收信循环", flush=True)
             return 1
         last_run = time.monotonic()
+        last_unread_fallback = last_run
+        # 新信路径已经交过 headless 的 id。兜底不再送一遍，避免没签收时每个间隔再起一轮。
+        already_prompted: set[str] = set()
         failure_streak = 0
         cooldown_until = 0.0
         cooldown_kind = ""
@@ -1568,6 +1636,77 @@ def watch(
                         _commit(new_cursor)
                         if mode != "always":
                             last_run = time.monotonic()
+                        for item in fresh:
+                            mid = str(item.get("id") or "")
+                            if mid:
+                                already_prompted.add(mid)
+                elif (
+                    int(payload.get("unread_total") or 0) > 0
+                    and time.monotonic() - last_unread_fallback
+                    >= _unread_fallback_interval(heartbeat, poll)
+                ):
+                    # 改的是这段进程内逻辑。在跑的守护要重启才走得到；只改 config 的 heartbeat 不用重启。
+                    # 新信路径已经交过的不再送：headless 没签收时，收件箱仍列着它，但不能每个间隔再起一轮。
+                    raw_unread = _inbox_unread(url, agent, project)
+                    missed = [
+                        item for item in raw_unread
+                        if str(item.get("id") or "") not in already_prompted
+                    ]
+                    _commit(new_cursor)
+                    now_fb = time.monotonic()
+                    last_unread_fallback = now_fb
+                    if not missed:
+                        # 没真的再起一轮，就不改 last_run，规划心跳的间隔照旧。
+                        if not raw_unread:
+                            print(
+                                f"[{beijing_stamp()}] 未读数 > 0，但本项目收件箱没有可投的未读，这轮不启 headless",
+                                flush=True,
+                            )
+                    else:
+                        last_run = now_fb
+                        prompt = build_unread_fallback_prompt(
+                            agent, project, missed, waiting=_waiting_count(url, agent),
+                        )
+                        print(
+                            f"[{beijing_stamp()}] 事件流没有新信，本项目还有 {len(missed)} 封未读"
+                            f"（事件流没再送出），兜底触发 headless",
+                            flush=True,
+                        )
+                        fb_outcome = _run_headless(
+                            template, prompt, project, agent=agent, timeout=htimeout,
+                        )
+                        _reassert_office_pid(url, agent, window_id, project)
+                        if fb_outcome in _HEADLESS_RETRY:
+                            if _cooldown_failure(fb_outcome):
+                                failure_streak += 1
+                            idle_rounds = 0
+                            if _should_cooldown(
+                                fb_outcome, failure_streak, _failure_threshold(entry or {}),
+                            ):
+                                cooldown_until = time.monotonic() + _cooldown_seconds(
+                                    entry or {}, fb_outcome,
+                                )
+                                cooldown_kind = (
+                                    "额度/鉴权不可用" if fb_outcome == "quota" else "连续失败"
+                                )
+                                cooldown_since = utcnow()
+                                cooldown_logged = False
+                                print(
+                                    f"[{beijing_stamp()}] 未读兜底 headless {fb_outcome}，"
+                                    f"连续 {failure_streak} 次失败 ⇒ {cooldown_kind}，进入冷却",
+                                    flush=True,
+                                )
+                            elif fb_outcome == "timeout":
+                                print(
+                                    f"[{beijing_stamp()}] 未读兜底 headless 超时（{htimeout}s）"
+                                    f"⇒ 不算失败、不进冷却，按兜底间隔再来",
+                                    flush=True,
+                                )
+                        else:
+                            failure_streak = 0
+                            idle_rounds = 0
+                            retry_rounds = 0
+                            interrupted_noted = False
                 elif beat and time.monotonic() - last_run >= beat:
                     print(f"[{beijing_stamp()}] 无新信，心跳 {beat}s 到期，触发规划运行", flush=True)
                     is_coord = str((entry or {}).get("role") or "").strip().lower() in {"manager", "coordinator"}
