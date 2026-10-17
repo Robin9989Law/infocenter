@@ -280,6 +280,57 @@ def _tools(locked: str | None) -> list[dict]:
                 "limit": {"type": "integer"},
             }, []),
         },
+        {
+            "name": "ic_lock",
+            "description": "改文件前申请写锁（独占租约）。paths 为要锁定的相对或绝对路径列表；若在磁盘无修改时延长租约可设 stay=true。" + who,
+            "inputSchema": schema({
+                "paths": {"type": "array", "items": {"type": "string"}, "description": "要锁定的文件路径列表"},
+                "stay": {"type": "boolean", "description": "盘上无改动时继续维持锁（累计最长 1 小时）"},
+                "ttl": {"type": "integer", "description": "租约秒数（默认 1800）"},
+            }, ["paths"]),
+        },
+        {
+            "name": "ic_unlock",
+            "description": "释放已持有的写锁。paths 指定要释放的文件路径列表；不传则释放当前身份持有的全部写锁。" + who,
+            "inputSchema": schema({
+                "paths": {"type": "array", "items": {"type": "string"}, "description": "要释放的路径列表，不传默认释放全部"},
+            }, []),
+        },
+        {
+            "name": "ic_queue",
+            "description": "写锁遇冲突被占用时，登记修改意图排队（不会死等，自动记入 TODO）。" + who,
+            "inputSchema": schema({
+                "path": {"type": "string", "description": "想改的文件路径"},
+                "note": {"type": "string", "description": "修改意图说明"},
+            }, ["path"]),
+        },
+        {
+            "name": "ic_case_note",
+            "description": "为案卷追加一行推进节点（一事一行结论）。可推进状态或挂待谁（waiting_for）。" + who,
+            "inputSchema": schema({
+                "id": {"type": "string", "description": "案卷 ID（thread_id）"},
+                "note": {"type": "string", "description": "一句话节点结论"},
+                "status": {"type": "string", "enum": ["open", "waiting", "paused", "aborted", "done"], "description": "目标案卷状态"},
+                "waiting_for": {"type": "string", "description": "转为待谁（如 grok/kimi 等）"},
+            }, ["id", "note"]),
+        },
+        {
+            "name": "ic_task",
+            "description": "操作或查询微观执行任务单（Task 状态机）。action 可选 list, get, start, set, add, bump。" + who,
+            "inputSchema": schema({
+                "action": {"type": "string", "enum": ["list", "get", "start", "set", "add", "bump"], "description": "操作动作"},
+                "id": {"type": "string", "description": "任务 ID（get/start/set/bump 必填）"},
+                "status": {"type": "string", "enum": ["doing", "blocked", "stopped", "done"], "description": "set 的目标状态"},
+                "workspace": {"type": "string", "description": "所属项目目录"},
+                "owner": {"type": "string", "description": "任务负责人"},
+                "title": {"type": "string", "description": "任务标题（add 必填）"},
+                "acceptance": {"type": "string", "description": "验收条件/测试命令"},
+                "reason": {"type": "string", "description": "blocked 状态的原因"},
+                "handoff": {"type": "string", "description": "stopped 状态的交接段"},
+                "priority": {"type": "integer", "description": "优先级"},
+                "by": {"type": "integer", "description": "bump 的增量值"},
+            }, []),
+        },
     ]
 
 
@@ -365,6 +416,81 @@ def _call_tool(
                 if window_id:
                     q["window"] = window_id
                 payload = request(url, "GET", "/v1/cases", agent, query=q)
+        elif name == "ic_lock":
+            paths = arguments.get("paths", arguments.get("path"))
+            if isinstance(paths, str):
+                paths = [paths]
+            body = {"paths": paths or [], "client_cwd": os.getcwd()}
+            if "stay" in arguments:
+                body["stay"] = bool(arguments["stay"])
+            if "ttl" in arguments:
+                body["ttl"] = int(arguments["ttl"])
+            payload = request(url, "POST", "/v1/locks", agent, body, query=win_query)
+        elif name == "ic_unlock":
+            paths = arguments.get("paths", arguments.get("path")) or []
+            if isinstance(paths, str):
+                paths = [paths]
+            body = {"paths": paths, "client_cwd": os.getcwd()}
+            payload = request(url, "POST", "/v1/locks/release", agent, body, query=win_query)
+        elif name == "ic_queue":
+            body = {
+                "path": str(arguments.get("path") or ""),
+                "note": str(arguments.get("note") or ""),
+                "client_cwd": os.getcwd(),
+            }
+            payload = request(url, "POST", "/v1/locks/queue", agent, body, query=win_query)
+        elif name == "ic_case_note":
+            case_id = str(arguments["id"]).strip()
+            body = {"note": arguments["note"]}
+            if arguments.get("status"):
+                body["status"] = arguments["status"]
+            if arguments.get("waiting_for"):
+                body["waiting_for"] = arguments["waiting_for"]
+            payload = request(url, "POST", f"/v1/cases/{case_id}/nodes", agent, body, query=win_query)
+        elif name == "ic_task":
+            action = str(arguments.get("action") or "list").strip().lower()
+            task_id = arguments.get("id")
+            if action == "list":
+                q = {}
+                for k in ("workspace", "owner", "status", "limit"):
+                    if arguments.get(k):
+                        q[k] = str(arguments[k])
+                if window_id:
+                    q["window"] = window_id
+                payload = request(url, "GET", "/v1/tasks", agent, query=q or None)
+            elif action == "get":
+                if not task_id:
+                    return _tool_text("缺少任务 id", True)
+                payload = request(url, "GET", f"/v1/tasks/{task_id}", agent, query=win_query)
+            elif action == "start":
+                if not task_id:
+                    return _tool_text("缺少任务 id", True)
+                payload = request(url, "POST", f"/v1/tasks/{task_id}/start", agent, {}, query=win_query)
+            elif action == "set":
+                if not task_id:
+                    return _tool_text("缺少任务 id", True)
+                body = {"status": arguments.get("status")}
+                if "reason" in arguments:
+                    body["blocked_reason"] = arguments["reason"]
+                for k in ("handoff", "acceptance", "title", "priority", "deps"):
+                    if k in arguments:
+                        body[k] = arguments[k]
+                payload = request(url, "POST", f"/v1/tasks/{task_id}", agent, body, query=win_query)
+            elif action == "add":
+                body = {
+                    k: arguments[k]
+                    for k in ("title", "workspace", "owner", "acceptance", "deps", "case_id", "supersedes", "priority")
+                    if k in arguments
+                }
+                if "workspace" not in body:
+                    body["workspace"] = os.getcwd()
+                payload = request(url, "POST", "/v1/tasks", agent, body, query=win_query)
+            elif action == "bump":
+                if not task_id:
+                    return _tool_text("缺少任务 id", True)
+                payload = request(url, "POST", f"/v1/tasks/{task_id}/bump", agent, {"by": arguments.get("by", 10)}, query=win_query)
+            else:
+                return _tool_text(f"未知任务动作 {action}", True)
         else:
             return _tool_text(f"未知工具 {name}", True)
     except ApiError as exc:

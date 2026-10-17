@@ -219,6 +219,8 @@ class OrphanStatusLiveTest(unittest.TestCase):
     def tearDown(self):
         self.httpd.shutdown()
         self.httpd.server_close()
+        import gc
+        gc.collect()
         self.tmp.cleanup()
 
     def _run(self, *argv) -> str:
@@ -238,8 +240,12 @@ class OrphanStatusLiveTest(unittest.TestCase):
         acquired = datetime.now(timezone.utc) - timedelta(seconds=LOCK_TTL + 60)
         acquired_iso = acquired.strftime("%Y-%m-%dT%H:%M:%SZ")
         held = self.store.lock_list()["locks"][0]["path"]
-        with sqlite3.connect(self.store.path) as conn:
-            conn.execute("UPDATE locks SET acquired_at = ? WHERE path = ?", (acquired_iso, held))
+        con = sqlite3.connect(self.store.path)
+        try:
+            con.execute("UPDATE locks SET acquired_at = ? WHERE path = ?", (acquired_iso, held))
+            con.commit()
+        finally:
+            con.close()
         os.utime(self.stale, (acquired.timestamp() - 120, acquired.timestamp() - 120))
         queued = self.store.queue_change("kimi", str(self.waiting), note="等钥匙")
 

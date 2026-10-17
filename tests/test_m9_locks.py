@@ -20,8 +20,9 @@ from infocenter.client import ApiError, request
 from infocenter.server import make_handler
 from infocenter.store import MailError, Store
 
-A = str(Path("/tmp/lock-demo/store.py").resolve())   # macOS 下 /tmp → /private/tmp
-B = str(Path("/tmp/lock-demo/cli.py").resolve())
+_LOCK_BASE = Path(tempfile.gettempdir()) / "lock-demo"
+A = str((_LOCK_BASE / "store.py").resolve())
+B = str((_LOCK_BASE / "cli.py").resolve())
 
 
 class WriteLockStoreTest(unittest.TestCase):

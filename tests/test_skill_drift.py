@@ -57,7 +57,10 @@ class SkillDriftTest(unittest.TestCase):
 
     def test_软链到仓库那份不算漂移(self):
         """优先软链（一份真相）：同一个 inode 就不该报。"""
-        os.symlink(self.repo_skill, self.installed)
+        try:
+            os.symlink(self.repo_skill, self.installed)
+        except OSError as e:
+            self.skipTest(f"Symlinks not supported or permitted on this platform: {e}")
         self.assertEqual(self._lines(), [])
 
     def test_没装副本就不吭声(self):

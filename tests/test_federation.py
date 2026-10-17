@@ -1,4 +1,3 @@
-import fcntl
 import inspect
 import io
 import json
@@ -248,12 +247,13 @@ class FederationSyncTest(unittest.TestCase):
         project.mkdir()
         _write_node(home, "alice")
         store = _store(home)
+        unused_base = (self.root / "unused").resolve()
         store.send(
             "grok",
             ["robin.kimi"],
             "同名目录",
             "正文",
-            workspace=str(Path("/unused") / project.name),
+            workspace=str(unused_base / project.name),
         )
         payload = self._ok(home, project)
         self.assertEqual(payload["exported"], 1)
@@ -301,12 +301,11 @@ class FederationSyncTest(unittest.TestCase):
         self.assertIn("exported=0", out)
         self.assertIn("imported=0", out)
         lock = home / "federation.lock"
-        fd = os.open(lock, os.O_RDWR)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
+        with open(lock, "r+") as fp:
+            from infocenter.flock import lock_file_ex_nb, unlock_file
+
+            lock_file_ex_nb(fp)
+            unlock_file(fp)
         self.assertFalse((home / "server.json").exists())
 
     def test_relative_outbox_and_tmp_sweep(self):
@@ -374,10 +373,13 @@ class FederationSyncTest(unittest.TestCase):
         peer = project / ".infocenter" / "outbox" / "robin"
         peer.mkdir(parents=True)
         link = peer / "m12345678ddd444.json"
-        link.symlink_to(outside)
-        real = self.root / "realbob"
-        _plant(real, id="m12345678eee555", thread_id="m12345678eee555")
-        (project / ".infocenter" / "outbox" / "bob").symlink_to(real)
+        try:
+            link.symlink_to(outside)
+            real = self.root / "realbob"
+            _plant(real, id="m12345678eee555", thread_id="m12345678eee555")
+            (project / ".infocenter" / "outbox" / "bob").symlink_to(real)
+        except OSError as e:
+            self.skipTest(f"Symlinks not supported or permitted on this platform: {e}")
         payload = self._ok(home, project, "import")
         self.assertEqual(payload, _zero())
         self.assertFalse((home / "mailbox.db").exists())

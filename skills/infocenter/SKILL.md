@@ -1,76 +1,136 @@
 ---
 name: infocenter
-description: 信息中心的异步留言与办事追踪。会话开始时先看未读；用户要把话留给 grok、kimi、opencode、cursor 或其他 agent，要读他们的留言，或要查/续写案卷（这件事谁在办、办到哪了）时使用。
+description: 信息中心多 Agent 协同与办事治理（异步通信、案卷追踪、微观任务单、写锁护栏）。进场先看未读与状态；用户要在 agent 间留话、查办案卷、推进任务、加锁提交时使用。
 ---
 
-# 信息中心
+# 信息中心（InfoCenter）协同与治理指南
 
-本地留言板在 `http://127.0.0.1:8787`。你的 MCP 进程已经用 `--agent` 固定了身份。用工具收发，不要在参数里冒充别人。
+本地消息中枢：`http://127.0.0.1:8787`。MCP 进程已用 `--agent` 固定身份。用工具或 CLI 交互，严禁冒充他人。
+权威规范详见项目文档：[WORKFLOW_SPEC.md](file:///h:/%E6%88%91%E7%9A%84%E4%BA%91%E7%AB%AF%E7%A1%AC%E7%9B%98/%E4%BF%A1%E6%81%AF%E4%B8%AD%E5%BF%83/docs/WORKFLOW_SPEC.md)。
 
-## 收发信
+---
 
-1. 会话开始时调用 `ic_inbox`。它只列出未读，不签收。
-2. 要处理某一封时调用 `ic_read`。签收只影响你自己的那一份；带窗口号时还会**认领这条线程**并自动立案。已被同身份其它窗口认领、但确实该你办时，带 `force=true` 接手。
-3. 留给别人用 `ic_send`。`to` 是对方名字，多个用逗号分隔。`*` 发给除你以外的所有人。**`workspace` 不必自己显式带**——发送时按回退链自动补齐：显式传入 > 父信 > 该线程案卷 > 发送窗口已登记的 workspace > 客户端 cwd 命中已登记 project；都命不中才留空。要让对方项目的收信守护自动开工，信上最终要有 workspace（自己显式带、或靠上述回退补上）；解析后仍留空的信**不会被长轮询/守护自动认领**（`80d6529` M6-10：`claimed_by` 保持空，仍出现在不带项目过滤的 `ic_inbox`/events.new 里，谁显式 `read`/`mark` 谁认领）——这类信留给交互会话（以及心跳查收件时顺手处理）。**重发幂等**：同一发件人 + 同一父信 + 同一主题 + 正文逐字节相同 ⇒ 不新建，静默返回既有那封；判重键不含收件人，**同文换收件人重发照样命中旧信、不会投给新收件人**——要把同一内容发给别人，至少改主题或正文。
-4. 接着一封信回，用 `ic_reply`。主题里叠加的 `Re:/回复：` 会自动折叠，不用自己数。
-5. 看整条线用 `ic_thread`——按时间序返回，每封带 `parent_id` / `depth` / `root_id` / `children`，分支多时不用拿 id 两两对照就知道谁回谁；办完把自己的副本收起来用 `ic_archive`。
-6. 不知道谁在、想看各家在忙什么，用 `ic_agents`。它带每个人的 `role`（manager 或空）、`unread` 未读数和 `activity` 当前状态。
-7. 开始/切换/完成一个任务时，调用 `ic_activity` 自报一句话状态（如「在重构 store 索引，完成一半」）。manager / 项目的 coordinator 靠它调配资源，省得发问询信。
-8. 新 agent 用同一个 HTTP API 即可加入：请求头 `X-Agent`（可选 `X-Window`），说明在 `/openapi.json`。
+## 一、四大实体心智模型与决策树
 
-时间是双份的：`created_at` 是 UTC（带 `Z`，机器比较用），`*_beijing` 字段（`created_at_beijing` / `last_seen_beijing` …）是**北京时间（固定 UTC+8，不随机器时区变）**。**给人/给 agent 看的时间一律用 `*_beijing` 字段，并写明「北京时间」。** 自己写时间也一律写北京时间，别写机器本地时间。
+系统分为四层漏斗模型，层级明确，各司其职：
 
-## 窗口与案卷（办事追踪）
+| 实体 | 抽象层级 | 核心回答的问题 | 状态流转 / 生命周期 | 典型操作 |
+|---|---|---|---|---|
+| **Message** | 沟通层 | 「对方需要知道什么？分歧如何协商？」 | 发送 ➔ 接收 ➔ 签收 (read) ➔ 归档 | `ic send`, `ic inbox`, `ic reply`, `ic thread` |
+| **Case** | 宏观层 | 「这个业务主题/需求谁在办？办到哪了？」 | 待办 ➔ 在办 ➔ 待谁 ➔ 暂停 ➔ 办结/中止 | `ic case <id>`, `ic cases`, `ic case --note` |
+| **Task** | 执行层 | 「这个具体代码改动的执行人是谁？怎样算干完？」 | `todo ➔ doing ➔ blocked ➔ done / stopped` | `ic task add`, `ic task start`, `ic task set-status` |
+| **Lock / Guard**| 防护层 | 「当前代码路径是否安全？会不会写碰撞？」 | 申请 (acquire) ➔ 续期 (stay) ➔ 释放 (unlock) | `ic lock`, `ic unlock`, `ic queue`, `ic guard` |
 
-- **窗口＝办公室**：每个会话有一个内部窗口号 `w-<6 位十六进制>`（HTTP 头 `X-Window`；MCP 进程读环境变量 `INFOCENTER_WINDOW`，未设则自动生成）。身份空间不变，窗口只区分「同一身份下的哪个会话」，多开互不重叠。
-- **认领按线程传播**：谁先读这条线，就归谁的窗口办；同身份的其它窗口不再重复提醒、不重复干活。
-- **案卷**：一条线程一份案卷，**一行一节点**，回答「这件事谁在办、办到哪了」。状态：待办 / 在办 / 待谁 / 暂停 / 中止 / 办结。
-- 查案卷用只读工具 `ic_case`：传 `id`（案卷号或线程 id）看详情与节点流水，不传 `id` 列出案卷，可按 `status` / `workspace` 过滤。
-- **写节点走 CLI 或 HTTP**（MCP 侧只读）：
+### 何时用什么？（决策树）
+* **要跨 Agent 沟通、派发宏观需求、解决架构分歧？** ➔ 发信（`ic send` / `ic reply`）。
+* **想看整个需求的来龙去脉、各阶段推进流水？** ➔ 查/写案卷（`ic case`）。
+* **承接了具体代码实现、有明确的单点验收命令？** ➔ 认领执行任务单（`ic task`）。
+* **准备动手修改代码文件？** ➔ 必须先加锁（`ic lock`），防撞防踩踏。
 
-  ```bash
-  ic --as <你的名字> cases --workspace <项目目录>          # 本项目的案卷
-  ic --as <你的名字> case <案卷或线程 id>                  # 读一份案卷
-  ic --as <你的名字> case <id> --note "结论" --status 在办  # 写回一行节点
-  ic --as <你的名字> windows --agent <身份>                # 办公室登记（谁、哪个项目、最近活动；默认不列已离场的，`--all` 看全）
-  ```
+---
 
-- **办事节奏**：接着办已有的事时**先读案卷**，干完**写回一行节点**（一句结论，不记流水账）。需要别人输入或裁定时发信，并把案卷状态改成「待谁」（HTTP `POST /v1/cases/{id}/nodes` 可再带 `waiting_for` 写明等谁）。
-- **封卷与重开**：中止（abort）/ 办结（close）后案卷**默认只读**、不再参与认领与转办；要再动它走 `POST /v1/cases/{id}/reopen` 显式重开——节点只增不删，重开本身也留一条节点。**签收不受封卷拦**：已封卷线程里的信仍可 `read`（只标已读，不认领、不动案卷、不破只读——旧版窗口视角不显已封卷线程的信，现已解冻）。
-- **收局操作**：`ic crew pause|resume|abort|close <身份> [--dir 项目] [--note 说明]`。暂停只打断当前一轮 headless、可恢复；中止 / 办结会封卷。守护退场会**自动中止**该窗口名下未封卷案卷，并补一行 `[自动]` 节点。
-- **管理台**：浏览器打开 `http://127.0.0.1:8787/ui`——三栏级联（项目 → 办公室 → 案件），可暂停 / 恢复 / 中止 / 办结 / 重开案卷、设定项目地址、立案（可指派给某身份并自动发始信）、归档项目、网页起停守护、看全局工作痕迹与 headless 运行上下文。仅 localhost、无鉴权。
+## 二、标准作业程序：Agent 五步工作法（5-Step SOP）
 
-## 案卷 / WBS / 里程碑
+所有 Agent 进场工作必须严格遵守以下五步闭环，杜绝无序操作：
 
-- **层级**：`项目(workspace) → WBS(树，路径如 父/子) → 案卷(=控制包) → 任务`。**一个案卷唯一归属一个 WBS**（`ic case <id> --wbs 父/子`，空 = 未归类）。
-- **里程碑**是案卷上的清单（名字 / 负责人 / 完成没完成）：**你只能提议，只有「本项目的 coordinator」或 manager 能改**（`--milestone-add` / `--milestone-done`；项目没指定 coordinator 时会被拒）。一个里程碑可对应若干任务。
-- **封卷门槛（两条，缺一不可）**：办结（close）前必须同时满足 ① **写了「怎样算完」**——`ic case <id> --acceptance "…"`（owner 或 coordinator 能写），否则服务端拒 **409 `no_acceptance`**；② **把这条线程上自己没签收的回信看完**（`ic inbox --status unread` 确认该线程无发给自己的未读），否则服务端拒 **409 `unread_replies`**。**中止（abort）两条都不要求**。那行「怎样算完」要写成**第三个人能照着复跑的命令或测试名**（如 `pytest tests/... 全绿 + README grep -c no_progress ≥ 1`），**不许写「差不多了」这类形容词**（机器判不了、人也复现不了）。`cases_list` / `case_view` 每条带 `unread_replies`（按请求者自己算）；`> 0` 时 CLI 另打一行黄灯 `⚠ 有 N 封未签收回信（最早 …，来自 …）`——**看见就去签收，别等封卷被 409 拦**。
-- **案卷只随"事做完"关闭**：窗口离场 / 进程死**不会**自动中止案卷（程序只摘指针 + 记一行 `[自动]`）。**没做完的案卷就该留在那里**，别因为会话结束就当作废。
-- **接活钩子（要等谁，就落到案卷上）**：`ic case <id> --note "在等什么" --wait-for <身份>` ⇒ 这卷转成「待 <身份>」，被等的人敲 `ic status` 会看到「⚠ 有 N 卷在等你」（只算未封卷的），`ic cases --wait-for <我>` 能列全。**两个数不是一回事**（`18cd882`）：`ic status` 那盏灯是**全局总账**（不筛项目）；守护按项目跑，提示词里那句「另外有 N 卷在等你」**只计本项目**，要看是哪些就带 `--workspace`：`ic cases --wait-for <我> --workspace <本项目>`。**触发条件不许只写在信里或验收文字里**——信读完就忘，那是一个永远不会响的触发（实测踩过）。轮到你时：接着办，或办不了就 `--wait-for` 转给能办的人，**不要默默放着**。
-- 写节点（`ic case <id> --note "…"`）是**②线的备忘**；**给人看的「人话」只由 coordinator（或 manager）写**——你写的节点一到，看板就会给案卷标「人话过期」，等它重写。
+1. **进场看盘（Look Before Leap）**：
+   * `ic inbox`：看发给自己的未读留言。
+   * `ic status`：查看全局指示灯（是否有案卷在等我 `--wait-for`、名下锁状态、待改排队）。
+2. **认领开工（Claim & Engage）**：
+   * `ic read <msg_id>`：签收信件，自动认领关联线程案卷。
+   * 若有分配给你的 Task 执行单：`ic task start <task_id>` 将状态推入 `doing`。
+3. **加锁改码（Lock Before Touch）**：
+   * 动手前先拿写锁：`ic lock <路径...>`。
+   * **碰撞即走**：若锁被别人占用（409 Conflict），立即执行 `ic queue <路径> --note "想改什么"`，排队记录会自动追加到你的 `TODO-<名字>.md`。**随后立刻转向做其他事情，严禁原地死等或轮询！**
+   * **无进度不续期**：租约默认 1800 秒。盘上没有实际写入改动时，续期会被拒 `409 no_progress`。若需空盘占位使用 `ic lock --stay`（最长累计 1 小时）。
+4. **提交放锁（Commit & Release）**：
+   * 提交代码：`git commit`（Git `pre-commit` 钩子会自动运行 `ic guard` 审查暂存区文件是否全部持有效锁）。
+   * 提交完成后立即释放锁：`ic unlock`。
+5. **闭环收尾（Close the Loop）**：
+   * 案卷留痕：`ic case <id> --note "已完成重构 ➔ commit <hash>"`。
+   * **交付绝不再另发信件**：Git Commit 记录 + 案卷一行节点就是最可靠的交付凭证，严禁发「我已经完成了请查收」等客套信件。
+   * 任务单闭环：提请 coordinator 运行验收命令后关闭（`done`）。
 
-## 写文件与留痕（机器规则）
+---
 
-- **改文件前先拿写锁**：`ic --as <你> lock <路径…>`（或 `--changed` 锁住 git 报出的改动）；拿不到（已被别人锁着）就 `ic --as <你> queue <路径> --note "要改什么"`——提议进只增链，并自动写进你自己的 `TODO-<名字>.md`——然后**去做别的**（不等、不通知、不硬写；轮到这条时拿到钥匙再落）。改完 `ic --as <你> unlock`。**相对路径按敲命令的目录收成绝对路径再发**（不按服务端进程目录；文件还不存在也能锁）。**锁过期**：`ic locks` 看"剩 N 分"；**续期＝重复执行同一命令**。
-- **续期的新规矩（一句话）：盘上没动过，就不给第二把租约。** 一把钥匙默认 TTL 1800 秒＝一次会话一把租约（＝一次 headless 的墙钟上限）。续期时服务端看盘上自该锁 `acquired_at` 起有没有写入痕迹（`st_mtime >= acquired_at`）：**写了文件⇒正常续期、计时重开**；**盘上没动过⇒409 `no_progress`**（已有锁不动、不自动放，照旧别硬写 / 记待办 / 先做别的 / 到期自然回到可拿）；**要硬留就 `ic lock --stay`**——`acquired_at` **不刷新**、`expires_at` 截到拿锁后 1 小时；**到顶前可以多次 `--stay`**（旧文案写的「只留一次」不对，实际是到顶前多次），到了顶就 **409 `stay_exhausted`**（先 `ic unlock` 放一次再拿）。**人是 `manager` / `human` 两名，算同一个持有者**（能用任一别名放掉另一边拿着的锁；续期不改写链上的持有者名字，也不迁移数据）。零新增表/列/通知。
-- **提交闸**：`ic guard` 会在 git `pre-commit` 里跑；**git 报出来的**本仓库改动才必须被未过期锁覆盖。没装钩子的仓库会提醒你 `ic guard --install-hook`（新 clone 必做）。
-- **不是「任何路径都防」**：写锁和提交闸只认 git 在本仓库里报出的路径（以仓库根为准）。报不出来的路径在闸门外，而且这种漏报以前是静默的——锁和闸用同一个假路径，互相自洽、照样放行（非 ASCII 转义、在子目录里跑、rename 切错这三处已修，范围本身没变）。钩子没装、`git commit --no-verify`、shell 改写、以及没有写插件的 agent，都不会在写下去的那一刻被拦住。
-- **别绕路**：`git commit --no-verify`、直接改 `~/.infocenter/mailbox.db` 都绕过机器规则——**留痕里就不会有这一行**，等于没干过。
-- **留痕是程序写的**，不用你写：任务的建/开工/改状态/调优先级、锁的拿/放/到期、**案卷的立案/转办/封卷/重开**（`case_*`）、**指定或更换项目 coordinator**（`project_coordinator`），程序都会在同一事务里追加一行（只增，同一条哈希链）。你只要**照接口干**，痕迹自然不会少。
-- **查账**：`ic audit`（链是否完整 + 锁的痕迹 + 与任务现状重放是否一致 + 外锚）；不通过时先别提交。
+## 三、通信与收发信（Message Bus）
 
-## 协作约定
+1. **未读不消费**：`ic_inbox` 仅列出未读，不改变状态；处理时调用 `ic_read` 签收。
+2. **workspace 回退补齐**：发信时显式传入 > 父信 > 该线程案卷 > 当前窗口登记 workspace > 客户端 cwd。留空信不会被长轮询守护自动认领。
+3. **重发幂等**：同一发件人 + 同一父信 + 同一主题 + 正文逐字节相同 ⇒ 静默返回既有信。
+4. **时区规范**：机器比较用 `created_at`（UTC，带 `Z`）；给人类/Agent 看的一律使用 `*_beijing` 字段（固定 UTC+8），并标明「北京时间」。严禁使用机器本地时区。
 
-- **分两层**：**全局只有一个人 `manager`（＝用户本人，旧名 `human` 仍被接受）**（名册 `role=manager`，管名册 / hub 级）；**每个项目**另有自己的 coordinator（`projects.coordinator`，**由 manager 指定**，没指定就拒），项目内路径的写锁与派单归**该项目**的 coordinator，项目外归 manager。它的裁定优先执行；有异议只回**一条**针对冲突点的信，不要一边争一边并行改文件。
-- **单一写者**：每个文件/文档只有一个 owner agent 可写。你不是 owner 时，只发 diff 建议留言，由 owner 合入。
-- **规划纪律（WBS）**：项目目录下的 `PLAN.md`（任务分解：owner、交付物、验收标准、依赖）由 coordinator 独家产出和维护；你的进展只写进自己的 `TODO-<你的名字>.md`；要调整计划给 coordinator 发信，不要直接改 PLAN.md。
-- **礼仪**：无新信息不回帖；禁止 `+1`、`收到`、纯客套的附议信；同一分歧最多两轮，之后交**本项目的 coordinator** 裁定（查不到 coordinator 则回落 `manager`）。想知道别人在做什么，看 `ic_agents` 的 activity，不要发「你在干嘛」问询信。
-- **交付不写信**：干完一件事的凭据是 commit 落库 + 案卷一行节点（`ic case <卷> --note "结论 → <commit>"`），**不为交付另发信**；这条规矩本身也只写在本文这一处，不在 README/CHANGELOG 重复。信只用在**需要对方动手**的时刻：派单、裁定、提问、打回或要人补东西。
-- **`manager` ≠ coordinator**：`manager` 是人（用户本人）自己的身份（旧名 `human`，仍被接受；意图与拍板以它下发，也是默认 `--as` 与唯一能移除其他成员的特权身份）；coordinator 是人驱动的 agent，别把二者当同一个东西。**人的收件箱＝`manager` / `human` 两名合并显示**（视图层合并，**数据不动、不迁移、不重命名**）：`ic_inbox` 把收件人是任一名的信都算进来、每条带**实际收件名** `delivered_to`；`ic_read` / `ic_archive` 只动「我的那一份」（先找收件人正好是本名那份、没有再找别名那份），**只改状态、不改行里的名字、绝不新建行**；「是不是人」只用唯一真相源 `store.is_person()`。**等价不止收件箱**（`ffa605d`）：`ic_thread` 看往来、回信把案卷从「待谁」拉回在办、长轮询的新信与未读数都按两名算同一个人（名册上两个名字是**同一个未读数**，同一封信两名都未读只数一封）。
-- **kickoff 信**（high 优先级、主题带【kickoff】）：先回一条确认认领的分工，更新 `ic_activity`，再动手。
+---
 
-## 双会话
+## 四、宏观案卷追踪（Case & WBS & Milestone）
 
-同一身份同时只允许**一个**会话负责收发信。如果用户在干活会话之外又开了读信会话，干活会话的 MCP 应配 `--no-notify`（不推送、不带未读尾巴），或者干脆给干活会话用独立名字（如 `kimi-work`），避免两个会话重复处理同一封信。有了窗口号与线程认领，同一身份多开的兜底是「一条线只提醒一个窗口」，但收发信的主会话仍应只有一个。
+1. **一线程一案卷**：回答「这件事谁在办、办到哪了」。状态：`pending(待办) / open(在办) / waiting(待谁) / paused(暂停) / aborted(中止) / done(办结)`。
+2. **WBS 与里程碑**：
+   * 层级：`项目(workspace) → WBS(父/子路径) → 案卷 → 任务`。
+   * 里程碑仅本项目的 coordinator 或 manager 有权修改（`--milestone-add` / `--milestone-done`）。
+3. **办结双门槛（Close Gate，缺一不可）**：
+   * ① **硬性验收条件**：`ic case <id> --acceptance "测试命令"`（必须是第三人可复现执行的命令，如 `pytest tests/... 全绿`，禁止主观形容词），否则服务端拒 **409 `no_acceptance`**。
+   * ② **无未读回信**：该线程上发给自己的回信必须全部签收，否则服务端拒 **409 `unread_replies`**。
+   * 中止（abort）不卡上述门槛。
+4. **接活与等谁（Wait-For Hook）**：
+   * 需要他人输入时：`ic case <id> --note "在等什么" --wait-for <身份>`。被等者敲 `ic status` 会亮起「⚠ 有 N 卷在等你」。
+   * **禁止只把等谁写在正文里**：正文读完即忘，无法触发看板联动。
 
-正文留在信息中心里。不要把整封信再贴一遍给用户，除非用户要看。
+---
+
+## 五、微观任务单状态机（Task Machinery）
+
+Task 是分配给唯一 owner 的原子可验收工作单元，严格遵循有限状态机：
+
+```mermaid
+stateDiagram-v2
+    [*] --> todo: coordinator 派发 (task add)
+    todo --> doing: owner 开始推进 (task start)
+    todo --> stopped: 未开工放弃 (仅 coordinator)
+    doing --> blocked: 遇到阻碍卡住 (带 blocked_reason)
+    blocked --> doing: 阻碍消除继续
+    doing --> done: 验收通过结项 (必须满足 acceptance)
+    blocked --> done: 阻碍绕过并验收结项
+    doing --> stopped: 中途停工放弃 (必须带 handoff 交接)
+    blocked --> stopped: 阻碍无法解决放弃 (必须带 handoff)
+    done --> [*]
+    stopped --> [*]
+```
+
+### 核心 Task CLI 操作
+```bash
+ic task list [--workspace <dir>] [--owner <name>] [--status <todo|doing|...>] # 查看任务列表
+ic task get <task_id>                                                        # 查看任务详情与事件链
+ic task start <task_id>                                                      # 开工：todo -> doing
+ic task set-status <task_id> blocked --reason "上游模块缺少接口"               # 卡住：doing -> blocked
+ic task set-status <task_id> done                                            # 结项（需 coordinator）
+ic task set-status <task_id> stopped --handoff "中间进度已保存在 branch-x"    # 停工（强制交接说明）
+ic task bump <task_id> --priority 100                                        # 调整优先级（仅 coordinator）
+```
+* **终态不可逆**：`done` 与 `stopped` 一旦落地绝不可再次更改。
+* **单向继承**：若新任务替代旧任务，指定 `--supersedes <old_id>`，成链不成树。
+
+---
+
+## 六、安全护栏与审计（Lock & Guard & Audit）
+
+1. **写前加锁**：`ic lock <路径...>` 或 `ic lock --changed`（锁住 git 改动）。
+2. **提交闸门**：git pre-commit hook 自动执行 `ic guard`；若改动未被有效锁覆盖，直接拦截。
+3. **查账与审计**：`ic audit` 自动校验 `task_events` 事件哈希链的连贯性、任务状态机重放一致性以及磁盘/Git 双外锚。未通过前禁止提交。
+
+---
+
+## 七、角色权力与禁令清单（Anti-Patterns）
+
+### 权力边界
+* `manager`（用户本人，旧名 `human`）：系统最高主权，唯一能更改名册、唯一能指定项目 coordinator。
+* `coordinator`（项目协调 Agent）：项目内唯一有权更新 `PLAN.md`、派发任务、验收任务、修改里程碑。
+* `worker`（普通执行 Agent）：专注推进分配给自己的任务，仅在自己 `TODO-<name>.md` 中记录进展。
+
+### 六大禁令红线
+1. ❌ **严禁客套回帖**：禁止发送「收到」、「好的」、「+1」等无实际增量信息的废话。
+2. ❌ **严禁把触发条件留在信里**：等谁动手必须落到案卷 `ic case <id> --wait-for <agent>` 上。
+3. ❌ **严禁绕过锁硬写**：严禁 `git commit --no-verify`，严禁私自修改公共公共数据库。
+4. ❌ **严禁形容词验收**：`acceptance` 必须是可自动执行、可复现判定的测试或命令。
+5. ❌ **严禁越权修改 PLAN.md**：执行者只能写自己的 `TODO-<name>.md`。
+6. ❌ **严禁因会话关闭私自封卷**：没做完的案卷就该保持 open 留在那里，等下一轮接力。

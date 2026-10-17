@@ -1284,8 +1284,53 @@ def _waiting_line(agent: str, waiting: int, project: str = "") -> str:
     )
 
 
-def build_prompt(agent: str, project: str, fresh: list[dict], unread_total: int,
-                 waiting: int = 0) -> str:
+def _active_task_line(url: str, agent: str, project: str) -> str:
+    """查询该 agent 在本项目名下的待办/在办 Task，组装提示。拿不到就返回空。"""
+    try:
+        payload = _api(url, "GET", "/v1/tasks", agent, query={
+            "owner": agent,
+            "workspace": project,
+            "limit": "5",
+        })
+        tasks = (payload or {}).get("tasks") or []
+        doing = [t for t in tasks if t.get("status") == "doing"]
+        todo = [t for t in tasks if t.get("status") == "todo"]
+        lines = []
+        if doing:
+            target = doing[0]
+            acc = f"（验收：{target['acceptance']}）" if target.get("acceptance") else ""
+            lines.append(f"你当前正在推进任务 [{target['id']}]《{target['title']}》{acc}。")
+        elif todo:
+            target = todo[0]
+            lines.append(f"你名下有待开工任务 [{target['id']}]《{target['title']}》；开工请执行 `ic --as {agent} task start {target['id']}`。")
+        return ("另外：" + " ".join(lines) + "\n") if lines else ""
+    except (MailError, SystemExit, OSError, ValueError, KeyError):
+        return ""
+
+
+def _orphan_queue_line(url: str, agent: str, project: str) -> str:
+    """检查是否有该 agent 曾经排过队、现在锁已释放可以动手的路径。"""
+    try:
+        payload = _api(url, "GET", "/v1/locks", agent)
+        orphans = (payload or {}).get("orphan_queue") or []
+        mine = [row for row in orphans if row.get("agent") == agent]
+        if not mine:
+            return ""
+        paths = "、".join(str(row.get("path")) for row in mine[:3])
+        return f"⚠ 你曾经排队的路径现在钥匙已空出：{paths}；可尽快 `ic --as {agent} lock <路径>` 拿锁推进。\n"
+    except (MailError, SystemExit, OSError, ValueError, KeyError):
+        return ""
+
+
+def build_prompt(
+    agent: str,
+    project: str,
+    fresh: list[dict],
+    unread_total: int,
+    waiting: int = 0,
+    task_line: str = "",
+    orphan_line: str = "",
+) -> str:
     listing = "\n".join(
         f"- [{item['id']}] 来自 {item['from']}《{item['subject']}》"
         + ("（high）" if item.get("priority") == "high" else "")
@@ -1294,6 +1339,8 @@ def build_prompt(agent: str, project: str, fresh: list[dict], unread_total: int,
     )
     return (
         _waiting_line(agent, waiting, project)
+        + task_line
+        + orphan_line
         + f"你是 {agent}，项目目录 {project}。信息中心有 {unread_total} 封属于本项目的未读留言，最新 {len(fresh)} 封：\n"
         f"{listing}\n"
         f"本轮动作固定为：读案卷 → 干活 → 写回一行节点。\n"
@@ -1317,11 +1364,13 @@ def build_heartbeat_prompt(
     custom_prompt: str | None = None,
     coordinator_name: str | None = None,
     waiting: int = 0,
+    task_line: str = "",
+    orphan_line: str = "",
 ) -> str:
-    wait_line = _waiting_line(agent, waiting, project)
+    extra_lines = _waiting_line(agent, waiting, project) + task_line + orphan_line
     if custom_prompt and str(custom_prompt).strip():
         return (
-            wait_line
+            extra_lines
             + str(custom_prompt)
             .strip()
             .replace("{agent}", agent)
@@ -1329,7 +1378,7 @@ def build_heartbeat_prompt(
         )
     if coordinator:
         return (
-            wait_line
+            extra_lines
             + f"你是 {agent}（manager），项目目录 {project}。心跳检查（没有新信件）："
             f"1）维护 {project}/PLAN.md：吸收新需求、更新任务状态、勾掉完成项、拆解停滞项；"
             f"2）调配资源：用 `ic --as {agent} agents` 看各家的 activity 状态和未读数，对照成员 TODO-<名字>.md 进展；"
@@ -1345,7 +1394,7 @@ def build_heartbeat_prompt(
         else "主协调 agent（`ic agents` 里 role=manager 的那位）"
     )
     return (
-        wait_line
+        extra_lines
         + f"你是 {agent}，项目目录 {project}。心跳检查（没有新信件）："
         f"1）先看有没有该办的事：`ic --as {agent} inbox`（本项目未读）；再读你自己的 TODO-{agent}.md（只读这一份）。"
         f"2）若本项目 0 未读、TODO-{agent}.md 里也没有可推进的下一步 ⇒ 立即结束本次运行："
@@ -1404,6 +1453,8 @@ def build_unread_fallback_prompt(
     project: str,
     missed: list[dict],
     waiting: int = 0,
+    task_line: str = "",
+    orphan_line: str = "",
 ) -> str:
     """事件流没再送出的未读。单独一条提示，不走 build_prompt，也不放宽那句「只处理上面列出的信」。"""
     listing = "\n".join(
@@ -1414,6 +1465,8 @@ def build_unread_fallback_prompt(
     )
     return (
         _waiting_line(agent, waiting, project)
+        + task_line
+        + orphan_line
         + f"你是 {agent}，项目目录 {project}。事件流这轮没有新信，"
         f"但本项目还有 {len(missed)} 封未读。这些是事件流没再送出的未读：\n"
         f"{listing}\n"
@@ -1622,6 +1675,8 @@ def watch(
                         agent, project, fresh,
                         int(payload.get("unread_total") or len(fresh)),
                         waiting=_waiting_count(url, agent, project),
+                        task_line=_active_task_line(url, agent, project),
+                        orphan_line=_orphan_queue_line(url, agent, project),
                     )
                     print(f"[{beijing_stamp()}] 本项目新信 {len(fresh)} 封，触发 headless", flush=True)
                     outcome = _run_headless(template, prompt, project, agent=agent, timeout=htimeout)
@@ -1694,6 +1749,8 @@ def watch(
                         last_run = now_fb
                         prompt = build_unread_fallback_prompt(
                             agent, project, missed, waiting=_waiting_count(url, agent, project),
+                            task_line=_active_task_line(url, agent, project),
+                            orphan_line=_orphan_queue_line(url, agent, project),
                         )
                         print(
                             f"[{beijing_stamp()}] 事件流没有新信，本项目还有 {len(missed)} 封未读"
@@ -1745,6 +1802,8 @@ def watch(
                         build_heartbeat_prompt(
                             agent, project, is_coord, custom_prompt,
                             coordinator_name=coord_name, waiting=_waiting_count(url, agent, project),
+                            task_line=_active_task_line(url, agent, project),
+                            orphan_line=_orphan_queue_line(url, agent, project),
                         ),
                         project,
                         agent=agent,

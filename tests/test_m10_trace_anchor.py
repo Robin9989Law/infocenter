@@ -26,8 +26,9 @@ from infocenter import cli
 from infocenter.server import make_handler
 from infocenter.store import Store, _task_event_hash
 
-WS = "/tmp/infocenter-demo"
-A = "/tmp/infocenter-demo/infocenter/store.py"
+_DEMO_BASE = Path(tempfile.gettempdir()) / "infocenter-demo"
+WS = str(_DEMO_BASE)
+A = str((_DEMO_BASE / "infocenter" / "store.py").resolve())
 
 
 class TraceAnchorTest(unittest.TestCase):
@@ -199,7 +200,7 @@ class TraceAnchorTest(unittest.TestCase):
         rows = con.execute("SELECT * FROM task_events WHERE action = 'lock_expire'").fetchall()
         con.close()
         self.assertEqual(len(rows), 1, "自动回收锁也要留痕")
-        self.assertIn(A, rows[0]["detail"])
+        self.assertEqual(json.loads(rows[0]["detail"]).get("path"), A)
         self.assertTrue(self.store.audit_events()["ok"], "回收痕迹不能破坏链")
 
     def test_lock_reply_shows_remaining_seconds(self):

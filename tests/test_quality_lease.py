@@ -186,7 +186,7 @@ class LeaseQualityTest(unittest.TestCase):
         finally:
             con.close()
         self.assertEqual(len(expired), 1)
-        self.assertIn(stored, expired[0][0])
+        self.assertEqual(json.loads(expired[0][0]).get("path"), stored)
 
     def test_t3_no_progress_and_orphan_queue_match_the_rows(self):
         path = self._file("d.py")

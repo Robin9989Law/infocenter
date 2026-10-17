@@ -182,10 +182,10 @@ def claim(home):
         return "running", url
     lock_path = home / "server.lock"
     fp = open(lock_path, "a+")
-    try:
-        import fcntl
+    from infocenter.flock import lock_file_ex_nb, unlock_file
 
-        fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        lock_file_ex_nb(fp)
     except BlockingIOError:
         fp.close()
         for _ in range(50):
@@ -196,9 +196,7 @@ def claim(home):
         raise SystemExit("信息中心正在启动，但端口还没有应答")
     url = owned_url(home)
     if url and healthy(url):
-        import fcntl
-
-        fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+        unlock_file(fp)
         fp.close()
         return "running", url
     _LOCK = fp
@@ -288,6 +286,33 @@ def serve(host: str, port: int, home, detach: bool) -> int:
     home.mkdir(parents=True, exist_ok=True)
     if not detach:
         return bind_and_serve(host, port, home)
+    if sys.platform == "win32":
+        import subprocess
+        log = open(home / "server.log", "a", buffering=1, encoding="utf-8")
+        flags = 0
+        if hasattr(subprocess, "DETACHED_PROCESS"):
+            flags |= subprocess.DETACHED_PROCESS
+        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+            flags |= subprocess.CREATE_NEW_PROCESS_GROUP
+        subprocess.Popen(
+            [sys.executable, "-m", "infocenter", "serve", "--host", host, "--port", str(port), "--home", str(home)],
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            creationflags=flags,
+            close_fds=True,
+        )
+        deadline = time.time() + 5.0
+        while time.time() < deadline:
+            meta = read_meta(home)
+            if meta and meta.get("url"):
+                if healthy(meta["url"]):
+                    print(meta["url"])
+                    return 0
+            time.sleep(0.1)
+        sys.stderr.write("err 启动后台服务超时\n")
+        return 1
+
     read_fd, write_fd = os.pipe()
     pid = os.fork()
     if pid:

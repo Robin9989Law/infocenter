@@ -64,7 +64,10 @@ class SingleKeyTest(unittest.TestCase):
 
     def test_symlink_is_one_key(self):
         link = self.home / "link.py"
-        os.symlink(self.target, link)
+        try:
+            os.symlink(self.target, link)
+        except OSError as e:
+            self.skipTest(f"Symlinks not supported or permitted on this platform: {e}")
         self.store.lock_acquire("cursor", [str(self.target)], ttl=600)
         with self.assertRaises(MailError):
             self.store.lock_acquire("opencode", [str(link)], ttl=600)

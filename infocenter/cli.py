@@ -208,8 +208,8 @@ def build_parser() -> argparse.ArgumentParser:
     thread = sub.add_parser("thread", help="查看自己参与过的回合")
     thread.add_argument("id")
 
-    case = sub.add_parser("case", help="查看或续写一份案卷（办事追踪）")
-    case.add_argument("id", help="案卷编号或线程 id")
+    case = sub.add_parser("case", help="查看或续写一份案卷（不传编号时列出案卷）")
+    case.add_argument("id", nargs="?", default=None, help="案卷编号或线程 id（不传时列出案卷）")
     case.add_argument("--note", default=None, help="写回一行节点")
     case.add_argument("--status", default=None, help="顺手改案卷状态")
     case.add_argument("--wait-for", dest="wait_for", default=None,
@@ -222,6 +222,10 @@ def build_parser() -> argparse.ArgumentParser:
                       help="勾掉第 N 条里程碑（下标从 0 起；加 ! 前缀=撤回完成，如 '!0'）")
     case.add_argument("--acceptance", default=None,
                       help="写「怎样算完」：一行验收（≤400 字；owner 或本项目的 coordinator 能写）")
+    case.add_argument("--workspace", default=None, help="项目目录（列出时用）")
+    case.add_argument("--owner", default=None, help="主办身份（列出时用）")
+    case.add_argument("--all", action="store_true", help="连「已封卷」的也一起列（列出时用）")
+    case.add_argument("--limit", type=int, default=20, help="最多取几条（列出时用）")
 
     cases = sub.add_parser("cases", help="列出案卷")
     cases.add_argument("--workspace", default=None)
@@ -233,13 +237,13 @@ def build_parser() -> argparse.ArgumentParser:
     cases.add_argument("--wait-for", dest="wait_for", default=None, help="只看在等这个身份的案卷")
     cases.add_argument("--limit", type=int, default=20)
 
-    task = sub.add_parser("task", help="任务队列（工作包）：建 / 看 / 开工 / 改状态 / 调优先级")
-    task.add_argument("action", choices=["add", "show", "start", "set", "update", "bump"], help="子动作")
-    task.add_argument("id", nargs="?", default=None, help="任务编号（add 不填）")
+    task = sub.add_parser("task", help="任务队列（工作包）：建 / 看 / 开工 / 改状态 / 调优先级 / 校验（默认 list）")
+    task.add_argument("action", nargs="?", default="list", choices=["add", "show", "start", "set", "update", "bump", "list", "verify"], help="子动作（默认 list）")
+    task.add_argument("id", nargs="?", default=None, help="任务编号（add/list 不填）")
     task.add_argument("status", nargs="?", default=None, help="set 的目标状态：doing|blocked|done|stopped")
     task.add_argument("--title", default=None)
     task.add_argument("--owner", default=None, help="谁负责（默认=自己）")
-    task.add_argument("--workspace", default=None, help="任务所属项目目录（必填）")
+    task.add_argument("--workspace", default=None, help="任务所属项目目录")
     task.add_argument("--deps", default=None, help="依赖：path@sha256:<hex>（多条用空格或分号）")
     task.add_argument("--acceptance", default=None, help="一行验收（≤200 字）")
     task.add_argument("--case", dest="case_id", default=None, help="挂到哪个案卷（控制包）")
@@ -248,6 +252,13 @@ def build_parser() -> argparse.ArgumentParser:
     task.add_argument("--handoff", default=None, help="停任务必带的交接段（做到哪/产物在哪/别踩什么坑）")
     task.add_argument("--by", type=int, default=1, help="bump 的增量")
     task.add_argument("--priority", type=int, default=None)
+    task.add_argument("--mine", action="store_true", help="只看我的（list 时用）")
+    task.add_argument("--all", action="store_true", help="含被取代的旧线（list 时用）")
+    task.add_argument("--limit", type=int, default=50, help="最多几条（list 时用）")
+    task.add_argument("--verify", action="store_true", help="设为 done 时校验验收标准，或执行 verify 动作")
+
+    doctor = sub.add_parser("doctor", help="一键环境与治理健康诊断（--fix 自动修复）")
+    doctor.add_argument("--fix", action="store_true", help="自动修复发现的问题（装 git 钩子、清理孤儿锁等）")
 
     audit = sub.add_parser("audit", help="机器验证留痕：哈希链 + 重放是否与当前状态一致")
     audit.add_argument("--task", default=None, help="只验这一个任务")
@@ -384,6 +395,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(errors="replace")
+            sys.stderr.reconfigure(errors="replace")
+        except Exception:
+            pass
     raw = list(sys.argv[1:] if argv is None else argv)
     argv, agent_arg, url_arg, home_arg, as_json = _peel_globals(raw)
     parser = build_parser()
@@ -409,6 +426,8 @@ def main(argv=None) -> int:
         if args.cmd == "sync":
             return _sync(args, home)
         agent = args.agent or _env_agent()
+        if args.cmd == "doctor":
+            return _doctor(args, home, agent)
         if args.cmd == "status":
             return _status(args, home, agent)
         if args.cmd == "probe":
@@ -492,56 +511,74 @@ def main(argv=None) -> int:
         elif args.cmd == "thread":
             payload = call(args.url, agent, "GET", f"/v1/threads/{args.id}", home=home)
         elif args.cmd == "case":
-            # `--status` 只在"写节点"那条路上生效（状态变更必须留一行节点，看板才知道你为什么改）。
-            # 单独给 `--status` 会**静默**走成"只看一眼"（实测连踩两次）⇒ 明确拒，并说清怎么写。
-            if (args.status or args.wait_for) and not (
-                args.note
-                and args.milestone_add is None
-                and args.milestone_done is None
-                and args.acceptance is None
-            ):
-                raise MailError(
-                    "status_needs_note",
-                    "改状态 / 说「在等谁」都要跟 `--note` 一起用——必须留一行节点，看板才知道你在等什么："
-                    "`ic case <id> --note \"为什么等\" --wait-for 身份`（等价于 --status 待谁）。"
-                    "（`--milestone-*` / `--acceptance` 那几条路都不带状态。）",
-                )
-            # 黄灯（**不拦**）：封卷不可逆（要改只能 `reopen`），所以动手前把"还有里程碑没勾"摆到眼前。
-            for line in _seal_pending_milestone_lines(args, agent, home):
-                print(line)
-            if args.milestone_add:
-                body = {"name": args.milestone_add}
-                if args.milestone_owner:
-                    body["owner"] = args.milestone_owner
-                payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/milestone", body, home=home)
-            elif args.milestone_done is not None:
-                raw = str(args.milestone_done).strip()
-                done = not raw.startswith("!")
-                body = {"index": int(raw.lstrip("!")), "done": done}
-                if args.note:
-                    body["note"] = args.note
+            if not getattr(args, "id", None):
                 payload = call(
-                    args.url, agent, "POST", f"/v1/cases/{args.id}/milestone-done", body, home=home
+                    args.url,
+                    agent,
+                    "GET",
+                    "/v1/cases",
+                    query={
+                        "workspace": getattr(args, "workspace", None),
+                        "status": getattr(args, "status", None),
+                        "owner": getattr(args, "owner", None),
+                        "wbs": getattr(args, "wbs", None),
+                        "waiting_for": getattr(args, "wait_for", None),
+                        "limit": str(getattr(args, "limit", 20)),
+                    },
+                    home=home,
                 )
-            elif args.acceptance is not None:
-                payload = call(
-                    args.url, agent, "POST", f"/v1/cases/{args.id}/acceptance",
-                    {"acceptance": args.acceptance}, home=home,
-                )
-            elif args.note:
-                body = {"note": args.note, "action": "note"}
-                if args.status:
-                    body["status"] = args.status
-                if args.wait_for:
-                    # 「在等谁」本身就是一次状态变更（转「待 X」）——由 store 落 waiting_for。
-                    body["waiting_for"] = args.wait_for
-                    body.setdefault("status", "待谁")
-                payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/nodes", body, home=home)
-            elif args.wbs is not None:
-                body = {"wbs_path": args.wbs}
-                payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/wbs", body, home=home)
+                args.cmd = "cases"
             else:
-                payload = call(args.url, agent, "GET", f"/v1/cases/{args.id}", home=home)
+                # `--status` 只在"写节点"那条路上生效（状态变更必须留一行节点，看板才知道你为什么改）。
+                # 单独给 `--status` 会**静默**走成"只看一眼"（实测连踩两次）⇒ 明确拒，并说清怎么写。
+                if (args.status or args.wait_for) and not (
+                    args.note
+                    and args.milestone_add is None
+                    and args.milestone_done is None
+                    and args.acceptance is None
+                ):
+                    raise MailError(
+                        "status_needs_note",
+                        "改状态 / 说「在等谁」都要跟 `--note` 一起用——必须留一行节点，看板才知道你在等什么："
+                        "`ic case <id> --note \"为什么等\" --wait-for 身份`（等价于 --status 待谁）。"
+                        "（`--milestone-*` / `--acceptance` 那几条路都不带状态。）",
+                    )
+                # 黄灯（**不拦**）：封卷不可逆（要改只能 `reopen`），所以动手前把"还有里程碑没勾"摆到眼前。
+                for line in _seal_pending_milestone_lines(args, agent, home):
+                    print(line)
+                if args.milestone_add:
+                    body = {"name": args.milestone_add}
+                    if args.milestone_owner:
+                        body["owner"] = args.milestone_owner
+                    payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/milestone", body, home=home)
+                elif args.milestone_done is not None:
+                    raw = str(args.milestone_done).strip()
+                    done = not raw.startswith("!")
+                    body = {"index": int(raw.lstrip("!")), "done": done}
+                    if args.note:
+                        body["note"] = args.note
+                    payload = call(
+                        args.url, agent, "POST", f"/v1/cases/{args.id}/milestone-done", body, home=home
+                    )
+                elif args.acceptance is not None:
+                    payload = call(
+                        args.url, agent, "POST", f"/v1/cases/{args.id}/acceptance",
+                        {"acceptance": args.acceptance}, home=home,
+                    )
+                elif args.note:
+                    body = {"note": args.note, "action": "note"}
+                    if args.status:
+                        body["status"] = args.status
+                    if args.wait_for:
+                        # 「在等谁」本身就是一次状态变更（转「待 X」）——由 store 落 waiting_for。
+                        body["waiting_for"] = args.wait_for
+                        body.setdefault("status", "待谁")
+                    payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/nodes", body, home=home)
+                elif args.wbs is not None:
+                    body = {"wbs_path": args.wbs}
+                    payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/wbs", body, home=home)
+                else:
+                    payload = call(args.url, agent, "GET", f"/v1/cases/{args.id}", home=home)
         elif args.cmd == "cases":
             payload = call(
                 args.url,
@@ -678,7 +715,54 @@ def main(argv=None) -> int:
                 args.url, agent, home,
             )
         elif args.cmd == "task":
-            if args.action == "add":
+            action = getattr(args, "action", "list")
+            if action == "list":
+                owner = getattr(args, "owner", None)
+                workspace = getattr(args, "workspace", None)
+                if getattr(args, "mine", False):
+                    owner = agent
+                    workspace = workspace or str(Path.cwd())
+                payload = call(
+                    args.url,
+                    agent,
+                    "GET",
+                    "/v1/tasks",
+                    query={
+                        "owner": owner,
+                        "workspace": workspace,
+                        "status": getattr(args, "status", None),
+                        "all": "1" if getattr(args, "all", False) else "0",
+                        "limit": str(getattr(args, "limit", 50)),
+                    },
+                    home=home,
+                )
+                args.cmd = "tasks"
+            elif action == "verify":
+                if not args.id:
+                    raise MailError("missing_task_id", "verify 需要指定任务编号：ic task verify <id>")
+                task_data = call(args.url, agent, "GET", f"/v1/tasks/{args.id}", home=home)
+                acc = (task_data.get("acceptance") or "").strip()
+                deps = (task_data.get("deps") or "").strip()
+                if not acc and not deps:
+                    raise MailError("verification_failed", f"任务 {args.id} 未配置任何验收标准 (acceptance) 或依赖哈希 (deps)，无法自动化硬验证")
+                if deps:
+                    import hashlib
+                    for dep in deps.split():
+                        if "@sha256:" in dep:
+                            fpath, expected_hash = dep.split("@sha256:", 1)
+                            p = Path(fpath)
+                            if not p.is_file():
+                                raise MailError("verification_failed", f"依赖文件不存在：{fpath}")
+                            actual_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+                            if actual_hash != expected_hash:
+                                raise MailError("verification_failed", f"依赖文件哈希不匹配：{fpath} 预期 {expected_hash[:8]}，实际 {actual_hash[:8]}")
+                print(f"任务 {args.id} 硬验证通过：")
+                if acc:
+                    print(f"  验收标准: {acc}")
+                if deps:
+                    print(f"  依赖校验: {deps} (匹配一致)")
+                return 0
+            elif action == "add":
                 body = {
                     "title": args.title,
                     "owner": args.owner,
@@ -694,18 +778,35 @@ def main(argv=None) -> int:
                     args.url, agent, "POST", "/v1/tasks",
                     {key: value for key, value in body.items() if value is not None}, home=home,
                 )
-            elif args.action == "show":
+            elif action == "show":
                 payload = call(args.url, agent, "GET", f"/v1/tasks/{args.id}", home=home)
-            elif args.action == "start":
+            elif action == "start":
                 payload = call(args.url, agent, "POST", f"/v1/tasks/{args.id}/start", {}, home=home)
-            elif args.action == "set":
+            elif action == "set":
+                if args.status == "done" and getattr(args, "verify", False):
+                    task_data = call(args.url, agent, "GET", f"/v1/tasks/{args.id}", home=home)
+                    acc = (task_data.get("acceptance") or "").strip()
+                    deps = (task_data.get("deps") or "").strip()
+                    if not acc and not deps:
+                        raise MailError("verification_failed", f"任务 {args.id} 开启了 --verify 但未设置 acceptance 或 deps 验收标准，拒绝设为 done")
+                    if deps:
+                        import hashlib
+                        for dep in deps.split():
+                            if "@sha256:" in dep:
+                                fpath, expected_hash = dep.split("@sha256:", 1)
+                                p = Path(fpath)
+                                if not p.is_file():
+                                    raise MailError("verification_failed", f"依赖文件不存在：{fpath}")
+                                actual_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+                                if actual_hash != expected_hash:
+                                    raise MailError("verification_failed", f"依赖文件哈希不匹配：{fpath}")
                 body = {"status": args.status}
                 if args.reason:
                     body["reason"] = args.reason
                 if args.handoff:
                     body["handoff"] = args.handoff
                 payload = call(args.url, agent, "POST", f"/v1/tasks/{args.id}/status", body, home=home)
-            elif args.action == "update":
+            elif action == "update":
                 fields = {
                     "title": args.title,
                     "owner": args.owner,
@@ -1150,13 +1251,16 @@ def _hook_warning() -> str:
     """钩子没装就冒一句——闸门只在「有人手动跑 ic guard」时生效，这必须让人知道。"""
     import subprocess
 
-    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
-    if top.returncode != 0 or not top.stdout.strip():
-        return ""
-    got = subprocess.run(
-        ["git", "config", "core.hooksPath"], cwd=top.stdout.strip(), capture_output=True, text=True
-    ).stdout.strip()
-    if got == ".githooks":
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if top.returncode != 0 or not (top.stdout or "").strip():
+            return ""
+        got = subprocess.run(
+            ["git", "config", "core.hooksPath"], cwd=(top.stdout or "").strip(), capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
+        if (got.stdout or "").strip() == ".githooks":
+            return ""
+    except Exception:
         return ""
     return "  ⚠ 本仓库没装提交闸钩子：现在只有显式跑 `ic guard` 才拦得住（`ic guard --install-hook` 装上）"
 
@@ -1165,11 +1269,11 @@ def _git_toplevel(subprocess) -> str:
     """仓库根（**一切 git 路径都以它为基准**，绝不用 cwd——子目录跑会算出假路径）。"""
     try:
         out = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=10
+            ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
         )
     except (OSError, subprocess.SubprocessError):
         return ""
-    return out.stdout.strip() if out.returncode == 0 else ""
+    return (out.stdout or "").strip() if out.returncode == 0 else ""
 
 
 def _git_paths(subprocess, args: list[str], *, status_in_record: bool) -> list[str]:
@@ -1940,6 +2044,177 @@ def _status(args, home: Path, agent: str) -> int:
         longest = max(float(row.get("hours") or 0) for row in orphans)
         print(f"  钥匙空着但有排队的路径 {len(orphans)} 条（最久 {_hours_text(longest)}）")
     return 0
+
+
+def _doctor(args, home: Path, agent: str) -> int:
+    """一键环境与治理健康诊断（--fix 自动修复）。"""
+    import subprocess
+    import time
+    fix = getattr(args, "fix", False)
+    issues = 0
+    fixed = 0
+    details = {}
+
+    url = resolve_url(args.url, home)
+    srv_ok = healthy(url)
+    details["server_online"] = srv_ok
+
+    if not srv_ok:
+        issues += 1
+        if fix:
+            try:
+                subprocess.Popen(
+                    [sys.executable, "-m", "infocenter", "serve", "--detach", "--home", str(home)],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                time.sleep(1)
+                srv_ok = healthy(url)
+                if srv_ok:
+                    fixed += 1
+                    details["server_fixed"] = True
+            except Exception:
+                details["server_fixed"] = False
+
+    top = _git_toplevel(subprocess)
+    hook_ok = False
+    if top:
+        try:
+            got_res = subprocess.run(
+                ["git", "config", "core.hooksPath"],
+                cwd=top, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5,
+            )
+            got = (got_res.stdout or "").strip()
+            hook_ok = (got == ".githooks")
+        except Exception:
+            hook_ok = False
+        details["git_hook"] = hook_ok
+        if not hook_ok:
+            issues += 1
+            if fix:
+                if _install_commit_hook(subprocess, cwd=top) == 0:
+                    fixed += 1
+                    details["git_hook_fixed"] = True
+
+    audit_ok = False
+    anchor_ok = False
+    if srv_ok:
+        try:
+            audit_res = call(url, agent, "GET", "/v1/audit", home=home)
+            audit_ok = bool(audit_res.get("ok"))
+        except Exception:
+            audit_ok = False
+        details["audit_chain"] = audit_ok
+        if not audit_ok:
+            issues += 1
+
+        anchor_file = getattr(args, "anchor_file", ".infocenter-audit-anchor")
+        anchor_path = _anchor_path(anchor_file)
+        if Path(anchor_path).is_file() and _read_audit_anchor(anchor_path):
+            anchor_ok = True
+        else:
+            anchor_ok = False
+            issues += 1
+            if fix:
+                try:
+                    args.anchor = True
+                    if _write_audit_anchor(args, agent, home) == 0:
+                        fixed += 1
+                        anchor_ok = True
+                except Exception:
+                    pass
+        details["anchor_present"] = anchor_ok
+
+    drift_lines = skill_drift_lines()
+    details["skill_drift"] = drift_lines
+    if drift_lines:
+        issues += 1
+
+    expired_count = 0
+    if srv_ok:
+        try:
+            locks_payload = call(url, agent, "GET", "/v1/locks", home=home)
+            locks = locks_payload.get("locks") or []
+            expired_locks = [l for l in locks if l.get("is_expired") or int(l.get("expires_in_seconds") or 1) <= 0]
+            expired_count = len(expired_locks)
+            if expired_count > 0:
+                issues += 1
+                if fix:
+                    call(url, agent, "POST", "/v1/sweep", {}, home=home)
+                    fixed += 1
+                    details["locks_swept"] = True
+        except Exception:
+            pass
+    details["expired_locks"] = expired_count
+
+    if getattr(args, "json", False):
+        print(json.dumps({
+            "ok": (issues == 0) or (fix and issues == fixed),
+            "issues": issues,
+            "fixed": fixed,
+            "details": details,
+        }, ensure_ascii=False, indent=2))
+        return 0 if ((issues == 0) or (fix and issues == fixed)) else 1
+
+    print("=== 信息中心环境与治理诊断 (ic doctor) ===")
+    if srv_ok:
+        print(f"  [OK] 服务端在线：{url}")
+    elif details.get("server_fixed"):
+        print(f"  [FIXED] 后台服务启动命令已派发：{url}")
+    else:
+        print(f"  [WARN] 服务端未运行或无法连接（{url}）")
+        print("         建议：执行 `ic serve --detach` 启动后台服务")
+
+    if top:
+        if hook_ok or details.get("git_hook_fixed"):
+            print("  [OK] 提交闸 Git 钩子已激活 (core.hooksPath = .githooks)")
+        else:
+            print("  [WARN] 提交闸 Git 钩子未激活")
+            print("         建议：执行 `ic guard --install-hook` 或 `ic doctor --fix`")
+    else:
+        print("  [INFO] 当前目录不是 Git 仓库，跳过提交闸钩子检查")
+
+    if srv_ok:
+        if audit_ok:
+            print("  [OK] 留痕审计哈希链完整")
+        else:
+            print("  [FAIL] 留痕审计哈希链异常！")
+
+        if anchor_ok:
+            print("  [OK] 外锚文件存在且格式正常")
+        else:
+            print("  [WARN] 缺少外锚文件 (.infocenter-audit-anchor)")
+            print("         建议：执行 `ic audit --anchor` 生成外锚并提交进 Git")
+
+    if drift_lines:
+        print("  [WARN] Agent Skill 发现漂移：")
+        for line in drift_lines:
+            print(f"         {line}")
+    else:
+        print("  [OK] Agent Skill 与当前版本实现一致")
+
+    if srv_ok:
+        if expired_count == 0 or details.get("locks_swept"):
+            print("  [OK] 写锁状态正常，无过期未释放锁")
+        else:
+            print(f"  [WARN] 发现 {expired_count} 个已过期写锁占用")
+            print("         建议：执行 `ic doctor --fix` 清理")
+
+        try:
+            mgr = config.manager(home)
+            print(f"  [OK] 全局 Manager: {mgr}")
+        except Exception:
+            pass
+
+    print("------------------------------------------")
+    if issues == 0:
+        print(" 诊断结果：全部通过，系统运行健康！")
+        return 0
+    elif fix:
+        print(f" 诊断完成：发现 {issues} 处问题，已自动修复 {fixed} 处。")
+        return 0 if (issues == fixed) else 1
+    else:
+        print(f" 诊断完成：发现 {issues} 处问题。可运行 `ic doctor --fix` 自动修复可治项。")
+        return 1
 
 
 def _crew(args, home: Path) -> int:

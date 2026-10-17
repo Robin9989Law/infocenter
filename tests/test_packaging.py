@@ -73,7 +73,10 @@ class PackagingTest(unittest.TestCase):
 
     def test_关键模块都在(self):
         names = set(self._names())
-        for mod in ("store.py", "cli.py", "httpapi.py", "server.py", "crew.py", "mcp_server.py"):
+        for mod in (
+            "store.py", "cli.py", "httpapi.py", "server.py", "crew.py", "mcp_server.py",
+            "governance.py", "flock.py", "common.py", "cases.py", "windows.py",
+        ):
             self.assertIn(f"infocenter/{mod}", names)
 
 

@@ -4,7 +4,6 @@
 这里不自己 INSERT messages。
 """
 
-import fcntl
 import hashlib
 import json
 import os
@@ -149,13 +148,15 @@ def _federation_lock(home: Path):
     @contextmanager
     def _locked():
         home.mkdir(parents=True, exist_ok=True)
+        from infocenter.flock import lock_file_ex_nb, unlock_file
+
         handle = open(home / "federation.lock", "a+")
         acquired = False
         try:
             deadline = time.monotonic() + 30
             while True:
                 try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    lock_file_ex_nb(handle)
                     acquired = True
                     break
                 except BlockingIOError:
@@ -165,7 +166,7 @@ def _federation_lock(home: Path):
             yield
         finally:
             if acquired:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                unlock_file(handle)
             handle.close()
 
     return _locked()

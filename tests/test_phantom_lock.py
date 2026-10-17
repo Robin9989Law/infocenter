@@ -140,8 +140,11 @@ class SplitCwdServerTest(unittest.TestCase):
             text=True,
         )
         assert self.proc.stdout is not None
-        ready, _, _ = select.select([self.proc.stdout], [], [], 15)
-        line = self.proc.stdout.readline().strip() if ready else ""
+        if sys.platform == "win32":
+            line = self.proc.stdout.readline().strip()
+        else:
+            ready, _, _ = select.select([self.proc.stdout], [], [], 15)
+            line = self.proc.stdout.readline().strip() if ready else ""
         if not line.startswith("http"):
             err = ""
             if self.proc.stderr is not None:
