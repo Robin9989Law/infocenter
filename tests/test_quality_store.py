@@ -24,6 +24,10 @@ class StoreBoundaryAndConcurrencyTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.home = Path(self.tmp.name)
         os.environ["INFOCENTER_QUIET"] = "1"
+        # 宿主 agent 会话的窗口号会经 client.request 漏进被测请求
+        # （窗口先被前一个身份占掉 ⇒ 后一个身份 409 window_conflict）
+        for key in ("INFOCENTER_WINDOW", "INFOCENTER_AGENT", "INFOCENTER_NO_PID"):
+            os.environ.pop(key, None)
         self.store = Store(
             self.home / "mailbox.db",
             seeds=[
