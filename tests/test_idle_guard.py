@@ -68,7 +68,15 @@ class IdleGuardUnitTest(unittest.TestCase):
         )
         self.assertEqual(crew._classify_failure("401 invalid credential"), "quota")
         self.assertEqual(crew._classify_failure("insufficient_quota"), "quota")
+        self.assertEqual(crew._classify_failure("Error: insufficient_quota"), "quota")
         self.assertEqual(crew._classify_failure("HTTP 402 payment required"), "quota")
+        # 裸词不再打中。容量不够、磁盘配额、鉴权单词单独出现都走普通失败。
+        self.assertEqual(crew._classify_failure("insufficient"), "fail")
+        self.assertEqual(crew._classify_failure("insufficient memory"), "fail")
+        self.assertEqual(crew._classify_failure("disk quota exceeded"), "fail")
+        self.assertEqual(crew._classify_failure("unauthorized"), "fail")
+        self.assertEqual(crew._classify_failure("authentication failed"), "fail")
+        self.assertEqual(crew._classify_failure("billing address"), "fail")
 
     def test_effective_heartbeat_stretches_and_caps(self):
         # 未空转 / 关闭退避 ⇒ 原样

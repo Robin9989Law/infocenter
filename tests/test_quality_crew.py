@@ -216,16 +216,31 @@ class CrewQualityTest(unittest.TestCase):
         only_headless = crew.manager_misconfig(
             {"name": "o", "role": "manager", "headless": "x"}
         )
-        self.assertIn("headless", only_headless)
-        self.assertNotIn("launch ⇒", only_headless)
+        self.assertEqual(
+            only_headless,
+            "manager 不应配 headless（headless ⇒ 收信守护会跟着改计划/派单）；"
+            "manager（＝用户本人；旧名 human 仍被接受）的前台由人驱动",
+        )
         only_launch = crew.manager_misconfig(
             {"name": "o", "role": "manager", "launch": "opencode"}
         )
-        self.assertIn("launch", only_launch)
-        self.assertNotIn("headless ⇒", only_launch)
+        self.assertEqual(
+            only_launch,
+            "manager 不应配 launch（launch ⇒ crew up 会另起一个会抢活的前台 actor）；"
+            "manager（＝用户本人；旧名 human 仍被接受）的前台由人驱动",
+        )
+        both = crew.manager_misconfig(
+            {"name": "o", "role": "manager", "headless": "x", "launch": "opencode"}
+        )
+        self.assertEqual(
+            both,
+            "manager 不应配 headless/launch（headless ⇒ 收信守护会跟着改计划/派单；"
+            "launch ⇒ crew up 会另起一个会抢活的前台 actor）；"
+            "manager（＝用户本人；旧名 human 仍被接受）的前台由人驱动",
+        )
         # **旧值 coordinator 也认**（改名兼容）：专门钉别名，别删
         legacy = crew.manager_misconfig({"name": "o", "role": "coordinator", "headless": "x"})
-        self.assertIn("headless", legacy)
+        self.assertEqual(legacy, only_headless)
 
     def test_plan_up_and_status_warn_manager_misconfig(self):
         home = self.home / "misconfig"
@@ -247,9 +262,12 @@ class CrewQualityTest(unittest.TestCase):
         out = crew.up(home, self.url, project, dry_run=True)
         self.assertTrue(any(line.startswith("[警告] opencode") for line in out["lines"]))
 
-        text = "\n".join(crew.status(home)["lines"])
-        self.assertIn("opencode: manager", text)
-        self.assertIn("配了 headless", text)
+        lines = crew.status(home)["lines"]
+        self.assertIn(
+            "  opencode: manager；守护未运行；\033[31m⚠ 配了 headless（会抢活）\033[0m",
+            lines,
+        )
+        self.assertIn("  grok: 守护未运行", lines)
 
     def test_watch_elif_at_most_one_headless_per_round(self):
         # A6-1：heartbeat_mode=always 且同一轮既有新信又到心跳点时，单轮至多跑一次 headless（elif），

@@ -109,11 +109,19 @@ _HEADLESS_RETRY_MAX = 300
 #   1) 永久性失败（额度/鉴权）指纹命中 ⇒ 长冷却，冷却期内不再触发 headless（新信也不跑，游标不前进）；
 #   2) 普通连续失败达阈值 ⇒ 短冷却；
 #   3) 心跳「空转」（进展信号文件未变）⇒ 心跳间隔指数拉长，封顶 idle_backoff_max。
+# 只留短语。裸词 insufficient / quota / unauthorized / authentication / billing
+# 会把「容量不够」这类普通失败判成 6 小时长冷却。insufficient_quota 必须整段出现。
 PERMANENT_FAILURE_PATTERNS = (
-    "usage limit", "spend limit", "monthly cycle", "quota", "insufficient",
-    "out of credit", "no credit", "credit balance", "payment required",
-    "invalid credential", "invalid api key", "unauthorized", "authentication",
-    "billing",
+    "usage limit",
+    "spend limit",
+    "monthly cycle",
+    "insufficient_quota",
+    "out of credit",
+    "no credit",
+    "credit balance",
+    "payment required",
+    "invalid credential",
+    "invalid api key",
 )
 FAILURE_THRESHOLD = 3
 FAILURE_COOLDOWN = 3600
@@ -501,17 +509,23 @@ def _tmux_session_exists(session: str) -> bool:
 _MANAGER_FORBIDDEN = ("headless", "launch")
 
 
+def _manager_forbidden_keys(item: dict) -> tuple[str, ...]:
+    """manager/coordinator 配了哪些禁项。警告文案和 status 只从这里取，不再各扫一遍。
+
+    旧值 coordinator 也认——写成只认 manager 的话，改名之后这个警告会永久消失。
+    """
+    if str(item.get("role") or "").strip().lower() not in {"manager", "coordinator"}:
+        return ()
+    return tuple(key for key in _MANAGER_FORBIDDEN if str(item.get(key) or "").strip())
+
+
 def manager_misconfig(item: dict) -> str:
     """role=manager（旧名 coordinator）却配了 headless/launch 时的警告文案；合规返回 ""。
 
     manager 的前台由人驱动：配 headless 会让收信守护也去改计划/派单；
     配 launch 会让 crew up 另起一个会抢活的前台 actor。两者都会造成「两个管理者抢活」。
     """
-    # 旧值 coordinator 也认——**这一条是真行为**：写成 `!= "coordinator"` 的话，改名之后
-    # 这个警告会永久消失（静默失效的又一例）。
-    if str(item.get("role") or "").strip().lower() not in {"manager", "coordinator"}:
-        return ""
-    bad = [key for key in _MANAGER_FORBIDDEN if str(item.get(key) or "").strip()]
+    bad = _manager_forbidden_keys(item)
     if not bad:
         return ""
     reasons = {
@@ -820,10 +834,9 @@ def status(home, project: str | None = None) -> dict:
                     parts.append("前台（人工驱动）")
                 else:
                     parts.append("未配置启动方式")
-        warn = manager_misconfig(item)
-        if warn:
-            bad = "/".join(key for key in _MANAGER_FORBIDDEN if str(item.get(key) or "").strip())
-            parts.append(f"\033[31m⚠ 配了 {bad}（会抢活）\033[0m")
+        bad = _manager_forbidden_keys(item)
+        if bad:
+            parts.append(f"\033[31m⚠ 配了 {'/'.join(bad)}（会抢活）\033[0m")
         lines.append(f"  {agent}: " + ("；".join(parts) if parts else "空闲"))
     for agent, daemons in by_agent.items():
         if agent not in {item["name"] for item in entries}:
