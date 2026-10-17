@@ -474,14 +474,30 @@ class WindowAndCaseQualityTest(unittest.TestCase):
             # D3-b: 按原始 c.status 判断可暂停状态（open/doing/pending/waiting）
             self.assertIn('"open", "doing", "pending", "waiting"', html)
             # D3-c: 停用会话前有 confirm() 二次确认；**文案必须与 M7 新口径一致**
-            # 假文案类＝声称会「自动…封卷」或按钮「离场并封卷」（逗号、「且」都不能漏）。
+            # 假文案类＝声称会「自动…封卷」或按钮「离场并封卷」。
+            # 「中止」与「封卷」之间：且/并、逗号（，、,）、空白，有没有都要抓住。
             # 否定句是正确口径，要留：不会被自动封卷 / 不再自动封卷。别把「已封卷」这类无关文案算进去。
             self.assertIn("confirm(", html)
             self.assertIn("不会被自动封卷", html)
             self.assertIn("不再自动封卷", html)
             self.assertNotIn("离场并封卷", html)
-            false_seal = re.search(r"(?<!不会被)(?<!不再)自动(?:中止)?(?:且|并)?封卷", html)
-            self.assertIsNone(false_seal, f"看板仍有自动封卷假文案：{false_seal.group(0) if false_seal else ''}")
+            false_seal = re.compile(
+                r"(?<!不会被)(?<!不再)自动(?:中止)?\s*(?:[，、,]\s*)?(?:且|并)?\s*封卷"
+            )
+            # 自反例：三句变体都必须判红（上一版正则漏了逗号）。
+            self.assertIsNotNone(false_seal.search("会自动中止并封卷"), "「并」变体必须判红")
+            self.assertIsNotNone(false_seal.search("会自动中止且封卷"), "「且」变体必须判红")
+            self.assertIsNotNone(false_seal.search("会自动中止，封卷"), "逗号变体必须判红")
+            self.assertIsNotNone(false_seal.search("会自动中止,封卷"), "英文逗号变体必须判红")
+            self.assertIsNotNone(false_seal.search("会自动中止、封卷"), "顿号变体必须判红")
+            self.assertIsNotNone(false_seal.search("会自动中止 封卷"), "空白变体必须判红")
+            # 边界不放宽：否定句与无关文案不算假文案。
+            self.assertIsNone(false_seal.search("不会被自动封卷"), "否定句「不会被自动封卷」要留")
+            self.assertIsNone(false_seal.search("不再自动封卷"), "否定句「不再自动封卷」要留")
+            self.assertIsNone(false_seal.search("已封卷"), "「已封卷」不是假文案")
+            self.assertIsNone(false_seal.search("未封卷"), "「未封卷」不是假文案")
+            hit = false_seal.search(html)
+            self.assertIsNone(hit, f"看板仍有自动封卷假文案：{hit.group(0) if hit else ''}")
 
             # M7-3: 控制台三层 = 项目 / WBS / 案卷；会话不进控制台
             self.assertIn('id="wbs"', html)
