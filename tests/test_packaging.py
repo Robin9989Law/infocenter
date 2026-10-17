@@ -101,6 +101,12 @@ class DuplicateDefTest(unittest.TestCase):
         (tiny / "b.py").write_text("class B:\n    def run(self):\n        return 2\n", encoding="utf-8")
         self.assertEqual(duplicate_module_level_defs(tiny), {})
 
+    def test_store_and_mixins_have_no_duplicate_methods(self):
+        from infocenter.common import duplicate_store_mixin_methods
+
+        self.assertEqual(duplicate_store_mixin_methods(ROOT / "infocenter"), {})
+
+    def test_pre_commit_hook_passes(self):
         code = _hook_scan_code()
         clean = subprocess.run(
             [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True,

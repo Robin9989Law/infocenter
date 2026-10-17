@@ -5,6 +5,7 @@ import os
 import re
 import secrets
 import sqlite3
+import sys
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -243,6 +244,24 @@ TASK_HANDOFF_MAX = int(os.environ.get("INFOCENTER_TASK_HANDOFF_MAX", 4000))
 
 
 def _pid_kill_alive(pid: int, *, permission_counts_alive: bool) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform == "win32" and not hasattr(os.kill, "mock_calls"):
+        import ctypes
+        from ctypes import wintypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            if kernel32.GetLastError() == 5:
+                return permission_counts_alive
+            return False
+        try:
+            exit_code = wintypes.DWORD()
+            if kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return exit_code.value == 259
+            return False
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except PermissionError:
@@ -377,6 +396,81 @@ def _upsert_project(
             )
 
 
+def _upsert_agent(conn: sqlite3.Connection, name: str, description: str | None = None) -> None:
+    now = utcnow()
+    if description is None:
+        conn.execute(
+            """
+            INSERT INTO agents(name, description, created_at, last_seen_at)
+            VALUES (?, '', ?, ?)
+            ON CONFLICT(name) DO UPDATE SET last_seen_at = excluded.last_seen_at
+            """,
+            (name, now, now),
+        )
+        return
+    conn.execute(
+        """
+        INSERT INTO agents(name, description, created_at, last_seen_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(name) DO UPDATE SET
+            last_seen_at = excluded.last_seen_at,
+            description = excluded.description
+        """,
+        (name, description, now, now),
+    )
+
+
+def _is_party(conn: sqlite3.Connection, row: sqlite3.Row, agent: str) -> bool:
+    if _same_agent(row["from_agent"] or "", agent):
+        return True
+    names = _recipient_names(agent)
+    marks = ",".join("?" for _ in names)
+    found = conn.execute(
+        f"SELECT 1 FROM deliveries WHERE message_id = ? AND to_agent IN ({marks})",
+        (row["id"], *names),
+    ).fetchone()
+    return found is not None
+
+
+def _is_thread_party(conn: sqlite3.Connection, thread_id: str, agent: str) -> bool:
+    """D-3：agent 是否是这条线程的当事人（任一回合的发信人或收件人）。"""
+    for row in conn.execute("SELECT * FROM messages WHERE thread_id = ?", (thread_id,)):
+        if _is_party(conn, row, agent):
+            return True
+    return False
+
+
+def _thread_has_messages(conn: sqlite3.Connection, thread_id: str) -> bool:
+    return conn.execute("SELECT 1 FROM messages WHERE thread_id = ? LIMIT 1", (thread_id,)).fetchone() is not None
+
+
+def parse_recipients(value) -> list[str]:
+    if isinstance(value, str):
+        text = value.strip()
+        parts = [part.strip() for part in text.split(",") if part.strip()]
+    elif isinstance(value, list):
+        parts = value
+    else:
+        raise MailError("invalid_recipient", "to 必须是名字、逗号分隔的名字，或 *")
+    if not parts:
+        raise MailError("invalid_recipient", "至少要有一个收件人")
+    tokens: list[str] = []
+    for part in parts:
+        if not isinstance(part, str):
+            raise MailError("invalid_recipient", "收件人必须是字符串")
+        token = part.strip().lower()
+        tokens.append(token if token in BROADCAST else normalize_name(token))
+    if any(token in BROADCAST for token in tokens):
+        if len(tokens) != 1:
+            raise MailError("invalid_recipient", "广播不能和其他收件人混在一起")
+        return ["*"]
+    seen: list[str] = []
+    for token in tokens:
+        if token not in seen:
+            seen.append(token)
+    return seen
+
+
 def duplicate_module_level_defs(package: Path) -> dict[str, list[str]]:
     """模块级函数同名出现在两个文件里。类方法不算。"""
     found: dict[str, list[str]] = defaultdict(list)
@@ -385,5 +479,27 @@ def duplicate_module_level_defs(package: Path) -> dict[str, list[str]]:
         for node in tree.body:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 found[node.name].append(path.name)
-    return {name: files for name, files in found.items() if len(files) > 1}
+    return {name: files for name, files in sorted(found.items()) if len(files) > 1}
+
+
+def duplicate_store_mixin_methods(package: Path) -> dict[str, list[str]]:
+    """Store 类与 Mixin 基类（GovernanceMixin, CasesMixin, WindowsMixin）之间同名方法检测。"""
+    target_classes = {
+        "store.py": "Store",
+        "governance.py": "GovernanceMixin",
+        "cases.py": "CasesMixin",
+        "windows.py": "WindowsMixin",
+    }
+    methods: dict[str, list[str]] = defaultdict(list)
+    for filename, cls_name in target_classes.items():
+        file_path = Path(package) / filename
+        if not file_path.exists():
+            continue
+        tree = ast.parse(file_path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == cls_name:
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        methods[item.name].append(f"{cls_name} ({filename})")
+    return {name: locs for name, locs in sorted(methods.items()) if len(locs) > 1}
 

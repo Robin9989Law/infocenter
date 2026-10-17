@@ -18,7 +18,8 @@ from infocenter.store import pid_alive
 class PidPolicyTest(unittest.TestCase):
     def test_kill_zero_succeeds_but_managed_rejects_it(self):
         # 这个洞的前提：信号 0 打到进程组会成功。护栏必须比这次调用更严。
-        os.kill(0, 0)
+        if sys.platform != "win32":
+            os.kill(0, 0)
         self.assertFalse(pid_alive(0, policy="managed"))
         self.assertFalse(pid_alive(1, policy="managed"))
         self.assertFalse(pid_alive(-5, policy="managed"))
@@ -54,14 +55,15 @@ class PidPolicyTest(unittest.TestCase):
         # 成功或 EPERM 都「不算死」，进程不存在才算死。
         self.assertFalse(pid_alive(1, policy="managed"))
         self.assertFalse(pid_alive(1, policy="running"))
-        try:
-            os.kill(1, 0)
-        except PermissionError:
-            self.assertTrue(pid_alive(1, policy="not_dead"))
-        except OSError:
-            self.assertFalse(pid_alive(1, policy="not_dead"))
-        else:
-            self.assertTrue(pid_alive(1, policy="not_dead"))
+        if sys.platform != "win32":
+            try:
+                os.kill(1, 0)
+            except PermissionError:
+                self.assertTrue(pid_alive(1, policy="not_dead"))
+            except OSError:
+                self.assertFalse(pid_alive(1, policy="not_dead"))
+            else:
+                self.assertTrue(pid_alive(1, policy="not_dead"))
 
     def test_permission_is_not_death(self):
         with patch("infocenter.common.os.kill", side_effect=PermissionError):
@@ -88,7 +90,8 @@ class PidPolicyTest(unittest.TestCase):
     def test_claim_does_not_treat_pid_zero_as_running(self):
         # 旧 server.pid_alive(0) 为真时，claim 会在打开 server.lock 之前就返回 running。
         # 护栏生效后先否掉 pid 0，才会去抢锁；健康检查仍可能随后认定「有人在应答」。
-        os.kill(0, 0)
+        if sys.platform != "win32":
+            os.kill(0, 0)
         previous = server._LOCK
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)

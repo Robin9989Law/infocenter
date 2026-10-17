@@ -25,6 +25,7 @@ from infocenter.common import (
     pid_alive,
     _pid_value,
     utcnow,
+    _upsert_agent,
     _upsert_project,
 )
 from infocenter.cases import (
@@ -240,8 +241,7 @@ class WindowsMixin:
         if state == "active":
             now = utcnow()
             with self._session(immediate=True) as conn:
-                if hasattr(self, "_upsert_agent"):
-                    self._upsert_agent(conn, agent_name, None)
+                _upsert_agent(conn, agent_name, None)
                 _upsert_window(
                     conn,
                     window_id=wid,
@@ -261,6 +261,13 @@ class WindowsMixin:
         return self.get_window(wid)
 
     def write_pid_then_reconcile(self, window_id: str, agent: str, pid: int | None = None) -> None:
+        """H2：同一事务内先写回本次 pid，再惰性对账。
+
+        事务边界：一次 BEGIN IMMEDIATE 里完成「更新 pid → _lazy_reconcile_all → commit」。
+        对账若失败，pid 写入一并回滚。原 pid 仍活着时不覆盖，规则在 _upsert_window。
+        窗口还不存在：只对账，不建行（留给随后的 touch）。
+        窗口属于别的 agent：不写 pid；对账照旧提交，提交后再 409。
+        """
         wid = normalize_window(window_id)
         if not wid:
             return
@@ -336,6 +343,11 @@ class WindowsMixin:
         auto: bool = True,
         actor: str | None = None,
     ) -> dict:
+        """办公室正常退出上报：窗口标为 left、释放它名下的认领与写锁。
+
+        **不再**自动中止/封卷它名下的案卷——案卷只随"事做完"关闭（宪法）。
+        只摘掉主办窗口指针并记一行 `[自动]` 说明，等接办或显式收工。
+        """
         wid = normalize_window(window_id)
         if not wid:
             raise MailError("window_required", "需要提供窗口号 window_id")
@@ -363,13 +375,16 @@ class WindowsMixin:
                     """,
                     (now, now, wid),
                 )
+            # M6-0：窗口离场即释放它名下的认领，避免僵尸认领把信永远挡住（其它窗口/守护可接手）。
             conn.execute(
                 "UPDATE deliveries SET claimed_by = NULL, claimed_at = NULL WHERE claimed_by = ?",
                 (wid,),
             )
+            # M9：窗口离场同样释放它拿着的写锁（僵死锁会把别人永远挡在门外）；**放锁留痕**。
             _release_window_locks(conn, wid, now, "窗口离场")
             orphaned_ids = _orphan_window_cases(conn, window_id=wid, agent=agent_name, now=now)
             if note:
+                # 离场的人若写了话，照样记一行（**状态不动**）
                 for cid in orphaned_ids:
                     _insert_node(
                         conn, case_id=cid, agent=agent_name, window_id=wid,
@@ -377,8 +392,8 @@ class WindowsMixin:
                     )
             win_row = conn.execute("SELECT * FROM windows WHERE window_id = ?", (wid,)).fetchone()
             view = _window_view(conn, win_row)
-            view["orphaned_cases"] = orphaned_ids
-            view["aborted_cases"] = []
+            view["orphaned_cases"] = orphaned_ids  # 只是摘了主办窗口指针，**没封卷**
+            view["aborted_cases"] = []  # 保留字段：现在**不再**自动中止任何案卷
         self._signal()
         return view
 
@@ -456,7 +471,32 @@ class WindowsMixin:
         self._signal()
         return view
 
+
     def _lazy_reconcile_all(self, conn: sqlite3.Connection, now: str | None = None) -> None:
         from infocenter.store import _lazy_reconcile_all
 
         _lazy_reconcile_all(conn, now)
+
+    def _upsert_window(
+        self,
+        conn: sqlite3.Connection,
+        window_id: str,
+        agent: str,
+        workspace: str | None = None,
+        activity: str | None = None,
+        pid: int | None = None,
+        now: str | None = None,
+        state: str | None = None,
+        revive: bool = False,
+    ) -> None:
+        _upsert_window(
+            conn,
+            window_id=window_id,
+            agent=agent,
+            workspace=workspace,
+            activity=activity,
+            pid=pid,
+            now=now,
+            state=state,
+            revive=revive,
+        )

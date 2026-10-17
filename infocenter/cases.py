@@ -33,8 +33,12 @@ from infocenter.common import (
     normalize_case_id,
     normalize_name,
     normalize_window,
+    parse_recipients,
     pid_alive,
     utcnow,
+    _is_party,
+    _is_thread_party,
+    _thread_has_messages,
     _is_window_gone,
     _resolve_own_delivery,
     _upsert_project,
@@ -43,6 +47,7 @@ from infocenter.governance import (
     _emit_case_event,
     _human_voices,
     _is_coordinator,
+    _is_manager,
     _must_coordinator,
     _task_text,
 )
@@ -491,12 +496,17 @@ class CasesMixin:
         workspace = _workspace(workspace)
         title_text = _subject(title or "未命名案卷")
 
+        # D-6：`to`/`body` 是「立案并同时发始信」的一对字段，必须成对给或不给。
+        # 只给 to（缺 body）没有正文、只给 body（缺 to）没有收件人，都无法送达 → 一律 400，
+        # 不再对任何调用方静默忽略或视情形降级为「开篇节点」。
+        # 只想要案卷开篇节点正文时，用 `note` 字段（走 init_note），不要用 `body`。
         if (to is None) != (body is None):
             raise MailError(
                 "invalid_request",
                 "to 与 body 必须同时提供：这一对用于「立案并同时发始信」；只写开篇节点请用 note",
                 400,
             )
+        # L2：显式指定的 thread_id / case id 必须落在安全字符集与长度内。
         requested = normalize_case_id(thread_id) if thread_id is not None else None
 
         if to is not None and body is not None:
@@ -506,116 +516,70 @@ class CasesMixin:
                 subject=title_text,
                 body=body,
                 workspace=workspace,
-                thread_id=requested,
-                window_id=owner_window,
+                window_id=owner_window if _same_agent(owner_agent or "", agent) else None,
                 pid=pid,
             )
-            real_thread_id = sent["thread_id"]
-            now = utcnow()
-            with self._session(immediate=True) as conn:
-                row = _find_case(conn, real_thread_id)
-                if row is None:
-                    row = _ensure_case_from_thread(conn, real_thread_id, agent, now)
-                wbs_clean = _wbs_path(wbs_path) if wbs_path else (row["wbs_path"] or "")
-                milestones_clean = _milestones_json(milestones) if milestones is not None else row["milestones"]
-                acc_clean = _task_text(acceptance, CASE_ACCEPTANCE_MAX) if acceptance is not None else (row["acceptance"] or "")
-                conn.execute(
-                    "UPDATE cases SET wbs_path = ?, milestones = ?, acceptance = ?, updated_at = ? WHERE id = ?",
-                    (wbs_clean, milestones_clean, acc_clean, now, row["id"]),
-                )
-                if note:
-                    _insert_node(
-                        conn,
-                        case_id=row["id"],
-                        agent=agent,
-                        window_id=owner_window,
-                        action="note",
-                        note=_node_note(note),
-                        status=row["status"],
-                        auto=False,
-                        now=now,
-                    )
-                updated = _find_case(conn, row["id"])
-                return _case_view(conn, updated, viewer=agent)
+            thread_id = sent["thread_id"]
 
+        cid = requested if requested is not None else ((thread_id or "").strip() or new_id())
+        init_status = _case_status(status or ("open" if owner_window else "pending"))
+        if init_status in SEALED_STATUSES:
+            raise MailError("invalid_status", "新建案卷状态不能直接为已封卷状态")
+        init_note = _node_note(note or ("认领 → 在办" if owner_window else "立案"))
+        wbs = _wbs_path(wbs_path)
+        stone_json = _milestones_json(milestones)
+        # 「怎样算完」：一行验收。空 = 没说清（看板会标出来，机器不拦）。
+        acc = _task_text(acceptance, CASE_ACCEPTANCE_MAX)
         now = utcnow()
-        case_id = requested or new_id("case")
-        thread_id = case_id
-        initial_status = _case_status(status) if status else "pending"
-        wbs_clean = _wbs_path(wbs_path)
-        milestones_clean = _milestones_json(milestones)
-        acc_clean = _task_text(acceptance, CASE_ACCEPTANCE_MAX)
-
         with self._session(immediate=True) as conn:
-            if _find_case(conn, case_id) is not None:
-                raise MailError("conflict", f"案卷或线程编号已存在：{case_id}", 409)
-            if owner_window:
-                if hasattr(self, "_upsert_window"):
-                    self._upsert_window(
-                        conn,
-                        window_id=owner_window,
-                        agent=owner_agent or agent,
-                        workspace=workspace,
-                        activity=None,
-                        pid=pid,
-                        now=now,
-                    )
+            existing = _find_case(conn, cid)
+            if existing is not None:
+                raise MailError("case_exists", f"案卷 {cid} 已存在", 409)
+            # D-3：显式指定已存在的线程立案时，调用者必须是该线程当事人，否则 404。
+            if requested is not None and cid == requested:
+                if _thread_has_messages(conn, cid) and not _is_thread_party(conn, cid, agent):
+                    raise MailError("not_found", f"没有找到案卷或线程：{cid}", 404)
+            if owner_window and owner_agent:
+                self._upsert_window(
+                    conn,
+                    window_id=owner_window,
+                    agent=owner_agent,
+                    workspace=workspace,
+                    activity=None,
+                    pid=pid,
+                    now=now,
+                )
             if workspace:
                 _upsert_project(conn, workspace, None, now)
             conn.execute(
                 """
                 INSERT INTO cases(
                     id, thread_id, title, workspace, status, owner_agent, owner_window,
-                    waiting_for, sealed, created_at, updated_at, closed_at,
-                    wbs_path, milestones, acceptance
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, NULL, ?, ?, ?)
+                    waiting_for, sealed, wbs_path, milestones, acceptance, created_at, updated_at, closed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, NULL)
                 """,
                 (
-                    case_id,
-                    thread_id,
-                    title_text,
-                    workspace,
-                    initial_status,
-                    owner_agent,
-                    owner_window,
-                    now,
-                    now,
-                    wbs_clean,
-                    milestones_clean,
-                    acc_clean,
+                    cid, cid, title_text, workspace, init_status, owner_agent, owner_window,
+                    wbs, stone_json, acc, now, now,
                 ),
             )
             _insert_node(
                 conn,
-                case_id=case_id,
-                agent=agent,
+                case_id=cid,
+                agent=owner_agent or agent,
                 window_id=owner_window,
                 action="create",
-                note="立案",
-                status=initial_status,
+                note=init_note,
+                status=init_status,
                 auto=False,
                 now=now,
             )
-            if note:
-                _insert_node(
-                    conn,
-                    case_id=case_id,
-                    agent=agent,
-                    window_id=owner_window,
-                    action="note",
-                    note=_node_note(note),
-                    status=initial_status,
-                    auto=False,
-                    now=now,
-                )
             _emit_case_event(
-                conn, agent, "create", "", initial_status,
-                case_id, owner_window, "立案", now,
+                conn, owner_agent or agent, "create", "", init_status,
+                cid, owner_window, init_note, now,
             )
-            row = _find_case(conn, case_id)
-            out = _case_view(conn, row, viewer=agent)
-        self._signal()
-        return out
+            row = _find_case(conn, cid)
+            return _case_view(conn, row, viewer=agent)
 
     def get_case(self, case_id: str, viewer: str | None = None) -> dict:
         if not isinstance(case_id, str) or not case_id.strip():
@@ -637,6 +601,10 @@ class CasesMixin:
         wbs_path: str | None,
         window_id: str | None = None,
     ) -> dict:
+        """把案卷归到一个 WBS（路径，空串 = 未归类）。**只有本项目的 coordinator 或 human 能改**。
+
+        一个案卷**唯一**归属一个 WBS；WBS 是树（`父/子`），不建表、只用路径。
+        """
         cid = normalize_case_id(case_id)
         path = _wbs_path(wbs_path)
         now = utcnow()
@@ -672,6 +640,14 @@ class CasesMixin:
         acceptance: str | None,
         window_id: str | None = None,
     ) -> dict:
+        """写案卷的「**怎样算完**」（一行验收，空串 = 撤掉）。
+
+        human 定的毛病（2026-10-15）：任务一多，**没人写清"做成什么算做成"**，于是
+        "做完没有"全靠事后吵。案卷是控制包，它这一层也要有一句标准。
+        谁能写：该案卷的 owner，或 coordinator（跟 `ic task add --acceptance` 一个口径：
+        自己的活自己写清标准）。写的时候空着不拦；**办结**时这一栏空着会 409 `no_acceptance`
+        （先 `ic case <id> --acceptance "…"`），中止不要求。
+        """
         cid = normalize_case_id(case_id)
         text = _task_text(acceptance, CASE_ACCEPTANCE_MAX)
         now = utcnow()
@@ -714,6 +690,10 @@ class CasesMixin:
         owner: str | None = None,
         window_id: str | None = None,
     ) -> dict:
+        """给案卷加一条里程碑。**只有 coordinator 能改**（human 定稿：里程碑由 agent 提议、coordinator 落）。
+
+        里程碑 = 案卷上的**一列 JSON**（不建表）：一个里程碑可对应若干任务，案卷只显示里程碑。
+        """
         cid = normalize_case_id(case_id)
         text = str(name or "").strip()[:MILESTONE_MAX]
         if not text:
@@ -757,6 +737,7 @@ class CasesMixin:
         window_id: str | None = None,
         note: str | None = None,
     ) -> dict:
+        """勾掉 / 撤回一条里程碑（下标从 0 起）。**只有 coordinator 能改**。"""
         cid = normalize_case_id(case_id)
         idx = int(index)
         now = utcnow()
@@ -809,12 +790,12 @@ class CasesMixin:
         status_filter = _case_status(status) if status else None
         window_filter = normalize_window(owner_window) if owner_window else None
         agent_filter = normalize_name(owner_agent) if owner_agent else None
+        # 「在等谁」：只按名字比（空表示不在等）
         wait_filter = normalize_name(waiting_for) if waiting_for else None
         viewer_name = normalize_name(viewer) if viewer else None
         now = utcnow()
         with self._session(immediate=True) as conn:
-            if hasattr(self, "_lazy_reconcile_all"):
-                self._lazy_reconcile_all(conn, now)
+            self._lazy_reconcile_all(conn, now)
             rows = conn.execute(
                 "SELECT * FROM cases ORDER BY updated_at DESC, id DESC"
             ).fetchall()
@@ -831,6 +812,7 @@ class CasesMixin:
                 if wait_filter is not None and (row["waiting_for"] or "") != wait_filter:
                     continue
                 if wbs_filter is not None:
+                    # 前缀匹配：给 `防混写` 就带出 `防混写/锁与闸` 下面的案卷
                     path = row["wbs_path"] or ""
                     if path != wbs_filter and not path.startswith(wbs_filter + "/"):
                         continue
@@ -870,16 +852,15 @@ class CasesMixin:
                     conn, row, agent, window_id, "close", note_text, "done", seal=True, auto=auto, now=now
                 )
             if window_id is not None:
-                if hasattr(self, "_upsert_window"):
-                    self._upsert_window(
-                        conn,
-                        window_id=window_id,
-                        agent=agent,
-                        workspace=row["workspace"],
-                        activity=None,
-                        pid=pid,
-                        now=now,
-                    )
+                self._upsert_window(
+                    conn,
+                    window_id=window_id,
+                    agent=agent,
+                    workspace=row["workspace"],
+                    activity=None,
+                    pid=pid,
+                    now=now,
+                )
             wait_target = normalize_name(waiting_for) if waiting_for else (row["waiting_for"] if next_status == "waiting" else None)
             conn.execute(
                 """
@@ -919,8 +900,7 @@ class CasesMixin:
             raise MailError("window_required", "认领案卷需要提供窗口号（X-Window）")
         now = utcnow()
         with self._session(immediate=True) as conn:
-            if hasattr(self, "_upsert_window"):
-                self._upsert_window(conn, window_id=window_id, agent=agent, workspace=None, activity=None, pid=pid, now=now)
+            self._upsert_window(conn, window_id=window_id, agent=agent, workspace=None, activity=None, pid=pid, now=now)
             row = _find_case(conn, case_id)
             if row is not None:
                 has_msg = conn.execute(
@@ -931,7 +911,7 @@ class CasesMixin:
                     has_msg is not None
                     and not is_person(agent)
                     and not _same_agent(row["owner_agent"] or "", agent)
-                    and not self._is_thread_party(conn, row["thread_id"], agent)
+                    and not _is_thread_party(conn, row["thread_id"], agent)
                 ):
                     raise MailError("not_found", f"没有找到案卷：{case_id}", 404)
                 row = _lazy_reconcile_case(conn, row, now)
@@ -977,7 +957,8 @@ class CasesMixin:
             ).fetchone()
             if msg is None:
                 raise MailError("not_found", f"没有找到案卷或线程：{case_id}", 404)
-            if not self._is_thread_party(conn, msg["thread_id"], agent):
+            # D-3：立案前要求调用者是当事人（发信人或某投递收件人），否则 404，防止非参与者抢先立案。
+            if not _is_thread_party(conn, msg["thread_id"], agent):
                 raise MailError("not_found", f"没有找到案卷或线程：{case_id}", 404)
             self._claim_thread_on_touch(
                 conn,
@@ -989,6 +970,7 @@ class CasesMixin:
                 now=now,
             )
             created = _find_case(conn, msg["thread_id"])
+            # 显式认领才进链。阅读/回复顺带认领走的是同一套落库，但不从这里经过。
             last = conn.execute(
                 "SELECT action, note FROM case_nodes WHERE case_id = ? ORDER BY id DESC LIMIT 1",
                 (created["id"],),
@@ -1022,17 +1004,18 @@ class CasesMixin:
             _must_unsealed(row)
             win_row = conn.execute("SELECT * FROM windows WHERE window_id = ?", (target_window,)).fetchone()
             target_agent = normalize_name(to_agent) if to_agent else (win_row["agent"] if win_row else (row["owner_agent"] or agent))
-            if hasattr(self, "_upsert_window"):
-                self._upsert_window(
-                    conn,
-                    window_id=target_window,
-                    agent=target_agent,
-                    workspace=row["workspace"],
-                    activity=None,
-                    pid=pid if _same_agent(target_agent, agent) else None,
-                    now=now,
-                )
+            self._upsert_window(
+                conn,
+                window_id=target_window,
+                agent=target_agent,
+                workspace=row["workspace"],
+                activity=None,
+                pid=pid if _same_agent(target_agent, agent) else None,
+                now=now,
+            )
             note_text = _node_note(note or f"转办 → 交接给 {target_window}")
+            # D-2：跨 agent 转办时，先释放源 owner 名下这条线程的投递认领，
+            # 避免旧窗口仍被当成主办、新信继续继承僵尸认领（双归属）。
             source_owner_agent = row["owner_agent"]
             if source_owner_agent and not _same_agent(source_owner_agent, target_agent):
                 conn.execute(
@@ -1093,6 +1076,7 @@ class CasesMixin:
         with self._session(immediate=True) as conn:
             row = _find_case(conn, case_id)
             if row is None:
+                # 允许直接对一条既有线程「立案并暂停」；否则 404。
                 row = _ensure_case_from_thread(conn, case_id, agent, now)
             else:
                 row = _lazy_reconcile_case(conn, row, now)
@@ -1193,16 +1177,15 @@ class CasesMixin:
             )
             new_owner_agent = (win_row["agent"] if win_row else agent) if window_id else (row["owner_agent"] or agent)
             if window_id:
-                if hasattr(self, "_upsert_window"):
-                    self._upsert_window(
-                        conn,
-                        window_id=window_id,
-                        agent=new_owner_agent,
-                        workspace=row["workspace"],
-                        activity=None,
-                        pid=pid if _same_agent(new_owner_agent, agent) else None,
-                        now=now,
-                    )
+                self._upsert_window(
+                    conn,
+                    window_id=window_id,
+                    agent=new_owner_agent,
+                    workspace=row["workspace"],
+                    activity=None,
+                    pid=pid if _same_agent(new_owner_agent, agent) else None,
+                    now=now,
+                )
             conn.execute(
                 """
                 UPDATE cases
@@ -1234,6 +1217,8 @@ class CasesMixin:
         self._signal()
         return res
 
+    # ── M8/M9/M10 治理线（Tasks、Locks、Guard、Queue、Audit）已抽取至 GovernanceMixin ──
+
     def _transition_case_in_tx(
         self,
         conn: sqlite3.Connection,
@@ -1248,6 +1233,8 @@ class CasesMixin:
         now: str,
     ) -> dict:
         node_window = window_id or row["owner_window"]
+        # 办结才要求「怎样算完」，并且这条线上发给封卷人自己的信都已签收。
+        # 中止（aborted）两条都不要求。任务侧的开工门槛不在这里再加一遍。
         if seal and new_status == "done" and not str(row["acceptance"] or "").strip():
             raise MailError(
                 "no_acceptance",
@@ -1258,6 +1245,7 @@ class CasesMixin:
         if seal and new_status == "done":
             _block_unread_replies(conn, row, agent)
         if seal:
+            # 封卷（中止 / 办结）：释放主办窗口占用，标记只读
             conn.execute(
                 """
                 UPDATE cases
@@ -1298,9 +1286,11 @@ class CasesMixin:
             auto=auto,
             now=now,
         )
+        # 暂停 / 恢复 / 中止 / 办结（含「写节点时直接封卷」和窗口暂停带上的案卷）同一事务进链。
         _emit_case_event(
             conn, agent, action, row["status"], new_status,
             row["id"], node_window, note, now,
         )
         updated = _find_case(conn, row["id"])
         return _case_view(conn, updated, viewer=agent)
+
