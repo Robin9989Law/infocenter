@@ -240,6 +240,11 @@ def _own_unread_replies(conn: sqlite3.Connection, thread_id: str, agent: str) ->
 
 
 def _block_unread_replies(conn: sqlite3.Connection, row: sqlite3.Row, agent: str) -> None:
+    import sys
+    store_mod = sys.modules.get("infocenter.store")
+    override = getattr(store_mod, "_block_unread_replies", None) if store_mod is not None else None
+    if override is not None and override is not _block_unread_replies:
+        return override(conn, row, agent)
     hits = _own_unread_replies(conn, row["thread_id"], agent)
     if not hits:
         return

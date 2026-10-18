@@ -107,6 +107,10 @@ def is_person(name: str) -> bool:
 
 def _same_agent(left: str, right: str) -> bool:
     """持有者比较：逐字相同，或两边都是人。不改落库的名字。"""
+    store_mod = sys.modules.get("infocenter.store")
+    override = getattr(store_mod, "_same_agent", None) if store_mod is not None else None
+    if override is not None and override is not _same_agent:
+        return override(left, right)
     if left == right:
         return True
     return is_person(left) and is_person(right)
@@ -122,6 +126,10 @@ def _holder_names(agent: str) -> tuple[str, ...]:
 
 def _recipient_names(agent: str) -> tuple[str, ...]:
     """收件箱和往来列表要算进来的落库收件名。"""
+    store_mod = sys.modules.get("infocenter.store")
+    override = getattr(store_mod, "_recipient_names", None) if store_mod is not None else None
+    if override is not None and override is not _recipient_names:
+        return override(agent)
     agent = normalize_name(agent)
     if not is_person(agent):
         return (agent,)
@@ -130,6 +138,10 @@ def _recipient_names(agent: str) -> tuple[str, ...]:
 
 def _own_delivery_fallback_names(agent: str) -> tuple[str, ...]:
     """本名那一行不在时才看的别名。人只有另一个名字；别人没有。"""
+    store_mod = sys.modules.get("infocenter.store")
+    override = getattr(store_mod, "_own_delivery_fallback_names", None) if store_mod is not None else None
+    if override is not None and override is not _own_delivery_fallback_names:
+        return override(agent)
     agent = normalize_name(agent)
     if not is_person(agent):
         return ()
@@ -732,10 +744,12 @@ def duplicate_module_level_defs(package: Path) -> dict[str, list[str]]:
 
 
 def duplicate_store_mixin_methods(package: Path) -> dict[str, list[str]]:
-    """Store 类与 Mixin 基类（GovernanceMixin, CasesMixin, WindowsMixin）之间同名方法检测。"""
+    """Store 类与 Mixin 基类（MessagesMixin, GovernanceMixin, LocksMixin, CasesMixin, WindowsMixin）之间同名方法检测。"""
     target_classes = {
         "store.py": "Store",
+        "messages.py": "MessagesMixin",
         "governance.py": "GovernanceMixin",
+        "locks.py": "LocksMixin",
         "cases.py": "CasesMixin",
         "windows.py": "WindowsMixin",
     }
