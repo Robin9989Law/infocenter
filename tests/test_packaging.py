@@ -106,6 +106,11 @@ class DuplicateDefTest(unittest.TestCase):
 
         self.assertEqual(duplicate_store_mixin_methods(ROOT / "infocenter"), {})
 
+    def test_infocenter_has_no_duplicate_module_constants(self):
+        from infocenter.common import duplicate_module_constants
+
+        self.assertEqual(duplicate_module_constants(ROOT / "infocenter"), {})
+
     def test_pre_commit_hook_passes(self):
         code = _hook_scan_code()
         clean = subprocess.run(

@@ -25,10 +25,10 @@ HUMAN = "manager"
 HUMAN_NAMES = frozenset({"manager", "human"})
 
 # 正则与保留字
-NAME_RE = re.compile(r"^[\w][\w.-]{0,63}$")
+NAME_RE = re.compile(r"^[\w][\w.-]{0,63}$", re.UNICODE)
 CASE_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,63}$")
-WINDOW_RE = re.compile(r"^[\w][\w.:-]{0,63}$")
-_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+WINDOW_RE = re.compile(r"^[\w][\w.:-]{0,63}$", re.UNICODE)
+_SEGMENT_RE = re.compile(r"^[\w][\w-]{0,31}$", re.UNICODE)
 BROADCAST = {"*", "all", "everyone"}
 
 # 全项目统一时区：北京时间（UTC+8，固定偏移）
@@ -502,4 +502,17 @@ def duplicate_store_mixin_methods(package: Path) -> dict[str, list[str]]:
                     if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         methods[item.name].append(f"{cls_name} ({filename})")
     return {name: locs for name, locs in sorted(methods.items()) if len(locs) > 1}
+
+
+def duplicate_module_constants(package: Path) -> dict[str, list[str]]:
+    """模块级顶层常量/变量赋值同名出现在两个文件里。"""
+    found: dict[str, list[str]] = defaultdict(list)
+    for path in sorted(Path(package).glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        found[target.id].append(path.name)
+    return {name: files for name, files in sorted(found.items()) if len(files) > 1}
 

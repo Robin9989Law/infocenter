@@ -27,7 +27,10 @@ from infocenter.store import MailError, Store
 
 
 def _mode(path) -> int:
-    return os.stat(str(path)).st_mode & 0o7777
+    mode = os.stat(str(path)).st_mode & 0o7777
+    if sys.platform == "win32" and mode == 0o666:
+        return 0o644
+    return mode
 
 
 class LockKeyWritableTest(unittest.TestCase):
@@ -45,6 +48,11 @@ class LockKeyWritableTest(unittest.TestCase):
         os.chmod(self.target, 0o444)  # 「锁＝只读」的静置态
 
     def tearDown(self):
+        for p in self.home.rglob("*"):
+            try:
+                os.chmod(p, 0o644)
+            except OSError:
+                pass
         self.tmp.cleanup()
 
     def _paths(self):

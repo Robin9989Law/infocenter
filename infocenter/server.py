@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from infocenter import DEFAULT_HOST, DEFAULT_PORT, config
 from infocenter.httpapi import MAX_BODY, handle
-from infocenter.store import MailError, Store, atomic_replace, pid_alive
+from infocenter.store import SWEEP_INTERVAL, MailError, Store, atomic_replace, pid_alive
 
 _WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 _MIME = {
@@ -201,9 +201,6 @@ def claim(home):
         return "running", url
     _LOCK = fp
     return "claimed", url
-
-
-SWEEP_INTERVAL = 60.0
 
 
 def _start_sweeper(store, interval: float = SWEEP_INTERVAL, stop_event=None) -> threading.Thread:

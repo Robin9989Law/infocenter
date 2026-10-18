@@ -4,9 +4,9 @@
 #   1) 提交闸：**本次暂存**的改动是否都被写锁覆盖（coordinator 可替成员落地）
 #   2) 留痕校验：哈希链是否完整、重放是否与任务现状一致、外锚是否对得上
 # 写锁与留痕在离线或服务不可达时不阻断，避免被锁死；确需绕过用 `git commit --no-verify`。
-python -c "import sys; from pathlib import Path; from infocenter.common import duplicate_module_level_defs, duplicate_store_mixin_methods; d = duplicate_module_level_defs(Path('infocenter')); m = duplicate_store_mixin_methods(Path('infocenter')); [print('duplicate module-level def', name, 'in', ', '.join(files)) for name, files in sorted(d.items())]; [print('duplicate store mixin method', name, 'in', ', '.join(files)) for name, files in sorted(m.items())]; sys.exit(1 if (d or m) else 0)"
+python -c "import sys; from pathlib import Path; from infocenter.common import duplicate_module_level_defs, duplicate_store_mixin_methods, duplicate_module_constants; d = duplicate_module_level_defs(Path('infocenter')); m = duplicate_store_mixin_methods(Path('infocenter')); c = duplicate_module_constants(Path('infocenter')); [print('duplicate module-level def', name, 'in', ', '.join(files)) for name, files in sorted(d.items())]; [print('duplicate store mixin method', name, 'in', ', '.join(files)) for name, files in sorted(m.items())]; [print('duplicate module constant', name, 'in', ', '.join(files)) for name, files in sorted(c.items())]; sys.exit(1 if (d or m or c) else 0)"
 if [ $? -ne 0 ]; then
-  echo "⛔ 提交被挡住：infocenter 里存在重复的模块级函数或 Store 与 Mixin 同名类方法。"
+  echo "⛔ 提交被挡住：infocenter 里存在重复的模块级函数、常量或 Store 与 Mixin 同名类方法。"
   exit 1
 fi
 if command -v ic >/dev/null 2>&1 && ic status >/dev/null 2>&1; then

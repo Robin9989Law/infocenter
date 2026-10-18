@@ -309,6 +309,38 @@ def _reserve_pid_file(home, key: str) -> int:
 
 
 def _process_cmdline(pid: int) -> str | None:
+    if sys.platform == "win32" and not hasattr(subprocess.check_output, "mock_calls"):
+        import ctypes
+        from ctypes import wintypes
+
+        class _UNICODE_STRING(ctypes.Structure):
+            _fields_ = [
+                ("Length", wintypes.USHORT),
+                ("MaximumLength", wintypes.USHORT),
+                ("Buffer", wintypes.LPWSTR),
+            ]
+
+        kernel32 = ctypes.windll.kernel32
+        ntdll = ctypes.windll.ntdll
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return None
+        try:
+            size = wintypes.ULONG(0)
+            ntdll.NtQueryInformationProcess(handle, 60, None, 0, ctypes.byref(size))
+            if size.value <= 0:
+                return None
+            buf = ctypes.create_string_buffer(size.value)
+            status = ntdll.NtQueryInformationProcess(handle, 60, buf, size.value, ctypes.byref(size))
+            if status != 0:
+                return None
+            us = ctypes.cast(buf, ctypes.POINTER(_UNICODE_STRING)).contents
+            text = (us.Buffer[: us.Length // 2] if us.Buffer else "").strip()
+            return text or None
+        except Exception:
+            return None
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         out = subprocess.check_output(
             ["ps", "-p", str(pid), "-o", "command="],
@@ -345,6 +377,33 @@ def _parse_etime(text: str) -> int | None:
 
 
 def _process_start_epoch(pid: int) -> float | None:
+    if sys.platform == "win32" and not hasattr(subprocess.check_output, "mock_calls"):
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return None
+        try:
+            ft_create = wintypes.FILETIME()
+            ft_exit = wintypes.FILETIME()
+            ft_kernel = wintypes.FILETIME()
+            ft_user = wintypes.FILETIME()
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(ft_create),
+                ctypes.byref(ft_exit),
+                ctypes.byref(ft_kernel),
+                ctypes.byref(ft_user),
+            ):
+                return None
+            ticks = (ft_create.dwHighDateTime << 32) | ft_create.dwLowDateTime
+            return (ticks - 116444736000000000) / 10_000_000.0
+        except Exception:
+            return None
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         out = subprocess.check_output(
             ["ps", "-p", str(pid), "-o", "etime="],
@@ -1164,6 +1223,8 @@ def _signal_group(pid: int, sig: int) -> bool:
     """向 headless 所在进程组发信号。pid 必须是该组组长，不能是守护自己。"""
     if not isinstance(pid, int) or pid <= 1 or pid == os.getpid():
         return False
+    if sys.platform == "win32" and sig == 0:
+        return False
     if hasattr(os, "killpg"):
         try:
             os.killpg(pid, sig)
@@ -1210,7 +1271,7 @@ def _interrupt_headless(home, agent: str, project: str | None) -> list[str]:
         while time.monotonic() < deadline and _pid_alive(pid):
             time.sleep(0.1)
         if _pid_alive(pid):
-            _signal_group(pid, signal.SIGKILL)
+            _signal_group(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
             lines.append(f"已打断 {agent} 正在跑的 headless（pid {pid}；升级 SIGKILL）")
         else:
             lines.append(f"已打断 {agent} 正在跑的 headless（pid {pid}）")
@@ -2053,13 +2114,13 @@ def _run_headless(
                 stdout, stderr = proc.communicate(stdin_text, timeout=timeout)
         except subprocess.TimeoutExpired:
             outcome = "timeout"
-            _signal_group(proc.pid, signal.SIGKILL)
+            _signal_group(proc.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
             stdout, stderr = proc.communicate()
         except UnicodeDecodeError as exc:
             outcome = "fail"
             print(f"[{beijing_stamp()}] headless 输出无法按 UTF-8 解码：{exc}", flush=True)
             if proc.poll() is None:
-                _signal_group(proc.pid, signal.SIGKILL)
+                _signal_group(proc.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
                 try:
                     proc.communicate(timeout=2)
                 except subprocess.TimeoutExpired:
@@ -2071,7 +2132,7 @@ def _run_headless(
                 try:
                     proc.communicate(timeout=2)
                 except subprocess.TimeoutExpired:
-                    _signal_group(proc.pid, signal.SIGKILL)
+                    _signal_group(proc.pid, getattr(signal, "SIGKILL", signal.SIGTERM))
                     proc.communicate()
             raise
         else:

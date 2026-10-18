@@ -10,14 +10,6 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-BROADCAST = {"*", "all", "everyone"}
-NAME_RE = re.compile(r"^[\w][\w.-]{0,63}$", re.UNICODE)
-WINDOW_RE = re.compile(r"^[\w][\w.:-]{0,63}$", re.UNICODE)
-# L2：案卷编号 / thread_id 的安全字符集与长度（与窗口号同风格，首字符须为字母/数字/下划线）。
-# 服务端源头堵住 XSS：id 会进 URL / 前端属性，禁止换行、引号、斜杠、前导 . - : 等。
-CASE_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,63}$")
-_SEGMENT_RE = re.compile(r"^[\w][\w-]{0,31}$", re.UNICODE)
-
 from infocenter.common import (
     BEIJING,
     BROADCAST,
@@ -2483,25 +2475,6 @@ def _reply_to(value: str | None) -> str | None:
         raise MailError("invalid_reply_to", "reply_to 必须是字符串")
     text = value.strip()
     return text or None
-
-
-
-
-WBS_MAX = 200
-MILESTONE_MAX = 200
-MILESTONE_MAX_COUNT = 50
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 _REPLY_PREFIX_RE = re.compile(r"^(?:\s*(?:re|fw|fwd|回复|答复)\s*[:：]\s*)+", re.IGNORECASE)
