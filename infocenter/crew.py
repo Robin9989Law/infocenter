@@ -1557,6 +1557,32 @@ def build_unread_fallback_prompt(
     )
 
 
+def _prompt_context(url: str, agent: str, project: str) -> dict:
+    """组装 headless 提示词所需的上下文信号（在等人数、当前任务行、无人认领排队行）。"""
+    return {
+        "waiting": _waiting_count(url, agent, project),
+        "task_line": _active_task_line(url, agent, project),
+        "orphan_line": _orphan_queue_line(url, agent, project),
+    }
+
+
+def _register_office_with_retry(url: str, agent: str, window_id: str, project: str) -> bool:
+    """守护启动时向信息中心登记办公室，连续失败返回 False。"""
+    for attempt in range(1, OFFICE_REGISTER_ATTEMPTS + 1):
+        registered = _register_office(url, agent, window_id, project)
+        _mark_office(registered)
+        if registered:
+            return True
+        print(
+            f"[{beijing_stamp()}] 办公室登记第 {attempt}/{OFFICE_REGISTER_ATTEMPTS} 次失败",
+            flush=True,
+        )
+        if attempt < OFFICE_REGISTER_ATTEMPTS:
+            time.sleep(1)
+    print(f"[{beijing_stamp()}] 办公室登记连续失败，守护退出，不进入收信循环", flush=True)
+    return False
+
+
 def watch(
     home,
     agent: str,
@@ -1602,7 +1628,6 @@ def watch(
 
     stopping = False
     registered = False
-    # N2：headless 连续失败的重试次数与「这批信的中断节点是否已补」标志。
     retry_rounds = 0
     interrupted_noted = False
 
@@ -1621,36 +1646,38 @@ def watch(
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     try:
-        for attempt in range(1, OFFICE_REGISTER_ATTEMPTS + 1):
-            registered = _register_office(url, agent, window_id, project)
-            _mark_office(registered)
-            if registered:
-                break
-            print(
-                f"[{beijing_stamp()}] 办公室登记第 {attempt}/{OFFICE_REGISTER_ATTEMPTS} 次失败",
-                flush=True,
-            )
-            if attempt < OFFICE_REGISTER_ATTEMPTS:
-                time.sleep(1)
+        registered = _register_office_with_retry(url, agent, window_id, project)
         if not registered:
-            print(f"[{beijing_stamp()}] 办公室登记连续失败，守护退出，不进入收信循环", flush=True)
             return 1
         last_run = time.monotonic()
         last_unread_fallback = last_run
-        # 新信路径已经交过 headless 的 id。兜底不再送一遍，避免没签收时每个间隔再起一轮。
         already_prompted: set[str] = set()
         failure_streak = 0
         cooldown_until = 0.0
         cooldown_kind = ""
-        # 进入冷却的时刻（UTC ISO）：只有**这之后**新到的高优先级信才算新指令。
-        # 失败时游标不前进，同一封没投出去的信会一直被看见——不设这道，冷却刚进就被它打断，
-        # 失败一次就成死循环（实测 pi 每分钟 36 次）。
         cooldown_since = ""
         cooldown_logged = False
         idle_rounds = 0
+
+        def _clear_cooldown() -> None:
+            nonlocal cooldown_until, cooldown_since, cooldown_logged, failure_streak, retry_rounds, idle_rounds, last_run
+            cooldown_until = 0.0
+            cooldown_since = ""
+            cooldown_logged = False
+            failure_streak = 0
+            retry_rounds = 0
+            idle_rounds = 0
+            last_run = time.monotonic()
+            _set_cooldown_meta(home, key, "", 0)
+
+        def _enter_cooldown(cur_entry: dict, outcome: str) -> None:
+            nonlocal cooldown_until, cooldown_kind, cooldown_since, cooldown_logged
+            cooldown_until = time.monotonic() + _cooldown_seconds(cur_entry, outcome)
+            cooldown_kind = "额度/鉴权不可用" if outcome == "quota" else "连续失败"
+            cooldown_since = utcnow()
+            cooldown_logged = False
+
         while True:
-            # F-1：每轮重读 config，使 headless / heartbeat_mode / heartbeat_prompt（及未显式传入的
-            # heartbeat）改动**无需重启守护**即可生效——治理层改 config.json 后即刻作用于下一轮。
             entry = config.entry(home, agent)
             template = str((entry or {}).get("headless") or "").strip()
             if not template:
@@ -1662,11 +1689,7 @@ def watch(
             if heartbeat_from_config:
                 new_heartbeat = _heartbeat_seconds(entry or {})
                 heartbeat = max(0, min(int(new_heartbeat or 0), 86400))
-            # 短命子进程可能已把办公室 pid 改成自己的。本轮任何会触发惰性对账的请求之前先写回。
-            # 不带 state：暂停中的办公室保持暂停。失败只记日志，不因此退出守护。
             _reassert_office_pid(url, agent, window_id, project)
-            # 空转治理：模型打不通时进冷却，冷却期内不触发 headless（新信也不跑、游标不前进，
-            # 冷却结束会重新投递），避免像以前那样照 heartbeat 间隔硬撞一个已经不可用的模型。
             if cooldown_until and time.monotonic() < cooldown_until:
                 if not cooldown_logged:
                     left = int(cooldown_until - time.monotonic())
@@ -1676,9 +1699,6 @@ def watch(
                     )
                     cooldown_logged = True
                     _set_cooldown_meta(home, key, cooldown_kind, left)
-                # 冷却不吞新指令：冷却期内仍看一眼有没有**高优先级新信**。有就提前结束冷却——
-                # 冷却治的是「模型不可用」，不该把别人发来的新指令（要命的活）一起关在门外。
-                # 只认「进入冷却之后新到」的：冷却前就在的、没投出去的那封不算（否则会死循环）。
                 urgent = _urgent_mail_waiting(url, agent, project, cursor, not_before=cooldown_since)
                 if urgent:
                     print(
@@ -1686,28 +1706,14 @@ def watch(
                         f"提前结束冷却，立刻处理新指令",
                         flush=True,
                     )
-                    cooldown_until = 0.0
-                    cooldown_since = ""
-                    cooldown_logged = False
-                    failure_streak = 0
-                    retry_rounds = 0
-                    idle_rounds = 0
                     interrupted_noted = False
-                    last_run = time.monotonic()
-                    _set_cooldown_meta(home, key, "", 0)
+                    _clear_cooldown()
                     continue
                 time.sleep(min(60.0, max(1.0, cooldown_until - time.monotonic())))
                 continue
             if cooldown_until:
                 print(f"[{beijing_stamp()}] {agent} 冷却结束，恢复收信与心跳", flush=True)
-                cooldown_until = 0.0
-                cooldown_since = ""
-                cooldown_logged = False
-                failure_streak = 0
-                retry_rounds = 0
-                idle_rounds = 0
-                last_run = time.monotonic()
-                _set_cooldown_meta(home, key, "", 0)
+                _clear_cooldown()
             progress_paths = _progress_files(project, agent, entry or {})
             idle_on = _idle_backoff_enabled(entry or {})
             idle_cap = _idle_backoff_max(entry or {})
@@ -1748,29 +1754,21 @@ def watch(
                     prompt = build_prompt(
                         agent, project, fresh,
                         int(payload.get("unread_total") or len(fresh)),
-                        waiting=_waiting_count(url, agent, project),
-                        task_line=_active_task_line(url, agent, project),
-                        orphan_line=_orphan_queue_line(url, agent, project),
+                        **_prompt_context(url, agent, project),
                     )
                     print(f"[{beijing_stamp()}] 本项目新信 {len(fresh)} 封，触发 headless", flush=True)
                     outcome = _run_headless(template, prompt, project, agent=agent, timeout=htimeout)
-                    # 子进程一退出，它的 pid 就是死的。补中断节点会走案卷对账，必须先把 pid 写回。
                     _reassert_office_pid(url, agent, window_id, project)
                     if outcome in _HEADLESS_RETRY:
                         retry_rounds += 1
-                        # 超时不算失败：不涨 failure_streak，也就永远不会因此进冷却（见 _cooldown_failure）。
                         if _cooldown_failure(outcome):
                             failure_streak += 1
                         idle_rounds = 0
-                        # N2：同一批信只补一次 [自动] 中断节点，避免永久失败时刷屏写一堆。
                         if not interrupted_noted:
                             _note_interrupted(url, agent, window_id, fresh)
                             interrupted_noted = True
                         if _should_cooldown(outcome, failure_streak, _failure_threshold(entry or {})):
-                            cooldown_until = time.monotonic() + _cooldown_seconds(entry or {}, outcome)
-                            cooldown_kind = "额度/鉴权不可用" if outcome == "quota" else "连续失败"
-                            cooldown_since = utcnow()
-                            cooldown_logged = False
+                            _enter_cooldown(entry or {}, outcome)
                             print(
                                 f"[{beijing_stamp()}] headless {outcome}，连续 {failure_streak} 次失败 ⇒ "
                                 f"{cooldown_kind}，进入冷却（游标留在 {cursor}，冷却后再投递）",
@@ -1802,8 +1800,6 @@ def watch(
                     and time.monotonic() - last_unread_fallback
                     >= _unread_fallback_interval(heartbeat, poll)
                 ):
-                    # 改的是这段进程内逻辑。在跑的守护要重启才走得到；只改 config 的 heartbeat 不用重启。
-                    # 新信路径已经交过的不再送：headless 没签收时，收件箱仍列着它，但不能每个间隔再起一轮。
                     raw_unread = _inbox_unread(url, agent, project)
                     missed = [
                         item for item in raw_unread
@@ -1813,7 +1809,6 @@ def watch(
                     now_fb = time.monotonic()
                     last_unread_fallback = now_fb
                     if not missed:
-                        # 没真的再起一轮，就不改 last_run，规划心跳的间隔照旧。
                         if not raw_unread:
                             print(
                                 f"[{beijing_stamp()}] 未读数 > 0，但本项目收件箱没有可投的未读，这轮不启 headless",
@@ -1822,9 +1817,7 @@ def watch(
                     else:
                         last_run = now_fb
                         prompt = build_unread_fallback_prompt(
-                            agent, project, missed, waiting=_waiting_count(url, agent, project),
-                            task_line=_active_task_line(url, agent, project),
-                            orphan_line=_orphan_queue_line(url, agent, project),
+                            agent, project, missed, **_prompt_context(url, agent, project),
                         )
                         print(
                             f"[{beijing_stamp()}] 事件流没有新信，本项目还有 {len(missed)} 封未读"
@@ -1842,14 +1835,7 @@ def watch(
                             if _should_cooldown(
                                 fb_outcome, failure_streak, _failure_threshold(entry or {}),
                             ):
-                                cooldown_until = time.monotonic() + _cooldown_seconds(
-                                    entry or {}, fb_outcome,
-                                )
-                                cooldown_kind = (
-                                    "额度/鉴权不可用" if fb_outcome == "quota" else "连续失败"
-                                )
-                                cooldown_since = utcnow()
-                                cooldown_logged = False
+                                _enter_cooldown(entry or {}, fb_outcome)
                                 print(
                                     f"[{beijing_stamp()}] 未读兜底 headless {fb_outcome}，"
                                     f"连续 {failure_streak} 次失败 ⇒ {cooldown_kind}，进入冷却",
@@ -1875,9 +1861,7 @@ def watch(
                         template,
                         build_heartbeat_prompt(
                             agent, project, is_coord, custom_prompt,
-                            coordinator_name=coord_name, waiting=_waiting_count(url, agent, project),
-                            task_line=_active_task_line(url, agent, project),
-                            orphan_line=_orphan_queue_line(url, agent, project),
+                            coordinator_name=coord_name, **_prompt_context(url, agent, project),
                         ),
                         project,
                         agent=agent,
@@ -1891,10 +1875,7 @@ def watch(
                             failure_streak += 1
                         idle_rounds = 0
                         if _should_cooldown(h_outcome, failure_streak, _failure_threshold(entry or {})):
-                            cooldown_until = time.monotonic() + _cooldown_seconds(entry or {}, h_outcome)
-                            cooldown_kind = "额度/鉴权不可用" if h_outcome == "quota" else "连续失败"
-                            cooldown_since = utcnow()
-                            cooldown_logged = False
+                            _enter_cooldown(entry or {}, h_outcome)
                             print(
                                 f"[{beijing_stamp()}] 心跳 headless {h_outcome}，连续 {failure_streak} 次失败 ⇒ "
                                 f"{cooldown_kind}，进入冷却",

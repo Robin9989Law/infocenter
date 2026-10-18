@@ -1,6 +1,10 @@
 """HTTP 路由。只有这一层会调用 Store。"""
 
 import json
+import os
+import subprocess
+import sys
+from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
 from infocenter import __version__, config
@@ -470,16 +474,15 @@ OPENAPI = {
 
 
 def _route_ops(method: str, path: str, headers, query: dict, body: dict, store: Store):
-    if path == "/v1/crew":
-        from pathlib import Path as _Path
-        from infocenter import crew as _crew
+    from infocenter import crew
 
+    if path == "/v1/crew":
         home = store.path.parent
         host = (headers.get("Host") if headers is not None else None) or "127.0.0.1:8787"
         url = "http://" + str(host)
         if method == "GET":
             q_dir = query.get("dir", [None])[0]
-            return 200, _crew.status(home, str(_Path(q_dir).expanduser().resolve()) if q_dir else None)
+            return 200, crew.status(home, str(Path(q_dir).expanduser().resolve()) if q_dir else None)
         if method != "POST":
             raise MailError("method_not_allowed", "只支持 GET / POST", 405)
         action = (_opt_str(body, "action") or "").strip()
@@ -487,13 +490,13 @@ def _route_ops(method: str, path: str, headers, query: dict, body: dict, store: 
         only = _opt_str(body, "only") or ""
         if not project:
             raise MailError("invalid_dir", "需要 dir（项目目录）", 400)
-        project_path = str(_Path(project).expanduser().resolve())
-        if action == "up" and not _Path(project_path).is_dir():
+        project_path = str(Path(project).expanduser().resolve())
+        if action == "up" and not Path(project_path).is_dir():
             raise MailError("invalid_dir", f"项目目录不存在：{project_path}", 400)
         if action == "up":
-            return 200, _crew.up(home, url, project_path, only)
+            return 200, crew.up(home, url, project_path, only)
         if action == "down":
-            return 200, _crew.down(home, project_path, only)
+            return 200, crew.down(home, project_path, only)
         raise MailError("invalid_action", "action 需为 up 或 down", 400)
 
     if path == "/v1/activity":
@@ -508,66 +511,49 @@ def _route_ops(method: str, path: str, headers, query: dict, body: dict, store: 
     if path == "/v1/headless":
         if method != "GET":
             raise MailError("method_not_allowed", "只支持 GET", 405)
-        from pathlib import Path as _Path
-        from infocenter import crew as _crew2
-
         q_dir = query.get("dir", [None])[0]
-        project = str(_Path(q_dir).expanduser().resolve()) if q_dir else None
-        return 200, {"headless": _crew2.running_headless(store.path.parent, project)}
+        project = str(Path(q_dir).expanduser().resolve()) if q_dir else None
+        return 200, {"headless": crew.running_headless(store.path.parent, project)}
 
     if path == "/v1/headless/runs":
         if method != "GET":
             raise MailError("method_not_allowed", "只支持 GET", 405)
-        from pathlib import Path as _Path2
-        from infocenter import crew as _crew3
-
         q_dir = query.get("dir", [None])[0]
-        project = str(_Path2(q_dir).expanduser().resolve()) if q_dir else None
+        project = str(Path(q_dir).expanduser().resolve()) if q_dir else None
         try:
             limit = int(query.get("limit", ["30"])[0])
         except (TypeError, ValueError):
             limit = 30
-        return 200, {"runs": _crew3.headless_runs(store.path.parent, project, limit)}
+        return 200, {"runs": crew.headless_runs(store.path.parent, project, limit)}
 
     if path == "/v1/daemons":
         if method != "GET":
             raise MailError("method_not_allowed", "只支持 GET", 405)
-        from infocenter import crew as _crew4
-
-        return 200, {"daemons": _crew4.running_daemons(store.path.parent)}
+        return 200, {"daemons": crew.running_daemons(store.path.parent)}
 
     if path == "/v1/restart":
         if method != "POST":
             raise MailError("method_not_allowed", "只支持 POST", 405)
-        import os as _os
-        import subprocess as _subprocess
-        import sys as _sys
         from infocenter import __file__ as _initfile
-        from infocenter import crew as _crew5
 
-        root = _os.path.dirname(_os.path.dirname(_os.path.abspath(_initfile)))
-        env = _os.environ.copy()
+        root = os.path.dirname(os.path.dirname(os.path.abspath(_initfile)))
+        env = os.environ.copy()
         pp = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = root + (_os.pathsep + pp if pp else "")
-        dirs = sorted({d.get("dir") for d in _crew5.running_daemons(store.path.parent) if d.get("dir")})
-        py = _sys.executable
+        env["PYTHONPATH"] = root + (os.pathsep + pp if pp else "")
+        dirs = sorted({d.get("dir") for d in crew.running_daemons(store.path.parent) if d.get("dir")})
         log = store.path.parent / "restart.log"
-        from infocenter.crew import _restart_script
-
-        script = _restart_script(py, str(log), dirs)
+        script = crew._restart_script(sys.executable, str(log), dirs)
         if body.get("dry_run"):
             return 200, {"ok": True, "dry_run": True, "projects": dirs, "log": str(log), "script": script}
         try:
-            from infocenter.crew import _shell_argv
-
-            _subprocess.Popen(
-                _shell_argv(script),
+            subprocess.Popen(
+                crew._shell_argv(script),
                 cwd=root,
                 env=env,
                 start_new_session=True,
-                stdin=_subprocess.DEVNULL,
-                stdout=_subprocess.DEVNULL,
-                stderr=_subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
         except OSError as exc:
             raise MailError("restart_failed", f"无法启动重启脚本：{exc}", 500)
@@ -576,42 +562,38 @@ def _route_ops(method: str, path: str, headers, query: dict, body: dict, store: 
     if path == "/v1/open":
         if method != "POST":
             raise MailError("method_not_allowed", "只支持 POST", 405)
-        import os as _os
-        import subprocess as _subprocess
-        import sys as _sys
-
         target = _opt_str(body, "path") or _opt_str(body, "dir")
         if not target:
             raise MailError("invalid_path", "需要 path", 400)
-        d = _os.path.expanduser(target)
-        if not _os.path.isdir(d):
+        d = os.path.expanduser(target)
+        if not os.path.isdir(d):
             raise MailError("invalid_path", "目录不存在", 400)
         allowed: set[str] = set()
         for item in store.list_projects():
             ws = item.get("workspace") if isinstance(item, dict) else None
             if not isinstance(ws, str) or not ws.strip():
                 continue
-            expanded = _os.path.expanduser(ws.strip())
-            allowed.add(_os.path.normpath(expanded))
+            expanded = os.path.expanduser(ws.strip())
+            allowed.add(os.path.normpath(expanded))
             try:
-                allowed.add(_os.path.normpath(_os.path.realpath(expanded)))
+                allowed.add(os.path.normpath(os.path.realpath(expanded)))
             except OSError:
                 pass
-        norm = _os.path.normpath(d)
+        norm = os.path.normpath(d)
         try:
-            real = _os.path.normpath(_os.path.realpath(d))
+            real = os.path.normpath(os.path.realpath(d))
         except OSError:
             real = norm
         if norm not in allowed and real not in allowed:
             raise MailError("not_a_project", "只能打开已登记的项目目录", 403)
-        opener = "open" if _sys.platform == "darwin" else ("explorer" if _os.name == "nt" else "xdg-open")
+        opener = "open" if sys.platform == "darwin" else ("explorer" if os.name == "nt" else "xdg-open")
         try:
-            _subprocess.Popen(
+            subprocess.Popen(
                 [opener, d],
                 start_new_session=True,
-                stdin=_subprocess.DEVNULL,
-                stdout=_subprocess.DEVNULL,
-                stderr=_subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
         except OSError as exc:
             raise MailError("open_failed", f"打开失败：{exc}", 500)

@@ -2276,47 +2276,15 @@ def _inbox_alias_mark(message, viewer: str) -> str:
     return f"（旧名 {name}）"
 
 
-def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) -> None:
-    if cmd == "agents" and isinstance(payload, dict) and "agents" not in payload:
-        if "config_removed" in payload:
-            if payload.get("config_removed") or payload.get("removed"):
-                print(f"已移除 {payload['name']}")
-            else:
-                print(f"{payload['name']} 本来就不在名单里")
-        else:
-            suffix = f"（{payload['description']}）" if payload.get("description") else ""
-            print(f"已添加 {payload['name']}{suffix}")
-        return
-    if cmd == "agents" and isinstance(payload, dict) and "agents" in payload and not as_json:
-        for item in payload["agents"]:
-            role = " [manager]" if str(item.get("role") or "") in {"manager", "coordinator"} else ""
-            desc = f"（{item['description']}）" if item.get("description") else ""
-            print(f"{item['name']}{role}  未读 {item.get('unread', 0)}  最后活动 {item.get('last_seen_beijing', '')}{desc}")
-            if item.get("activity"):
-                print(f"    正在: {item['activity']}  [{item.get('activity_at_beijing', '')}]")
-            for office in item.get("windows") or []:
-                label = office.get("state_label") or office.get("state") or ""
-                where = office.get("workspace") or ""
-                print(f"    办公室 {office.get('window_id')}  {label}  {where}".rstrip())
-        hidden = payload.get("windows_hidden") or 0
-        if payload.get("windows_collapsed") and hidden:
-            print(f"另有 {hidden} 间未列出；--all 看全")
-        return
-    if as_json or cmd in {"agents", "thread"}:
-        print(json.dumps(payload, ensure_ascii=False, indent=2))
-        return
-    if cmd == "register":
-        print(f"已登记 {payload['name']}")
-        if payload.get("description"):
-            print(payload["description"])
-        return
+def _emit_messages(cmd: str, payload: dict) -> bool:
+    """消息队列领域 CLI 文本渲染器（send / reply / inbox / peek / read / archive）。"""
     if cmd == "send" or cmd == "reply":
         print(f"已送出 {payload['id']}")
         print(f"给: {', '.join(payload['to'])}")
         if payload.get("created_at_beijing"):
             print(f"时间: {payload['created_at_beijing']}（北京时间）")
         print(f"主题: {payload['subject']}")
-        return
+        return True
     if cmd == "inbox":
         label = {"unread": "未读", "read": "已读", "archived": "归档", "all": "全部"}[payload["status"]]
         print(f"{payload['agent']} 的{label} {payload['count']} 封")
@@ -2334,93 +2302,22 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 print(f"  {message['preview']}")
             elif message.get("body"):
                 print(f"  {message['body']}")
-        return
-    if cmd == "case" and not as_json:
-        title = payload.get("title") or payload.get("subject")
-        if title:
-            print(title)
-        unread = _unread_replies_line(payload)
-        if unread:
-            print(f"  {unread}")
-        print(f"WBS: {payload.get('wbs_path') or '（未归类）'}")
-        if payload.get("human_note"):
-            mark = "  ⚠ 人话过期（这之后又发生了别的事，该重写）" if payload.get("human_stale") else ""
-            print(
-                f"人话（{payload.get('human_by')} · {payload.get('human_at_beijing')}）: "
-                f"{payload['human_note']}{mark}"
-            )
-        else:
-            print("人话: 还没有（看板上的说法只能由本项目的 coordinator 或 manager 用 `ic case <id> --note \"…\"` 写；旧名 human 仍被接受）")
-        stones = payload.get("milestones") or []
-        if payload.get("acceptance"):
-            print(f"怎样算完: {payload['acceptance']}")
-        else:
-            print("怎样算完: 还没写（`ic case <id> --acceptance \"…\"`，owner 或本项目的 coordinator 能写）")
-        if stones:
-            print(f"里程碑 {payload.get('milestones_done', 0)}/{len(stones)}：")
-            for index, item in enumerate(stones):
-                mark = "✔" if item["done"] else "·"
-                who = f"  （{item['owner']}）" if item.get("owner") else ""
-                print(f"  {index}. {mark} {item['name']}{who}")
-        else:
-            print("里程碑：无（`ic case <id> --milestone-add \"名字\"`，只有本项目的 coordinator 或 manager 能改；旧名 human 仍被接受）")
-        print(payload.get("text") or json.dumps(payload, ensure_ascii=False, indent=2))
-        return
-    if cmd == "projects" and not as_json:
-        if "coordinator" in payload and "projects" not in payload:
-            # PUT 回来的是**单条**（刚指定/更换的那个项目），不是列表
-            who = (payload.get("coordinator") or "").strip() or "——（没指定：coordinator 类操作会被拒）"
-            print(f"{payload.get('name')}  coordinator={who}")
-            print(f"  {payload.get('workspace')}")
-            return
-        rows = payload.get("projects") or []
-        print(f"项目 {payload.get('count', len(rows))} 个")
-        for item in rows:
-            who = (item.get("coordinator") or "").strip() or "——"
-            print(f"  {item.get('name')}  coordinator={who}")
-            print(f"    {item.get('workspace')}")
-        print("  （没写 coordinator 的项目：coordinator 类操作会被拒；不属于任何登记项目的路径回落 manager）")
-        return
-    if cmd == "cases" and not as_json:
-        all_rows = payload.get("cases") or []
-        # 看板减噪：任何 thread 都能当案卷 ⇒ 信（派单/回信/报告）也混在里面。
-        # 实测 100 条里 52 条是**已封卷的历史**（混在一起才显得吵）⇒ 默认只列未封卷。
-        # 看板减噪（**被真数据修正过的一版**）：任何 thread 都能当案卷 ⇒ 148 条里大半是**已封卷的历史**，
-        # 混在一起才显得吵。默认**只列未封卷**（封卷 = 归档）；没实质内容的（验收/里程碑/WBS 都没有）
-        # 打个 `[信]` 标——那是派单/回信/报告，**不藏**：实测它们里面有真活（派单线程是"在办"、有 5 封信）。
-        # 想区分"真案卷 vs 派单线程"必须靠模型（立案时留显式标记），已登记——不在展示层偷偷拍。
-        if getattr(args, "all", False):
-            rows, sealed_hidden = all_rows, 0
-        else:
-            rows = [c for c in all_rows if not c.get("sealed")]
-            sealed_hidden = len(all_rows) - len(rows)
-        # 数字只说"这批里"——默认只取 `--limit` 条，说成总数又是"看板骗人"。
-        fold = ("（这批 %d 条里另有 %d 条已封卷；`--all` 看全，`--limit` 调大可多取）"
-                % (len(all_rows), sealed_hidden)) if sealed_hidden else ""
-        print("案卷 %d 份%s" % (len(rows), fold))
-        for item in rows:
-            owner = item.get("owner_agent") or item.get("owner") or "未认领"
-            wbs = item.get("wbs_path") or "未归类"
-            total = item.get("milestones_total") or 0
-            reached = f"  里程碑 {item.get('milestones_done', 0)}/{total}" if total else ""
-            marks = []
-            if not item.get("acceptance") and not item.get("sealed"):
-                marks.append("没写怎样算完")
-            if item.get("human_stale"):
-                marks.append("人话过期")
-            if item.get("stalled"):
-                marks.append(f"停滞 {item.get('stalled_hours')}h")
-            stale = ("  ⚠ " + " / ".join(marks)) if marks else ""
-            tag = "" if item.get("substantive") else "[信] "
-            print(
-                f"{item.get('id')}  {item.get('status_label') or item.get('status')}  {owner}  "
-                f"[{wbs}]  {tag}{item.get('title')}{reached}{stale}"
-            )
-            unread = _unread_replies_line(item)
-            if unread:
-                print(f"  {unread}")
-        return
-    if cmd == "audit" and not as_json:
+        return True
+    if cmd in {"peek", "read", "archive"}:
+        print(f"{payload['id']}  {payload['delivery_status'] or '发出'}  来自 {payload['from']}")
+        print(f"给: {', '.join(payload['to'])}")
+        if payload.get("created_at_beijing"):
+            print(f"时间: {payload['created_at_beijing']}（北京时间）")
+        print(f"主题: {payload['subject']}")
+        print()
+        print(payload.get("body", ""))
+        return True
+    return False
+
+
+def _emit_tasks_and_locks(cmd: str, payload: dict) -> bool:
+    """任务队列、写锁与审计领域 CLI 文本渲染器（audit / guard / lock / unlock / queue / locks / tasks / task）。"""
+    if cmd == "audit":
         if payload.get("ok"):
             print(f"留痕校验：通过（{payload.get('events', 0)} 行痕迹 / {payload.get('tasks', 0)} 个任务，链完整、重放一致）")
         else:
@@ -2453,8 +2350,8 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 print(f"  git 锚：对上（seq {git_anchor.get('seq')}）")
             else:
                 print(f"  git 锚：**对不上** —— {git_anchor.get('why') or '未知'}")
-        return
-    if cmd == "guard" and not as_json:
+        return True
+    if cmd == "guard":
         if payload.get("ok"):
             print(f"提交闸：放行（{payload.get('checked', 0)} 个改动都有锁）")
         else:
@@ -2475,8 +2372,8 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
             print(warn)
         for line in skill_drift_lines():
             print(line)
-        return
-    if cmd == "lock" and not as_json:
+        return True
+    if cmd == "lock":
         rows = payload.get("locks") or []
         print(
             f"已拿到 {len(rows)} 个写锁（{payload.get('agent')}，到 "
@@ -2492,14 +2389,12 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
         for item in payload.get("skipped") or []:
             print(f"  ⏭ 跳过（{item['agent']} 锁着）：{item['path']}")
         for item in payload.get("queued") or []:
-            first = item.get("first") or "?"
-            mine = "（就是你）" if first == payload.get("agent") else ""
             print(f"  📥 {item['path']} 还有 {item['count']} 条待改（各自照自己的 TODO 轮）")
         for path, what in (payload.get("dirty_at_lock") or {}).items():
             print(f"  ⚠ {path} 在你拿钥匙**之前**盘上就有没提交的改动（{what}）")
             print("      → 不是你刚写的那些，就先弄清是谁的：提交时它们会跟你的一起走、算在你名下")
-        return
-    if cmd == "unlock" and not as_json:
+        return True
+    if cmd == "unlock":
         count = payload.get("released_count")
         if count is None:
             count = len(payload.get("released") or [])
@@ -2509,14 +2404,14 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
             print(f"  ⚠ {path} 没能变回只读（{why}）—— 「锁＝只读」这会儿是纸面上的，别指望它挡人")
         for item in payload.get("pending_left") or []:
             print(f"  📥 {item['path']} 还有 {item['count']} 条待改（各人照自己的 TODO 轮，不必互相说）")
-        return
-    if cmd == "queue" and not as_json:
+        return True
+    if cmd == "queue":
         if payload.get("path") and "merged" in payload:
             print(
                 f"已合并 {len(payload.get('merged') or [])} 条（{payload.get('path')}）；"
                 f"这个文件还剩 {payload.get('remaining', 0)} 条排队"
             )
-            return
+            return True
         if payload.get("id") and payload.get("note") is not None and "seq" in payload:
             holder = payload.get("held_by")
             print(f"已记下 {payload['id']}（{payload['path']}）")
@@ -2529,7 +2424,7 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 print(f"  ✍️ 已写进你的 TODO：{payload['todo_file']}")
                 print("     先去做别的（别干等）；照你自己的 TODO 往下走，**轮到这条时能拿到钥匙就做**")
             print("  → 谁提谁落：这条是你的活，钥匙到手就落")
-            return
+            return True
         pending = payload.get("pending") or []
         total = payload.get("count", len(pending))
         print(f"待改清单 {total} 条（不排队、不通知：各人照自己的 TODO 轮，能做就做）")
@@ -2544,8 +2439,8 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 print(f"      → 钥匙在 {who} 手里：能拿到就做，拿不到就跳过、做你 TODO 的下一件")
         if not pending:
             print("  （没有排队；`ic queue <路径> --note \"我要改什么\"` 可以提一条）")
-        return
-    if cmd == "locks" and not as_json:
+        return True
+    if cmd == "locks":
         rows = payload.get("locks") or []
         print(f"写锁 {payload.get('count', len(rows))} 个")
         for item in rows:
@@ -2563,8 +2458,8 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 print(f"    ⚠ 无进度：自 {when} 起盘上没变")
         for row in _orphan_rows(payload.get("orphan_queue")):
             print(f"钥匙空着、有人在等：{row['path']}（{row['agent']} 提的，{row['wait']}）")
-        return
-    if cmd == "tasks" and not as_json:
+        return True
+    if cmd == "tasks":
         rows = payload.get("tasks") or []
         total = payload.get("total", len(rows))
         print(f"任务 {total} 条（活线 {payload.get('count', len(rows))}）")
@@ -2583,8 +2478,8 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 f"  ← {old.get('id')}  {old.get('status')}  {old.get('title')}"
                 f"（被 {old.get('superseded_by') or '?'} 取代{tail}）"
             )
-        return
-    if cmd == "task" and not as_json:
+        return True
+    if cmd == "task":
         print(
             f"{payload.get('id')}  {payload.get('title')}  [{payload.get('status')}]"
             f"  owner={payload.get('owner')}  priority={payload.get('priority', 0)}"
@@ -2609,8 +2504,95 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 print(f"  ← {prev.get('id')}  {prev.get('status')}  {prev.get('title')}{extra}")
         if payload.get("superseded_by"):
             print(f"已被 {payload['superseded_by']} 取代")
-        return
-    if cmd == "windows" and not as_json:
+        return True
+    return False
+
+
+def _emit_cases_and_control(cmd: str, payload: dict, args=None) -> bool:
+    """案卷、办公室窗口与项目名册领域 CLI 文本渲染器（register / case / cases / projects / windows）。"""
+    if cmd == "register":
+        print(f"已登记 {payload['name']}")
+        if payload.get("description"):
+            print(payload["description"])
+        return True
+    if cmd == "case":
+        title = payload.get("title") or payload.get("subject")
+        if title:
+            print(title)
+        unread = _unread_replies_line(payload)
+        if unread:
+            print(f"  {unread}")
+        print(f"WBS: {payload.get('wbs_path') or '（未归类）'}")
+        if payload.get("human_note"):
+            mark = "  ⚠ 人话过期（这之后又发生了别的事，该重写）" if payload.get("human_stale") else ""
+            print(
+                f"人话（{payload.get('human_by')} · {payload.get('human_at_beijing')}）: "
+                f"{payload['human_note']}{mark}"
+            )
+        else:
+            print("人话: 还没有（看板上的说法只能由本项目的 coordinator 或 manager 用 `ic case <id> --note \"…\"` 写；旧名 human 仍被接受）")
+        stones = payload.get("milestones") or []
+        if payload.get("acceptance"):
+            print(f"怎样算完: {payload['acceptance']}")
+        else:
+            print("怎样算完: 还没写（`ic case <id> --acceptance \"…\"`，owner 或本项目的 coordinator 能写）")
+        if stones:
+            print(f"里程碑 {payload.get('milestones_done', 0)}/{len(stones)}：")
+            for index, item in enumerate(stones):
+                mark = "✔" if item["done"] else "·"
+                who = f"  （{item['owner']}）" if item.get("owner") else ""
+                print(f"  {index}. {mark} {item['name']}{who}")
+        else:
+            print("里程碑：无（`ic case <id> --milestone-add \"名字\"`，只有本项目的 coordinator 或 manager 能改；旧名 human 仍被接受）")
+        print(payload.get("text") or json.dumps(payload, ensure_ascii=False, indent=2))
+        return True
+    if cmd == "projects":
+        if "coordinator" in payload and "projects" not in payload:
+            who = (payload.get("coordinator") or "").strip() or "——（没指定：coordinator 类操作会被拒）"
+            print(f"{payload.get('name')}  coordinator={who}")
+            print(f"  {payload.get('workspace')}")
+            return True
+        rows = payload.get("projects") or []
+        print(f"项目 {payload.get('count', len(rows))} 个")
+        for item in rows:
+            who = (item.get("coordinator") or "").strip() or "——"
+            print(f"  {item.get('name')}  coordinator={who}")
+            print(f"    {item.get('workspace')}")
+        print("  （没写 coordinator 的项目：coordinator 类操作会被拒；不属于任何登记项目的路径回落 manager）")
+        return True
+    if cmd == "cases":
+        all_rows = payload.get("cases") or []
+        if getattr(args, "all", False):
+            rows, sealed_hidden = all_rows, 0
+        else:
+            rows = [c for c in all_rows if not c.get("sealed")]
+            sealed_hidden = len(all_rows) - len(rows)
+        fold = ("（这批 %d 条里另有 %d 条已封卷；`--all` 看全，`--limit` 调大可多取）"
+                % (len(all_rows), sealed_hidden)) if sealed_hidden else ""
+        print("案卷 %d 份%s" % (len(rows), fold))
+        for item in rows:
+            owner = item.get("owner_agent") or item.get("owner") or "未认领"
+            wbs = item.get("wbs_path") or "未归类"
+            total = item.get("milestones_total") or 0
+            reached = f"  里程碑 {item.get('milestones_done', 0)}/{total}" if total else ""
+            marks = []
+            if not item.get("acceptance") and not item.get("sealed"):
+                marks.append("没写怎样算完")
+            if item.get("human_stale"):
+                marks.append("人话过期")
+            if item.get("stalled"):
+                marks.append(f"停滞 {item.get('stalled_hours')}h")
+            stale = ("  ⚠ " + " / ".join(marks)) if marks else ""
+            tag = "" if item.get("substantive") else "[信] "
+            print(
+                f"{item.get('id')}  {item.get('status_label') or item.get('status')}  {owner}  "
+                f"[{wbs}]  {tag}{item.get('title')}{reached}{stale}"
+            )
+            unread = _unread_replies_line(item)
+            if unread:
+                print(f"  {unread}")
+        return True
+    if cmd == "windows":
         rows = payload.get("windows") or []
         count = payload.get("count", len(rows))
         hidden = payload.get("hidden") or 0
@@ -2627,14 +2609,43 @@ def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) ->
                 f"{item.get('window_id')}  {item.get('agent')}  {label}  "
                 f"在办 {item.get('case_count', 0)}  {item.get('workspace') or ''}".rstrip()
             )
+        return True
+    return False
+
+
+def _emit(as_json: bool, cmd: str, payload, args=None, agent=None, home=None) -> None:
+    if cmd == "agents" and isinstance(payload, dict) and "agents" not in payload:
+        if "config_removed" in payload:
+            if payload.get("config_removed") or payload.get("removed"):
+                print(f"已移除 {payload['name']}")
+            else:
+                print(f"{payload['name']} 本来就不在名单里")
+        else:
+            suffix = f"（{payload['description']}）" if payload.get("description") else ""
+            print(f"已添加 {payload['name']}{suffix}")
         return
-    if cmd in {"peek", "read", "archive"}:
-        print(f"{payload['id']}  {payload['delivery_status'] or '发出'}  来自 {payload['from']}")
-        print(f"给: {', '.join(payload['to'])}")
-        if payload.get("created_at_beijing"):
-            print(f"时间: {payload['created_at_beijing']}（北京时间）")
-        print(f"主题: {payload['subject']}")
-        print()
-        print(payload.get("body", ""))
+    if cmd == "agents" and isinstance(payload, dict) and "agents" in payload and not as_json:
+        for item in payload["agents"]:
+            role = " [manager]" if str(item.get("role") or "") in {"manager", "coordinator"} else ""
+            desc = f"（{item['description']}）" if item.get("description") else ""
+            print(f"{item['name']}{role}  未读 {item.get('unread', 0)}  最后活动 {item.get('last_seen_beijing', '')}{desc}")
+            if item.get("activity"):
+                print(f"    正在: {item['activity']}  [{item.get('activity_at_beijing', '')}]")
+            for office in item.get("windows") or []:
+                label = office.get("state_label") or office.get("state") or ""
+                where = office.get("workspace") or ""
+                print(f"    办公室 {office.get('window_id')}  {label}  {where}".rstrip())
+        hidden = payload.get("windows_hidden") or 0
+        if payload.get("windows_collapsed") and hidden:
+            print(f"另有 {hidden} 间未列出；--all 看全")
+        return
+    if as_json or cmd in {"agents", "thread"}:
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    if _emit_messages(cmd, payload):
+        return
+    if _emit_tasks_and_locks(cmd, payload):
+        return
+    if _emit_cases_and_control(cmd, payload, args=args):
         return
     print(json.dumps(payload, ensure_ascii=False, indent=2))
