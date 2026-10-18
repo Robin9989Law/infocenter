@@ -89,9 +89,9 @@ ic task set <task_id> stopped --handoff "中间进度已保存在 draft.md"     
 
 ## 六、角色权力与六大禁令红线
 
-* `manager`（用户本人，旧名 `human`）：最高主权，唯一能更改名册、指定项目 coordinator；两名字在收件箱、往来线程、案卷等待态、名册未读数上完全等价。
-* `coordinator`（项目协调 Agent）：项目内唯一有权更新 `PLAN.md`、派发任务、验收任务、修改里程碑。
-* `worker`（普通执行 Agent）：专注推进分配给自己的任务。`ic agents` 与 `ic windows` 默认不列已离场的办公室，`--all` 看全。
+* `manager`（用户本人，旧名 `human`）：最高主权，唯一能更改名册、随时自由指定或轮换项目的 `coordinator`（支持 `ic --as manager projects --coordinator <agent>` 默认当前目录，或 `--window <window_id>` 直接钦定前台窗口）；两名字在收件箱、往来线程、案卷等待态、名册未读数上完全等价。
+* `coordinator`（项目协调 Agent）：**必须在前台交互会话中与用户时刻保持沟通，严禁脱离用户在后台 `headless` 运行**（`crew up` 自动跳过其后台守护，轮换上任时自动退出后台守护并无缝接管待裁定案卷）。项目内唯一有权更新 `PLAN.md`、派发任务、验收任务、修改里程碑。
+* `worker`（普通执行 Agent）：专注推进分配给自己的任务（可在后台 `headless` 守护运行；原 `coordinator` 被轮换卸任后自动回归 `worker`）。`ic agents` 与 `ic windows` 默认不列已离场的办公室，`--all` 看全。
 
 ### 六大禁令红线
 1. ❌ **严禁形式主义台账内耗**：禁止无派单自发追写 `CHANGELOG.md` / `README.md`（日常「D线追码」），以 SQLite 库内状态为唯一事实源。

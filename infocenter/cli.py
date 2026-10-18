@@ -340,8 +340,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="列出全部办公室，包含已离开的。不指定时默认不列这些",
     )
 
-    projects = sub.add_parser("projects", help="列出项目；**manager** 可指定项目的 coordinator（旧名 human 仍被接受）")
-    projects.add_argument("--project", dest="project", default=None, help="项目路径（指定 coordinator 时必填）")
+    projects = sub.add_parser("projects", help="列出项目；**manager** 可自由指定/轮换项目的 coordinator（旧名 human 仍被接受）")
+    projects.add_argument("--project", dest="project", default=None, help="项目路径（不填且未给 --window 时默认取当前工作目录）")
+    projects.add_argument("--window", dest="window", default=None,
+                          help="按前台办公室窗口直接指定其所在项目与对应 agent 为 coordinator")
     projects.add_argument("--coordinator", dest="coordinator", default=None,
                           help="指定/更换该项目的 coordinator（**只有 manager** 能设，旧名 human 仍被接受；没指定则 coordinator 类操作一律拒）")
 
@@ -523,13 +525,24 @@ def main(argv=None) -> int:
                 return res
             payload = res
         elif args.cmd == "projects":
-            if args.coordinator is not None:
-                if not args.project:
-                    raise MailError("invalid_project", "指定 coordinator 要一起给 `--project <路径>`")
-                payload = call(
-                    args.url, agent, "PUT", "/v1/projects",
-                    {"workspace": args.project, "coordinator": args.coordinator}, home=home,
-                )
+            win_arg = getattr(args, "window", None)
+            if args.coordinator is not None or win_arg:
+                proj_dir = args.project or (None if win_arg else str(Path.cwd()))
+                req_body = {}
+                if proj_dir:
+                    req_body["workspace"] = proj_dir
+                if args.coordinator is not None:
+                    req_body["coordinator"] = args.coordinator
+                if win_arg:
+                    req_body["window_id"] = win_arg
+                payload = call(args.url, agent, "PUT", "/v1/projects", req_body, home=home)
+                new_coord = (payload.get("coordinator") or "").strip() if isinstance(payload, dict) else ""
+                if new_coord:
+                    from infocenter import crew as _crew_mod
+
+                    down_res = _crew_mod.down(home, project=payload.get("workspace"), only=new_coord)
+                    if down_res.get("killed"):
+                        payload["stopped_daemons"] = down_res["killed"]
             else:
                 payload = call(args.url, agent, "GET", "/v1/projects", home=home)
         elif args.cmd == "windows":
@@ -2558,6 +2571,15 @@ def _emit_cases_and_control(cmd: str, payload: dict, args=None) -> bool:
             who = (payload.get("coordinator") or "").strip() or "——（没指定：coordinator 类操作会被拒）"
             print(f"{payload.get('name')}  coordinator={who}")
             print(f"  {payload.get('workspace')}")
+            if payload.get("rotated_from"):
+                cases_info = (
+                    f"（已自动移交待裁定案卷：{', '.join(payload['handed_over_cases'])}）"
+                    if payload.get("handed_over_cases")
+                    else ""
+                )
+                print(f"  🔄 已从 {payload['rotated_from']} 轮换为 {who}{cases_info}")
+            if payload.get("stopped_daemons"):
+                print(f"  🛑 已停止 {who} 的后台守护（coordinator 须保持前台与用户实时沟通）")
             return True
         rows = payload.get("projects") or []
         print(f"项目 {payload.get('count', len(rows))} 个")

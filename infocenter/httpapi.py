@@ -684,17 +684,19 @@ def _route_agents_and_projects(
             return 200, {"projects": projects, "count": len(projects)}
         if method in {"POST", "PUT"}:
             ws = body.get("workspace") or body.get("dir") or body.get("path")
-            if not isinstance(ws, str) or not ws.strip():
-                raise MailError("invalid_workspace", "需要提供项目路径 workspace")
+            win_id = _opt_str(body, "window_id") or _opt_str(body, "window")
+            if (not isinstance(ws, str) or not ws.strip()) and not win_id:
+                raise MailError("invalid_workspace", "需要提供项目路径 workspace 或办公室窗口 window_id")
             archived = body.get("archived")
             if archived is not None and not isinstance(archived, bool):
                 raise MailError("invalid_archived", "archived 必须是布尔值", 400)
             project = store.add_project(
-                ws,
+                ws if isinstance(ws, str) and ws.strip() else None,
                 name=_opt_str(body, "name"),
                 archived=archived,
                 coordinator=body.get("coordinator"),
                 actor=agent,
+                window_id=win_id,
             )
             return (201 if method == "POST" else 200), project
     return None

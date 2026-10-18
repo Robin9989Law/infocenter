@@ -96,6 +96,7 @@ SMOKE = {
     "lock": (["lock", "a.py"], "call"),
     "unlock": (["unlock"], "call"),
     "probe": (["probe", "--no-log"], "_probe"),
+    "doctor": (["doctor"], "_doctor"),
     "projects": (["projects"], "call"),
     "windows": (["windows"], "call"),
     "mcp": (["mcp"], "mcp_server.run_mcp"),

@@ -74,10 +74,16 @@ flowchart TD
 
 ## 四、角色矩阵与五步工作法（5-Step SOP）
 
-| 职能维度 | `manager` (用户本人，别名 `human`) | `coordinator` (项目协调者) | `worker` (执行 Agent) |
+| 职能维度 | `manager` (用户本人，别名 `human`) | `coordinator` (项目协调者，**强制前台伴随**) | `worker` (执行 Agent，**可后台守护**) |
 |---|---|---|---|
-| **名册与大盘** | **唯一有权**管理全局名册、任命项目 coordinator | **独家维护**项目 `PLAN.md` 与 WBS 结构 | 专注推进自身任务，不得擅改名册或 `PLAN.md` |
+| **运行形态与自由轮换** | 人类最高决策者；可随时自由指定或轮换任意 Agent 为 `coordinator` | **必须处在前台交互会话与用户实时沟通，严禁脱离用户在后台 `headless` 运行**；被轮换上任时自动退出后台守护并接管待裁定案卷 | 可在后台 `headless` 守护或前台会话中专注推进具体任务；原 `coordinator` 轮换卸任后自动恢复 `worker` 身份 |
+| **名册与大盘** | **唯一有权**管理全局名册、钦定/轮换项目 `coordinator` | **独家维护**项目 `PLAN.md` 与 WBS 结构（在用户监督下） | 专注推进自身任务，不得擅改名册或 `PLAN.md` |
 | **任务派发与验收** | 全局兜底派发与最终裁定 | 拆解任务并指定唯一 owner；按 `acceptance` 独立复验 | 发挥自身 Harness 自由推进；完成后提请验收 |
+
+* **灵活钦定与轮换命令**：
+  * 当前目录直接钦定/轮换：`ic --as manager projects --coordinator <agent>`（免输 `--project`，默认取当前目录）
+  * 按前台对话窗口钦定：`ic --as manager projects --window <window_id>`（直接将该窗口的 Agent 设为所在项目的 `coordinator`）
+  * Web 控制台（`/ui`）：在项目面板下拉框一键切换并保存。
 
 ### Agent 五步工作法
 1. **看盘立大局（Look & Align）**：运行 `ic inbox` 与 `ic status` 查看未读留言、名下任务与同项目并行态势，对齐宏观案卷目标。

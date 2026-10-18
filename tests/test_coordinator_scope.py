@@ -205,6 +205,73 @@ class CoordinatorScopeTest(unittest.TestCase):
         with self.assertRaises(MailError):
             self.assertEqual(_role("别的"), "")
 
+    # ── ⑥ 自由轮换、窗口钦定与禁止后台脱离运行 ─────────────────────────────
+
+    def test_自由轮换_coordinator_自动移交待裁定案卷(self):
+        """用户可随时将 coordinator 从 A 轮换为 B：权限即时切换，且等待 A 裁定的未封案卷自动移交 B。"""
+        self._designate(WS_A, "kimi")
+        cid = self._case(WS_A)
+        self.store.append_case_node(cid, agent="grok", note="请协调者拍板", status="待谁", waiting_for="kimi")
+
+        # 轮换：kimi -> cursor
+        res = self.store.add_project(WS_A, coordinator="cursor", actor="human")
+        self.assertEqual(res["coordinator"], "cursor")
+        self.assertEqual(res.get("rotated_from"), "kimi")
+        self.assertEqual(res.get("handed_over_cases"), [cid])
+
+        # 案卷 waiting_for 已自动转交 cursor
+        c_view = self.store.get_case(cid, viewer="cursor")
+        self.assertEqual(c_view["waiting_for"], "cursor")
+
+        # 原 coordinator kimi 恢复普通 worker，不再拥有 coordinator 权限；新 coordinator cursor 拥有权限
+        with self.assertRaises(MailError) as ctx:
+            self.store.case_milestone_add(cid, agent="kimi", name="旧官越权")
+        self.assertEqual(ctx.exception.code, "not_coordinator")
+        got = self.store.case_milestone_add(cid, agent="cursor", name="新官上任")
+        self.assertEqual([m["name"] for m in got["milestones"]], ["新官上任"])
+
+    def test_按前台窗口_window_id_直接指定_coordinator(self):
+        """无需手敲路径和身份：直接凭当前前台窗口号即可将该窗口的 agent 钦定为所在项目的 coordinator。"""
+        self.store.touch("cursor", window_id="w-front1", workspace=WS_A)
+        res = self.store.add_project(window_id="w-front1", actor="human")
+        self.assertEqual(res["workspace"], WS_A)
+        self.assertEqual(res["coordinator"], "cursor")
+
+    def test_coordinator_禁止后台守护_轮换后角色随动(self):
+        """coordinator 必须在前台与用户保持沟通，plan_up 自动跳过其后台守护；轮换后原 coordinator 恢复后台 worker。"""
+        import json
+        from unittest import mock
+        from infocenter import crew
+
+        proj_dir = str((self.home / "proj_rot").resolve())
+        Path(proj_dir).mkdir(parents=True, exist_ok=True)
+        (self.home / "config.json").write_text(
+            json.dumps({
+                "agents": [
+                    {"name": "kimi", "headless": "echo kimi"},
+                    {"name": "cursor", "headless": "echo cursor"},
+                ]
+            }),
+            encoding="utf-8",
+        )
+
+        # 1. 当 kimi 是 coordinator 时：kimi 跳过后台守护，cursor 正常作为后台 worker 启动
+        with mock.patch("infocenter.crew._project_coordinator", return_value="kimi"):
+            actions_1 = crew.plan_up(self.home, "http://127.0.0.1:8787", proj_dir)
+        by_agent_1 = {a["agent"]: a for a in actions_1}
+        self.assertEqual(by_agent_1["kimi"]["kind"], "skip")
+        self.assertIn("coordinator", by_agent_1["kimi"]["note"])
+        self.assertEqual(by_agent_1["cursor"]["kind"], "daemon")
+
+        # 2. 用户自由轮换 cursor 为新 coordinator 后：cursor 跳过后台守护，kimi 恢复为后台 worker
+        with mock.patch("infocenter.crew._project_coordinator", return_value="cursor"):
+            actions_2 = crew.plan_up(self.home, "http://127.0.0.1:8787", proj_dir)
+        by_agent_2 = {a["agent"]: a for a in actions_2}
+        self.assertEqual(by_agent_2["cursor"]["kind"], "skip")
+        self.assertIn("coordinator", by_agent_2["cursor"]["note"])
+        self.assertEqual(by_agent_2["kimi"]["kind"], "daemon")
+
 
 if __name__ == "__main__":
     unittest.main()
+

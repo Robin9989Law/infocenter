@@ -598,12 +598,30 @@ def manager_misconfig(item: dict) -> str:
     )
 
 
+def _project_coordinator(url: str | None, project: str | None) -> str:
+    """查询指定项目的当前 coordinator 身份名；查不到或未指定返回空串。"""
+    if not url or not project:
+        return ""
+    target = _resolve_dir(project)
+    if not target:
+        return ""
+    try:
+        payload = _api(url, "GET", "/v1/projects", HUMAN)
+        for item in (payload or {}).get("projects") or []:
+            if isinstance(item, dict) and _in_project(item, target):
+                return str(item.get("coordinator") or "").strip()
+    except (MailError, ApiError, SystemExit, OSError, ValueError, KeyError):
+        return ""
+    return ""
+
+
 def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
     """生成 up 的动作清单。每项：{agent, kind, command(list), note}。"""
     actions: list[dict] = []
     use_tmux = shutil.which("tmux") is not None
     session = _session_name(project)
     existing = _tmux_windows(session)
+    proj_coord = _project_coordinator(url, project)
     for item in _select(home, only):
         agent = item["name"]
         app = str(item.get("app") or "").strip()
@@ -646,17 +664,25 @@ def plan_up(home, url: str, project: str, only: str = "") -> list[dict]:
                     ],
                 })
         if headless:
-            key = _key(agent, project)
-            if _read_pid(home, key) is not None:
-                actions.append({"agent": agent, "kind": "skip", "command": [], "note": "本项目收信守护已在运行"})
+            if proj_coord and agent == proj_coord:
+                actions.append({
+                    "agent": agent,
+                    "kind": "skip",
+                    "command": [],
+                    "note": "当前为本项目 coordinator（须与用户保持前台沟通，不启动后台守护）",
+                })
             else:
-                poll = _poll_seconds(item)
-                # F-1：heartbeat 不再固化到命令行——守护每轮热读 config（改 heartbeat 无需重启）。
-                command = [
-                    sys.executable, "-m", "infocenter", "crew", "watch", agent,
-                    "--dir", project, "--url", url, "--home", str(home), "--poll", str(poll),
-                ]
-                actions.append({"agent": agent, "kind": "daemon", "command": command})
+                key = _key(agent, project)
+                if _read_pid(home, key) is not None:
+                    actions.append({"agent": agent, "kind": "skip", "command": [], "note": "本项目收信守护已在运行"})
+                else:
+                    poll = _poll_seconds(item)
+                    # F-1：heartbeat 不再固化到命令行——守护每轮热读 config（改 heartbeat 无需重启）。
+                    command = [
+                        sys.executable, "-m", "infocenter", "crew", "watch", agent,
+                        "--dir", project, "--url", url, "--home", str(home), "--poll", str(poll),
+                    ]
+                    actions.append({"agent": agent, "kind": "daemon", "command": command})
         if not (app or launch or headless):
             actions.append({"agent": agent, "kind": "skip", "command": [], "note": "未配置 launch/app/headless"})
     if use_tmux and any(action["kind"] == "tmux" for action in actions) and not _tmux_session_exists(session):
@@ -1689,6 +1715,12 @@ def watch(
             template = str((entry or {}).get("headless") or "").strip()
             if not template:
                 print(f"[{beijing_stamp()}] config 里 {agent} 的 headless 已清空，守护退出", flush=True)
+                break
+            if _project_coordinator(url, project) == agent:
+                print(
+                    f"[{beijing_stamp()}] {agent} 已被设为本项目 coordinator（须与用户保持前台沟通），后台守护自动退出",
+                    flush=True,
+                )
                 break
             mode = str((entry or {}).get("heartbeat_mode") or "idle").strip().lower()
             custom_prompt = str((entry or {}).get("heartbeat_prompt") or "").strip() or None

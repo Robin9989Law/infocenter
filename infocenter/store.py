@@ -416,19 +416,15 @@ class Store(MessagesMixin, GovernanceMixin, LocksMixin, CasesMixin, WindowsMixin
             self._cond.notify_all()
 
     def add_project(
-        self, workspace: str, name: str | None = None, archived: bool | None = None,
-        coordinator: str | None = None, actor: str | None = None,
+        self, workspace: str | None = None, name: str | None = None, archived: bool | None = None,
+        coordinator: str | None = None, actor: str | None = None, window_id: str | None = None,
     ) -> dict:
-        ws = _workspace(workspace)
-        if not ws:
-            raise MailError("invalid_workspace", "项目目录 workspace 不能为空")
+        win_id = normalize_window(window_id) if window_id else None
+        ws = _workspace(workspace) if workspace else None
         if name is not None and not isinstance(name, str):
             raise MailError("invalid_project_name", "项目名称必须是字符串")
         if archived is not None and not isinstance(archived, bool):
             raise MailError("invalid_archived", "archived 必须是布尔值", 400)
-        proj_name = (name or "").strip() or Path(ws).name or ws
-        if len(proj_name) > 200 or "\n" in proj_name or "\r" in proj_name:
-            raise MailError("invalid_project_name", "项目名称不能换行，最长 200 字")
         if coordinator is not None and not isinstance(coordinator, str):
             raise MailError("invalid_coordinator", "coordinator 必须是身份名", 400)
         if isinstance(coordinator, str) and not coordinator.strip():
@@ -436,7 +432,23 @@ class Store(MessagesMixin, GovernanceMixin, LocksMixin, CasesMixin, WindowsMixin
         else:
             wait_coord = normalize_name(coordinator) if isinstance(coordinator, str) else None
         now = utcnow()
+        handed_over: list[str] = []
         with self._session(immediate=True) as conn:
+            if win_id:
+                win_row = conn.execute(
+                    "SELECT agent, workspace FROM windows WHERE window_id = ?", (win_id,)
+                ).fetchone()
+                if win_row is None:
+                    raise MailError("unknown_window", f"没有找到办公室窗口：{win_id}", 404)
+                if not ws:
+                    ws = _workspace(win_row["workspace"])
+                if wait_coord is None:
+                    wait_coord = normalize_name(win_row["agent"])
+            if not ws:
+                raise MailError("invalid_workspace", "项目目录 workspace 不能为空")
+            proj_name = (name or "").strip() or Path(ws).name or ws
+            if len(proj_name) > 200 or "\n" in proj_name or "\r" in proj_name:
+                raise MailError("invalid_project_name", "项目名称不能换行，最长 200 字")
             if wait_coord is not None:
                 _must_human(actor or "")
                 if wait_coord:
@@ -455,6 +467,19 @@ class Store(MessagesMixin, GovernanceMixin, LocksMixin, CasesMixin, WindowsMixin
                     conn, "", normalize_name(actor or HUMAN), "project_coordinator",
                     prev_coord, wait_coord, {"workspace": ws, "coordinator": wait_coord}, now,
                 )
+                # 自由轮换无缝交接：若旧 coordinator 更换为新 coordinator，将该项目中正等待旧 coordinator 裁定的未封案卷自动转交新 coordinator
+                if prev_coord and wait_coord and prev_coord != wait_coord:
+                    waiting_cases = conn.execute(
+                        "SELECT id, workspace FROM cases WHERE sealed = 0 AND waiting_for = ?",
+                        (prev_coord,),
+                    ).fetchall()
+                    for c_row in waiting_cases:
+                        if _workspace_scope(c_row["workspace"], ws):
+                            conn.execute(
+                                "UPDATE cases SET waiting_for = ?, updated_at = ? WHERE id = ?",
+                                (wait_coord, now, c_row["id"]),
+                            )
+                            handed_over.append(c_row["id"])
             projects = _collect_projects(conn)
         ws_bare = Path(ws).name == ws
         for item in projects:
@@ -462,6 +487,10 @@ class Store(MessagesMixin, GovernanceMixin, LocksMixin, CasesMixin, WindowsMixin
             if anchor == ws or (
                 ws_bare and Path(anchor).is_absolute() and (Path(anchor).name or anchor) == ws
             ):
+                if prev_coord and wait_coord is not None and prev_coord != wait_coord:
+                    item["rotated_from"] = prev_coord
+                if handed_over:
+                    item["handed_over_cases"] = handed_over
                 return item
         return {
             "workspace": ws,
