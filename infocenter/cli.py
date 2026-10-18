@@ -510,337 +510,18 @@ def main(argv=None) -> int:
             payload = call(args.url, agent, "POST", f"/v1/messages/{args.id}/reply", body, home=home)
         elif args.cmd == "thread":
             payload = call(args.url, agent, "GET", f"/v1/threads/{args.id}", home=home)
-        elif args.cmd == "case":
-            if not getattr(args, "id", None):
-                payload = call(
-                    args.url,
-                    agent,
-                    "GET",
-                    "/v1/cases",
-                    query={
-                        "workspace": getattr(args, "workspace", None),
-                        "status": getattr(args, "status", None),
-                        "owner": getattr(args, "owner", None),
-                        "wbs": getattr(args, "wbs", None),
-                        "waiting_for": getattr(args, "wait_for", None),
-                        "limit": str(getattr(args, "limit", 20)),
-                    },
-                    home=home,
-                )
-                args.cmd = "cases"
-            else:
-                # `--status` 只在"写节点"那条路上生效（状态变更必须留一行节点，看板才知道你为什么改）。
-                # 单独给 `--status` 会**静默**走成"只看一眼"（实测连踩两次）⇒ 明确拒，并说清怎么写。
-                if (args.status or args.wait_for) and not (
-                    args.note
-                    and args.milestone_add is None
-                    and args.milestone_done is None
-                    and args.acceptance is None
-                ):
-                    raise MailError(
-                        "status_needs_note",
-                        "改状态 / 说「在等谁」都要跟 `--note` 一起用——必须留一行节点，看板才知道你在等什么："
-                        "`ic case <id> --note \"为什么等\" --wait-for 身份`（等价于 --status 待谁）。"
-                        "（`--milestone-*` / `--acceptance` 那几条路都不带状态。）",
-                    )
-                # 黄灯（**不拦**）：封卷不可逆（要改只能 `reopen`），所以动手前把"还有里程碑没勾"摆到眼前。
-                for line in _seal_pending_milestone_lines(args, agent, home):
-                    print(line)
-                if args.milestone_add:
-                    body = {"name": args.milestone_add}
-                    if args.milestone_owner:
-                        body["owner"] = args.milestone_owner
-                    payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/milestone", body, home=home)
-                elif args.milestone_done is not None:
-                    raw = str(args.milestone_done).strip()
-                    done = not raw.startswith("!")
-                    body = {"index": int(raw.lstrip("!")), "done": done}
-                    if args.note:
-                        body["note"] = args.note
-                    payload = call(
-                        args.url, agent, "POST", f"/v1/cases/{args.id}/milestone-done", body, home=home
-                    )
-                elif args.acceptance is not None:
-                    payload = call(
-                        args.url, agent, "POST", f"/v1/cases/{args.id}/acceptance",
-                        {"acceptance": args.acceptance}, home=home,
-                    )
-                elif args.note:
-                    body = {"note": args.note, "action": "note"}
-                    if args.status:
-                        body["status"] = args.status
-                    if args.wait_for:
-                        # 「在等谁」本身就是一次状态变更（转「待 X」）——由 store 落 waiting_for。
-                        body["waiting_for"] = args.wait_for
-                        body.setdefault("status", "待谁")
-                    payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/nodes", body, home=home)
-                elif args.wbs is not None:
-                    body = {"wbs_path": args.wbs}
-                    payload = call(args.url, agent, "POST", f"/v1/cases/{args.id}/wbs", body, home=home)
-                else:
-                    payload = call(args.url, agent, "GET", f"/v1/cases/{args.id}", home=home)
-        elif args.cmd == "cases":
-            payload = call(
-                args.url,
-                agent,
-                "GET",
-                "/v1/cases",
-                query={
-                    "workspace": args.workspace,
-                    "status": args.status,
-                    "owner": args.owner,
-                    "wbs": args.wbs,
-                    "waiting_for": getattr(args, "wait_for", None),
-                    "limit": str(args.limit),
-                },
-                home=home,
-            )
-        elif args.cmd == "audit":
-            if args.anchor:
-                return _write_audit_anchor(args, agent, home)
-            anchor = _read_audit_anchor(_anchor_path(args.anchor_file))
-            payload = call(
-                args.url, agent, "GET", "/v1/audit",
-                query=_audit_query(args.task, anchor), home=home,
-            )
-            # 本地锚能和库一起重写（就地重新盖章）。git HEAD 里那一份是链外见证，
-            # 取得到就当第二个锚再验一次：两个都过才算绿。
-            payload = _attach_git_anchor(args, agent, home, payload, anchor)
-        elif args.cmd == "guard":
-            import subprocess
-
-            if args.install_hook:
-                return _install_commit_hook(subprocess)
-            paths = _abs_client_paths(args.paths) if args.paths else None
-            if not paths:
-                paths = (_staged_paths if getattr(args, "staged", False) else _changed_paths)(subprocess)
-                if not paths:
-                    payload = {"ok": True, "checked": 0, "covered": [], "unlocked": [], "locked_by_others": []}
-                    if not args.quiet:
-                        print("提交闸：工作区无改动，放行")
-                    return 0
-            payload = call(
-                args.url, agent, "POST", "/v1/guard",
-                {"paths": paths, "require_mine": not args.any_holder}, home=home,
-            )
-        elif args.cmd == "lock":
-            import subprocess
-
-            # 相对路径按**敲命令的目录**收成绝对路径再发。服务端的 resolve()
-            # 用的是它自己的进程目录——不转的话，锁会静默落在别处（omp 报的幻影锁）。
-            # 文件还不存在也要能锁：resolve 默认不要求目标存在。
-            named = _abs_client_paths(args.paths)
-            lock_paths = list(named)
-            if args.changed:
-                # `--changed` 与显式路径是**并集**（不是二选一）：既要锁住所有改动，
-                # 也要能顺手锁住"马上要写、但还没改"的文件（如外锚文件）。
-                seen = set(lock_paths)
-                lock_paths += [path for path in _changed_paths(subprocess) if path not in seen]
-                if not lock_paths:
-                    if not args.quiet:
-                        print("工作区没有改动，无需加锁")
-                    return 0
-            # 只嗅**命令行点名**的路径：`--changed` 带进来的，是"我自己刚改完的那批"，
-            # 本来就该是脏的，说了也是噪音。
-            dirty = _preexisting_dirt(subprocess, named)
-            payload = call(
-                args.url, agent, "POST", "/v1/locks",
-                {
-                    "paths": lock_paths,
-                    "ttl": args.ttl,
-                    "task_id": args.task_id,
-                    "note": args.note,
-                    "force": bool(args.force),
-                    "dirty": dirty,
-                    # --changed 的语义是"锁我这批脏文件"：别人锁着的脏文件不是我该拿的，跳过并报告
-                    "skip_locked": bool(args.changed),
-                    # 盘上没动过时，到顶前可以多次再要一段。服务端决定给不给；这里只把开关交过去。
-                    "stay": bool(args.stay),
-                },
-                home=home,
-            )
-        elif args.cmd == "unlock":
-            payload = call(
-                args.url, agent, "POST", "/v1/locks/release",
-                {"paths": _abs_client_paths(args.paths) or None, "force": bool(args.force)},
-                home=home,
-            )
-        elif args.cmd == "queue":
-            qpath = _abs_client_path(args.path) if args.path else None
-            if args.merge:
-                ids = _split_ids(args.ids)
-                if args.ids is not None and not ids:
-                    # `--id ""` / `--id ","`：**说清楚**，别静默当成「没给 id」——
-                    # 那会变成「合全部」，而合并是不可撤销的（kimi 2026-10-15 提示级）。
-                    raise MailError(
-                        "invalid_id",
-                        "`--merge` 得点名要合哪几条（`--id q271` 或 `--id q271,q272`）；"
-                        "空着会被当成「合全部」，太危险，所以这里直接拒。要全合就把 id 逐条列上。",
-                    )
-                payload = call(
-                    args.url, agent, "POST", "/v1/locks/queue/merge",
-                    {"path": qpath, "ids": ids}, home=home,
-                )
-            elif args.note or args.patch_file:
-                payload = call(
-                    args.url, agent, "POST", "/v1/locks/queue",
-                    {"path": qpath, "note": args.note, "patch_file": args.patch_file,
-                     "task": args.task},
-                    home=home,
-                )
-                if not args.no_todo:
-                    holder = payload.get("held_by")
-                    note = (payload.get("note") or "").strip().replace("\n", " ")
-                    if len(note) > 80:
-                        note = note[:80] + "…"
-                    where = f"（钥匙在 {holder} 手里）" if holder else "（现在没人拿钥匙，直接 lock 就能做）"
-                    line = (
-                        f"改 {payload.get('path')}：{note[:80]}{where}"
-                        f" —— 提议 {payload.get('id')}；轮到这条时 `ic lock <路径>` **能拿到钥匙就做**"
-                    )
-                    # 只读 TODO 才去拿自己这份文件的钥匙；可写路径不碰锁，避免改现有测试的行为。
-                    todo_url = args.url
-                    todo_path = _todo_path(agent)
-                    if todo_path.exists() and not (todo_path.stat().st_mode & 0o200):
-                        todo_url = ensure_server(args.url, home)
-                    payload["todo_file"] = _todo_add(agent, line, url=todo_url, home=home)
-            else:
-                payload = call(
-                    args.url, agent, "GET", "/v1/locks/queue",
-                    query={"path": qpath}, home=home,
-                )
-        elif args.cmd == "locks":
-            payload = _attach_lock_lights(
-                call(args.url, agent, "GET", "/v1/locks", home=home),
-                args.url, agent, home,
-            )
-        elif args.cmd == "task":
-            action = getattr(args, "action", "list")
-            if action == "list":
-                owner = getattr(args, "owner", None)
-                workspace = getattr(args, "workspace", None)
-                if getattr(args, "mine", False):
-                    owner = agent
-                    workspace = workspace or str(Path.cwd())
-                payload = call(
-                    args.url,
-                    agent,
-                    "GET",
-                    "/v1/tasks",
-                    query={
-                        "owner": owner,
-                        "workspace": workspace,
-                        "status": getattr(args, "status", None),
-                        "all": "1" if getattr(args, "all", False) else "0",
-                        "limit": str(getattr(args, "limit", 50)),
-                    },
-                    home=home,
-                )
-                args.cmd = "tasks"
-            elif action == "verify":
-                if not args.id:
-                    raise MailError("missing_task_id", "verify 需要指定任务编号：ic task verify <id>")
-                task_data = call(args.url, agent, "GET", f"/v1/tasks/{args.id}", home=home)
-                acc = (task_data.get("acceptance") or "").strip()
-                deps = (task_data.get("deps") or "").strip()
-                if not acc and not deps:
-                    raise MailError("verification_failed", f"任务 {args.id} 未配置任何验收标准 (acceptance) 或依赖哈希 (deps)，无法自动化硬验证")
-                if deps:
-                    import hashlib
-                    for dep in deps.split():
-                        if "@sha256:" in dep:
-                            fpath, expected_hash = dep.split("@sha256:", 1)
-                            p = Path(fpath)
-                            if not p.is_file():
-                                raise MailError("verification_failed", f"依赖文件不存在：{fpath}")
-                            actual_hash = hashlib.sha256(p.read_bytes()).hexdigest()
-                            if actual_hash != expected_hash:
-                                raise MailError("verification_failed", f"依赖文件哈希不匹配：{fpath} 预期 {expected_hash[:8]}，实际 {actual_hash[:8]}")
-                print(f"任务 {args.id} 硬验证通过：")
-                if acc:
-                    print(f"  验收标准: {acc}")
-                if deps:
-                    print(f"  依赖校验: {deps} (匹配一致)")
-                return 0
-            elif action == "add":
-                body = {
-                    "title": args.title,
-                    "owner": args.owner,
-                    "workspace": args.workspace,
-                    "deps": args.deps,
-                    "acceptance": args.acceptance,
-                    "case_id": args.case_id,
-                    "supersedes": args.supersedes,
-                }
-                if args.priority is not None:
-                    body["priority"] = args.priority
-                payload = call(
-                    args.url, agent, "POST", "/v1/tasks",
-                    {key: value for key, value in body.items() if value is not None}, home=home,
-                )
-            elif action == "show":
-                payload = call(args.url, agent, "GET", f"/v1/tasks/{args.id}", home=home)
-            elif action == "start":
-                payload = call(args.url, agent, "POST", f"/v1/tasks/{args.id}/start", {}, home=home)
-            elif action == "set":
-                if args.status == "done" and getattr(args, "verify", False):
-                    task_data = call(args.url, agent, "GET", f"/v1/tasks/{args.id}", home=home)
-                    acc = (task_data.get("acceptance") or "").strip()
-                    deps = (task_data.get("deps") or "").strip()
-                    if not acc and not deps:
-                        raise MailError("verification_failed", f"任务 {args.id} 开启了 --verify 但未设置 acceptance 或 deps 验收标准，拒绝设为 done")
-                    if deps:
-                        import hashlib
-                        for dep in deps.split():
-                            if "@sha256:" in dep:
-                                fpath, expected_hash = dep.split("@sha256:", 1)
-                                p = Path(fpath)
-                                if not p.is_file():
-                                    raise MailError("verification_failed", f"依赖文件不存在：{fpath}")
-                                actual_hash = hashlib.sha256(p.read_bytes()).hexdigest()
-                                if actual_hash != expected_hash:
-                                    raise MailError("verification_failed", f"依赖文件哈希不匹配：{fpath}")
-                body = {"status": args.status}
-                if args.reason:
-                    body["reason"] = args.reason
-                if args.handoff:
-                    body["handoff"] = args.handoff
-                payload = call(args.url, agent, "POST", f"/v1/tasks/{args.id}/status", body, home=home)
-            elif action == "update":
-                fields = {
-                    "title": args.title,
-                    "owner": args.owner,
-                    "deps": args.deps,
-                    "acceptance": args.acceptance,
-                    "case_id": args.case_id,
-                    "priority": args.priority,
-                }
-                payload = call(
-                    args.url, agent, "POST", f"/v1/tasks/{args.id}/update",
-                    {key: value for key, value in fields.items() if value is not None}, home=home,
-                )
-            else:  # bump
-                payload = call(args.url, agent, "POST", f"/v1/tasks/{args.id}/bump", {"by": args.by}, home=home)
-        elif args.cmd == "tasks":
-            owner = args.owner
-            workspace = args.workspace
-            if args.mine:
-                owner = agent
-                workspace = workspace or str(Path.cwd())
-            payload = call(
-                args.url,
-                agent,
-                "GET",
-                "/v1/tasks",
-                query={
-                    "owner": owner,
-                    "workspace": workspace,
-                    "status": args.status,
-                    "all": "1" if args.all else "0",
-                    "limit": str(args.limit),
-                },
-                home=home,
-            )
+        elif args.cmd in ("case", "cases"):
+            payload = _cmd_case(args, agent, home)
+        elif args.cmd in ("audit", "guard", "lock", "unlock", "queue", "locks"):
+            res = _cmd_governance(args, agent, home)
+            if isinstance(res, int):
+                return res
+            payload = res
+        elif args.cmd in ("task", "tasks"):
+            res = _cmd_task(args, agent, home)
+            if isinstance(res, int):
+                return res
+            payload = res
         elif args.cmd == "projects":
             if args.coordinator is not None:
                 if not args.project:
@@ -864,8 +545,6 @@ def main(argv=None) -> int:
                 },
                 home=home,
             )
-            # 显式 --state / --all 保持原语义。默认不传 state：
-            # 服务端 state 是精确匹配，整表拉回再在显示层滤掉已离开的。
             if not args.all and not args.state:
                 payload = _collapse_windows(payload)
         else:
@@ -875,12 +554,286 @@ def main(argv=None) -> int:
         sys.stderr.write(_format_mail_error(exc))
         return 1
     if args.cmd == "audit" and getattr(args, "quiet", False):
-        # 给 git 钩子用：一个字都不打，只给退出码
         return 0 if isinstance(payload, dict) and payload.get("ok") else 1
     _emit(args.json, args.cmd, payload, args=args, agent=agent, home=home)
     if args.cmd in ("guard", "audit") and isinstance(payload, dict) and not payload.get("ok"):
         return 1
     return 0
+
+
+def _cmd_case(args, agent: str, home: Path):
+    if args.cmd == "cases" or not getattr(args, "id", None):
+        payload = call(
+            args.url,
+            agent,
+            "GET",
+            "/v1/cases",
+            query={
+                "workspace": getattr(args, "workspace", None),
+                "status": getattr(args, "status", None),
+                "owner": getattr(args, "owner", None),
+                "wbs": getattr(args, "wbs", None),
+                "waiting_for": getattr(args, "wait_for", None),
+                "limit": str(getattr(args, "limit", 20)),
+            },
+            home=home,
+        )
+        args.cmd = "cases"
+        return payload
+
+    if (args.status or args.wait_for) and not (
+        args.note
+        and args.milestone_add is None
+        and args.milestone_done is None
+        and args.acceptance is None
+    ):
+        raise MailError(
+            "status_needs_note",
+            "改状态 / 说「在等谁」都要跟 `--note` 一起用——必须留一行节点，看板才知道你在等什么："
+            "`ic case <id> --note \"为什么等\" --wait-for 身份`（等价于 --status 待谁）。"
+            "（`--milestone-*` / `--acceptance` 那几条路都不带状态。）",
+        )
+    for line in _seal_pending_milestone_lines(args, agent, home):
+        print(line)
+    if args.milestone_add:
+        body = {"name": args.milestone_add}
+        if args.milestone_owner:
+            body["owner"] = args.milestone_owner
+        return call(args.url, agent, "POST", f"/v1/cases/{args.id}/milestone", body, home=home)
+    if args.milestone_done is not None:
+        raw = str(args.milestone_done).strip()
+        done = not raw.startswith("!")
+        body = {"index": int(raw.lstrip("!")), "done": done}
+        if args.note:
+            body["note"] = args.note
+        return call(args.url, agent, "POST", f"/v1/cases/{args.id}/milestone-done", body, home=home)
+    if args.acceptance is not None:
+        return call(
+            args.url, agent, "POST", f"/v1/cases/{args.id}/acceptance",
+            {"acceptance": args.acceptance}, home=home,
+        )
+    if args.note:
+        body = {"note": args.note, "action": "note"}
+        if args.status:
+            body["status"] = args.status
+        if args.wait_for:
+            body["waiting_for"] = args.wait_for
+            body.setdefault("status", "待谁")
+        return call(args.url, agent, "POST", f"/v1/cases/{args.id}/nodes", body, home=home)
+    if args.wbs is not None:
+        return call(args.url, agent, "POST", f"/v1/cases/{args.id}/wbs", {"wbs_path": args.wbs}, home=home)
+    return call(args.url, agent, "GET", f"/v1/cases/{args.id}", home=home)
+
+
+def _cmd_governance(args, agent: str, home: Path):
+    if args.cmd == "audit":
+        if args.anchor:
+            return _write_audit_anchor(args, agent, home)
+        anchor = _read_audit_anchor(_anchor_path(args.anchor_file))
+        payload = call(
+            args.url, agent, "GET", "/v1/audit",
+            query=_audit_query(args.task, anchor), home=home,
+        )
+        return _attach_git_anchor(args, agent, home, payload, anchor)
+    if args.cmd == "guard":
+        import subprocess
+
+        if args.install_hook:
+            return _install_commit_hook(subprocess)
+        paths = _abs_client_paths(args.paths) if args.paths else None
+        if not paths:
+            paths = (_staged_paths if getattr(args, "staged", False) else _changed_paths)(subprocess)
+            if not paths:
+                if not args.quiet:
+                    print("提交闸：工作区无改动，放行")
+                return 0
+        return call(
+            args.url, agent, "POST", "/v1/guard",
+            {"paths": paths, "require_mine": not args.any_holder}, home=home,
+        )
+    if args.cmd == "lock":
+        import subprocess
+
+        named = _abs_client_paths(args.paths)
+        lock_paths = list(named)
+        if args.changed:
+            seen = set(lock_paths)
+            lock_paths += [path for path in _changed_paths(subprocess) if path not in seen]
+            if not lock_paths:
+                if not args.quiet:
+                    print("工作区没有改动，无需加锁")
+                return 0
+        dirty = _preexisting_dirt(subprocess, named)
+        return call(
+            args.url, agent, "POST", "/v1/locks",
+            {
+                "paths": lock_paths,
+                "ttl": args.ttl,
+                "task_id": args.task_id,
+                "note": args.note,
+                "force": bool(args.force),
+                "dirty": dirty,
+                "skip_locked": bool(args.changed),
+                "stay": bool(args.stay),
+            },
+            home=home,
+        )
+    if args.cmd == "unlock":
+        return call(
+            args.url, agent, "POST", "/v1/locks/release",
+            {"paths": _abs_client_paths(args.paths) or None, "force": bool(args.force)},
+            home=home,
+        )
+    if args.cmd == "queue":
+        qpath = _abs_client_path(args.path) if args.path else None
+        if args.merge:
+            ids = _split_ids(args.ids)
+            if args.ids is not None and not ids:
+                raise MailError(
+                    "invalid_id",
+                    "`--merge` 得点名要合哪几条（`--id q271` 或 `--id q271,q272`）；"
+                    "空着会被当成「合全部」，太危险，所以这里直接拒。要全合就把 id 逐条列上。",
+                )
+            return call(
+                args.url, agent, "POST", "/v1/locks/queue/merge",
+                {"path": qpath, "ids": ids}, home=home,
+            )
+        if args.note or args.patch_file:
+            payload = call(
+                args.url, agent, "POST", "/v1/locks/queue",
+                {"path": qpath, "note": args.note, "patch_file": args.patch_file,
+                 "task": args.task},
+                home=home,
+            )
+            if not args.no_todo:
+                holder = payload.get("held_by")
+                note = (payload.get("note") or "").strip().replace("\n", " ")
+                if len(note) > 80:
+                    note = note[:80] + "…"
+                where = f"（钥匙在 {holder} 手里）" if holder else "（现在没人拿钥匙，直接 lock 就能做）"
+                line = (
+                    f"改 {payload.get('path')}：{note[:80]}{where}"
+                    f" —— 提议 {payload.get('id')}；轮到这条时 `ic lock <路径>` **能拿到钥匙就做**"
+                )
+                todo_url = args.url
+                todo_path = _todo_path(agent)
+                if todo_path.exists() and not (todo_path.stat().st_mode & 0o200):
+                    todo_url = ensure_server(args.url, home)
+                payload["todo_file"] = _todo_add(agent, line, url=todo_url, home=home)
+            return payload
+        return call(
+            args.url, agent, "GET", "/v1/locks/queue",
+            query={"path": qpath}, home=home,
+        )
+    return _attach_lock_lights(
+        call(args.url, agent, "GET", "/v1/locks", home=home),
+        args.url, agent, home,
+    )
+
+
+def _verify_task_deliverables(args, agent: str, home: Path, *, for_done: bool = False) -> tuple[str, str]:
+    task_data = call(args.url, agent, "GET", f"/v1/tasks/{args.id}", home=home)
+    acc = (task_data.get("acceptance") or "").strip()
+    deps = (task_data.get("deps") or "").strip()
+    if not acc and not deps:
+        if for_done:
+            raise MailError("verification_failed", f"任务 {args.id} 开启了 --verify 但未设置 acceptance 或 deps 验收标准，拒绝设为 done")
+        raise MailError("verification_failed", f"任务 {args.id} 未配置任何验收标准 (acceptance) 或依赖哈希 (deps)，无法自动化硬验证")
+    if deps:
+        import hashlib
+
+        for dep in deps.split():
+            if "@sha256:" in dep:
+                fpath, expected_hash = dep.split("@sha256:", 1)
+                p = Path(fpath)
+                if not p.is_file():
+                    raise MailError("verification_failed", f"依赖文件不存在：{fpath}")
+                actual_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+                if actual_hash != expected_hash:
+                    if for_done:
+                        raise MailError("verification_failed", f"依赖文件哈希不匹配：{fpath}")
+                    raise MailError("verification_failed", f"依赖文件哈希不匹配：{fpath} 预期 {expected_hash[:8]}，实际 {actual_hash[:8]}")
+    return acc, deps
+
+
+def _cmd_task(args, agent: str, home: Path):
+    if args.cmd == "tasks" or getattr(args, "action", "list") == "list":
+        owner = getattr(args, "owner", None)
+        workspace = getattr(args, "workspace", None)
+        if getattr(args, "mine", False):
+            owner = agent
+            workspace = workspace or str(Path.cwd())
+        payload = call(
+            args.url,
+            agent,
+            "GET",
+            "/v1/tasks",
+            query={
+                "owner": owner,
+                "workspace": workspace,
+                "status": getattr(args, "status", None),
+                "all": "1" if getattr(args, "all", False) else "0",
+                "limit": str(getattr(args, "limit", 50)),
+            },
+            home=home,
+        )
+        args.cmd = "tasks"
+        return payload
+
+    action = args.action
+    if action == "verify":
+        if not args.id:
+            raise MailError("missing_task_id", "verify 需要指定任务编号：ic task verify <id>")
+        acc, deps = _verify_task_deliverables(args, agent, home, for_done=False)
+        print(f"任务 {args.id} 硬验证通过：")
+        if acc:
+            print(f"  验收标准: {acc}")
+        if deps:
+            print(f"  依赖校验: {deps} (匹配一致)")
+        return 0
+    if action == "add":
+        body = {
+            "title": args.title,
+            "owner": args.owner,
+            "workspace": args.workspace,
+            "deps": args.deps,
+            "acceptance": args.acceptance,
+            "case_id": args.case_id,
+            "supersedes": args.supersedes,
+        }
+        if args.priority is not None:
+            body["priority"] = args.priority
+        return call(
+            args.url, agent, "POST", "/v1/tasks",
+            {key: value for key, value in body.items() if value is not None}, home=home,
+        )
+    if action == "show":
+        return call(args.url, agent, "GET", f"/v1/tasks/{args.id}", home=home)
+    if action == "start":
+        return call(args.url, agent, "POST", f"/v1/tasks/{args.id}/start", {}, home=home)
+    if action == "set":
+        if args.status == "done" and getattr(args, "verify", False):
+            _verify_task_deliverables(args, agent, home, for_done=True)
+        body = {"status": args.status}
+        if args.reason:
+            body["reason"] = args.reason
+        if args.handoff:
+            body["handoff"] = args.handoff
+        return call(args.url, agent, "POST", f"/v1/tasks/{args.id}/status", body, home=home)
+    if action == "update":
+        fields = {
+            "title": args.title,
+            "owner": args.owner,
+            "deps": args.deps,
+            "acceptance": args.acceptance,
+            "case_id": args.case_id,
+            "priority": args.priority,
+        }
+        return call(
+            args.url, agent, "POST", f"/v1/tasks/{args.id}/update",
+            {key: value for key, value in fields.items() if value is not None}, home=home,
+        )
+    return call(args.url, agent, "POST", f"/v1/tasks/{args.id}/bump", {"by": args.by}, home=home)
 
 
 ANCHOR_HEADER = (
@@ -1265,15 +1218,33 @@ def _hook_warning() -> str:
     return "  ⚠ 本仓库没装提交闸钩子：现在只有显式跑 `ic guard` 才拦得住（`ic guard --install-hook` 装上）"
 
 
+_GIT_TOP_CACHE: dict[str, str] = {}
+
+
 def _git_toplevel(subprocess) -> str:
     """仓库根（**一切 git 路径都以它为基准**，绝不用 cwd——子目录跑会算出假路径）。"""
+    import os as _os
+
+    can_cache = not hasattr(getattr(subprocess, "run", None), "mock_calls")
+    cwd = ""
+    if can_cache:
+        try:
+            cwd = _os.getcwd()
+        except OSError:
+            cwd = ""
+        cached = _GIT_TOP_CACHE.get(cwd)
+        if cached and (Path(cached) / ".git").exists():
+            return cached
     try:
         out = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10
         )
     except (OSError, subprocess.SubprocessError):
         return ""
-    return (out.stdout or "").strip() if out.returncode == 0 else ""
+    top = (out.stdout or "").strip() if out.returncode == 0 else ""
+    if can_cache and cwd and top:
+        _GIT_TOP_CACHE[cwd] = top
+    return top
 
 
 def _git_paths(subprocess, args: list[str], *, status_in_record: bool) -> list[str]:
