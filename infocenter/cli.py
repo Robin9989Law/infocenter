@@ -237,8 +237,8 @@ def build_parser() -> argparse.ArgumentParser:
     cases.add_argument("--wait-for", dest="wait_for", default=None, help="只看在等这个身份的案卷")
     cases.add_argument("--limit", type=int, default=20)
 
-    task = sub.add_parser("task", help="任务队列（工作包）：建 / 看 / 开工 / 沙箱 / 改状态 / 调优先级 / 校验（默认 list）")
-    task.add_argument("action", nargs="?", default="list", choices=["add", "show", "start", "set", "update", "bump", "list", "verify", "sandbox"], help="子动作（默认 list）")
+    task = sub.add_parser("task", help="任务队列（工作包）：建 / 看 / 开工 / 改状态 / 调优先级 / 校验（默认 list）")
+    task.add_argument("action", nargs="?", default="list", choices=["add", "show", "start", "set", "update", "bump", "list", "verify"], help="子动作（默认 list）")
     task.add_argument("id", nargs="?", default=None, help="任务编号（add/list 不填）")
     task.add_argument("status", nargs="?", default=None, help="set 的目标状态：doing|blocked|done|stopped")
     task.add_argument("--title", default=None)
@@ -256,8 +256,6 @@ def build_parser() -> argparse.ArgumentParser:
     task.add_argument("--all", action="store_true", help="含被取代的旧线（list 时用）")
     task.add_argument("--limit", type=int, default=50, help="最多几条（list 时用）")
     task.add_argument("--verify", action="store_true", help="设为 done 时校验验收标准，或执行 verify 动作")
-    task.add_argument("--apply", action="store_true", help="sandbox 子动作：将沙箱中新增/修改的交付物同步回主目录")
-    task.add_argument("--clean", action="store_true", help="sandbox 子动作：清理并移除任务沙箱")
 
     doctor = sub.add_parser("doctor", help="一键环境与治理健康诊断（--fix 自动修复）")
     doctor.add_argument("--fix", action="store_true", help="自动修复发现的问题（装 git 钩子、清理孤儿锁等）")
@@ -734,14 +732,35 @@ def _cmd_governance(args, agent: str, home: Path):
 
 
 def _verify_task_deliverables(args, agent: str, home: Path, *, for_done: bool = False) -> tuple[str, str]:
-    from infocenter.sandbox import verify_deliverables
+    import hashlib
 
     task_data = call(args.url, agent, "GET", f"/v1/tasks/{args.id}", home=home)
     acc = (task_data.get("acceptance") or "").strip()
     deps = (task_data.get("deps") or "").strip()
+    if not acc and not deps:
+        if for_done:
+            raise MailError("verification_failed", f"任务 {args.id} 开启了 --verify 但未设置 acceptance 或 deps 验收标准，拒绝设为 done")
+        raise MailError("verification_failed", f"任务 {args.id} 未配置任何验收标准 (acceptance) 或依赖哈希 (deps)，无法自动化硬验证")
     ws = getattr(args, "workspace", None) or task_data.get("workspace")
     base_dir = Path(ws) if ws else None
-    return verify_deliverables(args.id, acc, deps, base_dir=base_dir, for_done=for_done)
+    for token in f"{deps} {acc}".replace(";", " ").split():
+        if "@sha256:" in token:
+            fpath, expected_hash = token.split("@sha256:", 1)
+            p = (base_dir / fpath) if (base_dir and not Path(fpath).is_absolute()) else Path(fpath)
+            if not p.is_file():
+                raise MailError("verification_failed", f"依赖文件不存在：{fpath}")
+            actual_hash = hashlib.sha256(p.read_bytes()).hexdigest()
+            if actual_hash != expected_hash:
+                if for_done:
+                    raise MailError("verification_failed", f"依赖文件哈希不匹配：{fpath}")
+                raise MailError("verification_failed", f"依赖文件哈希不匹配：{fpath} 预期 {expected_hash[:8]}，实际 {actual_hash[:8]}")
+        elif token.startswith("file:"):
+            fpath = token[len("file:"):].strip()
+            if fpath:
+                p = (base_dir / fpath) if (base_dir and not Path(fpath).is_absolute()) else Path(fpath)
+                if not p.is_file() or p.stat().st_size == 0:
+                    raise MailError("verification_failed", f"交付物文件不存在或为空：{fpath}")
+    return acc, deps
 
 
 def _cmd_task(args, agent: str, home: Path):
@@ -769,34 +788,6 @@ def _cmd_task(args, agent: str, home: Path):
         return payload
 
     action = args.action
-    if action == "sandbox":
-        from infocenter.sandbox import manage_task_sandbox
-
-        if not args.id:
-            raise MailError("missing_task_id", "sandbox 需要指定任务编号：ic task sandbox <id>")
-        task_data = call(args.url, agent, "GET", f"/v1/tasks/{args.id}", home=home)
-        res = manage_task_sandbox(
-            task_data,
-            workspace_override=getattr(args, "workspace", None),
-            apply=bool(getattr(args, "apply", False)),
-            clean=bool(getattr(args, "clean", False)),
-        )
-        if getattr(args, "json", False):
-            return res
-        act = res["action"]
-        if act == "clean":
-            print(f"已清理任务 {res['task_id']} 的沙箱：{res['sandbox_dir']}")
-        elif act == "apply":
-            files = res.get("applied_files") or []
-            print(f"已将沙箱交付物同步回主目录（{len(files)} 个文件）：{res['workspace']}")
-            for item in files:
-                print(f"  ✓ {item}")
-        else:
-            label = "Git Worktree 隔离沙箱" if res["mode"] == "git-worktree" else "跨场景独立草稿沙箱"
-            print(f"任务 {res['task_id']} 沙箱已就绪（{label}）：")
-            print(f"  沙箱目录: {res['sandbox_dir']}")
-            print(f"  主工作区: {res['workspace']}")
-        return 0
     if action == "verify":
         if not args.id:
             raise MailError("missing_task_id", "verify 需要指定任务编号：ic task verify <id>")

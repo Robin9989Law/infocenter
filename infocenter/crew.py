@@ -1359,16 +1359,17 @@ def _waiting_line(agent: str, waiting: int, project: str = "") -> str:
 
 
 def _active_task_line(url: str, agent: str, project: str) -> str:
-    """查询该 agent 在本项目名下的待办/在办 Task，组装提示。拿不到就返回空。"""
+    """查询本项目名下的待办/在办 Task，组装自身任务与同项目并行态势（大局观）提示。拿不到就返回空。"""
     try:
         payload = _api(url, "GET", "/v1/tasks", agent, query={
-            "owner": agent,
             "workspace": project,
-            "limit": "5",
+            "limit": "15",
         })
         tasks = (payload or {}).get("tasks") or []
-        doing = [t for t in tasks if t.get("status") == "doing"]
-        todo = [t for t in tasks if t.get("status") == "todo"]
+        mine = [t for t in tasks if t.get("owner") == agent]
+        doing = [t for t in mine if t.get("status") == "doing"]
+        todo = [t for t in mine if t.get("status") == "todo"]
+        peers_doing = [t for t in tasks if t.get("owner") != agent and t.get("status") == "doing"]
         lines = []
         if doing:
             target = doing[0]
@@ -1377,6 +1378,9 @@ def _active_task_line(url: str, agent: str, project: str) -> str:
         elif todo:
             target = todo[0]
             lines.append(f"你名下有待开工任务 [{target['id']}]《{target['title']}》；开工请执行 `ic --as {agent} task start {target['id']}`。")
+        if peers_doing:
+            peer_summary = "、".join(f"{t.get('owner')}《{t.get('title')}》" for t in peers_doing[:3])
+            lines.append(f"同项目并行态势（大局观）：{peer_summary} 正在推进中，请注意上下游接口与职责边界正交。")
         return ("另外：" + " ".join(lines) + "\n") if lines else ""
     except (MailError, SystemExit, OSError, ValueError, KeyError):
         return ""
@@ -1418,6 +1422,8 @@ def build_prompt(
         + f"你是 {agent}，项目目录 {project}。信息中心有 {unread_total} 封属于本项目的未读留言，最新 {len(fresh)} 封：\n"
         f"{listing}\n"
         f"本轮动作固定为：读案卷 → 干活 → 写回一行节点。\n"
+        f"【大局观与架构观】具体执行方式由你自身工具链（Harness）自由决定；动手前先对齐案卷全局目标与验收标准，"
+        f"保持模块/文档结构正交与精简（优先做结构收敛与减法，拒绝局部打补丁或堆砌冗余）。\n"
         f"**改文件前先拿写锁**：`ic --as {agent} lock <路径>`（可一次给多个）；拿不到（已被别人锁）就"
         f"`ic queue <路径> --note \"要改什么\"` 写进自己的 TODO，然后做别的，不要发信、不要干等，**不要硬写**；"
         f"改完 `ic --as {agent} unlock <路径>`。\n"
@@ -1454,7 +1460,7 @@ def build_heartbeat_prompt(
         return (
             extra_lines
             + f"你是 {agent}（manager），项目目录 {project}。心跳检查（没有新信件）："
-            f"1）维护 {project}/PLAN.md：吸收新需求、更新任务状态、勾掉完成项、拆解停滞项；"
+            f"1）以大局观与架构观维护 {project}/PLAN.md：吸收新需求、审视整体结构正交性、更新任务状态、拆解停滞项（适时安排结构收敛与减法，防局部打补丁膨胀）；"
             f"2）调配资源：用 `ic --as {agent} agents` 看各家的 activity 状态和未读数，对照成员 TODO-<名字>.md 进展；"
             f"发现谁停滞、跑偏或闲下来，就重排任务（更新 PLAN.md 并发信通知相关方）或发信催办；"
             f"3）处理收件箱里等你裁定的信：`ic --as {agent} inbox --full`。"
@@ -1473,7 +1479,8 @@ def build_heartbeat_prompt(
         f"1）先看有没有该办的事：`ic --as {agent} inbox`（本项目未读）；再读你自己的 TODO-{agent}.md（只读这一份）。"
         f"2）若本项目 0 未读、TODO-{agent}.md 里也没有可推进的下一步 ⇒ 立即结束本次运行："
         f"不要读 PLAN.md、不要写文件、不要发信、严禁无派单的日常台账同步（禁止自发追写 CHANGELOG/README 或刷空转记录）。"
-        f"3）有可推进项才动手：推进你名下（owner={agent}）的下一个未完成事项（适用代码研发、科研攻关或商务文档场景），把进展写回 TODO-{agent}.md。"
+        f"3）有可推进项才动手：充分发挥你自身工具链（Harness）自由推进你名下（owner={agent}）的未完成事项，"
+        f"保持大局观与架构观（对齐案卷总目标、优先结构清晰与减法解耦，拒绝局部打补丁），把进展写回 TODO-{agent}.md。"
         f"**改文件前先拿写锁**：`ic --as {agent} lock <路径>`；拿不到（已被别人锁）就"
         f"`ic queue <路径> --note \"要改什么\"` 写进自己的 TODO，然后做别的，不要发信、不要干等，**不要硬写**；"
         f"改完 `ic --as {agent} unlock <路径>`。"

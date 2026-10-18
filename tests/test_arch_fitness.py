@@ -26,7 +26,6 @@ MODULE_LINE_BUDGETS = {
     "governance.py": 1000,
     "locks.py": 1000,
     "windows.py": 1000,
-    "sandbox.py": 350,
     "messages.py": 1450,
     "cases.py": 1450,
     "httpapi.py": 1500,
@@ -44,7 +43,6 @@ MODULE_LAYER_RANK = {
     "locks": 3,
     "cases": 3,
     "governance": 3,
-    "sandbox": 3,
     # 会话窗口层（协调锁与案卷认领）
     "windows": 4,
     # 消息投递与事件流层

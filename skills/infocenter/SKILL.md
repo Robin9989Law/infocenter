@@ -1,6 +1,6 @@
 ---
 name: infocenter
-description: 信息中心多 Agent 协同与办事治理（消息队列、案卷与任务队列、资源锁与沙箱控制）。适用于代码研发、科研攻关与商务协作全场景。
+description: 信息中心轻薄多 Agent 协作底座（消息队列、案卷与任务队列、资源锁与控制）。充分释放 Agent Harness 自由度，注入大局观与架构观，通用于代码研发、科研攻关与商务协作。
 ---
 
 # 信息中心（InfoCenter）协同与治理指南
@@ -10,19 +10,22 @@ description: 信息中心多 Agent 协同与办事治理（消息队列、案卷
 
 ---
 
-## 一、最简三核模型与全场景映射
+## 一、轻薄协作底座与「大局观 · 架构观」
 
-系统由三大正交模块组成，通用于**代码研发**、**科研攻关**与**商务工作**：
+具体执行能力归于你自身的 **Harness**（工具链、领域技能、子智能体）；信息中心只做**最简协作底座**，不限制你的执行自由，但要求你时刻保持**大局观**与**架构观**：
+
+* **大局观（Big-Picture Awareness）**：动手前先看所属案卷（Case）的终局目标与同项目同伴正在推进（`doing`）的并行任务态势，主动对齐接口与边界，不重复造轮子、不偏离主线。
+* **架构观（Architectural Stewardship）**：对代码库、科研手稿或商务文档坚持**正交解耦、做减法优于打补丁**——杜绝局部防御性硬编码、杜绝重复定义与巨石文件膨胀，保持整体结构清晰精炼。
 
 | 实体 | 所属核心 | 核心回答的问题 | 状态流转 / 生命周期 | 典型操作 |
 |---|---|---|---|---|
 | **Message** | 消息队列 | 「对方需要知道什么？分歧如何协商？」 | 发送 ➔ 接收 ➔ 签收 (read) ➔ 归档 | `ic send`, `ic inbox`, `ic reply`, `ic thread` |
 | **Case** | 任务与案卷队列 | 「这个业务主题/课题谁在办？办到哪了？」 | 待办 ➔ 在办 ➔ 待谁 ➔ 暂停 ➔ 办结/中止 | `ic case <id>`, `ic cases`, `ic case --note` |
 | **Task** | 任务与案卷队列 | 「这个具体交付单元是谁负责？怎样算干完？」 | `todo ➔ doing ➔ blocked ➔ done / stopped` | `ic task add`, `ic task start`, `ic task set`, `ic task verify` |
-| **Lock / Sandbox**| 资源与控制模块 | 「当前文件/文档是否安全？是否在独立沙箱推进？」 | 申请 (lock/sandbox) ➔ 续期 (stay) ➔ 释放/合入 | `ic lock`, `ic unlock`, `ic queue`, `ic guard`, `ic task sandbox` |
+| **Lock / Window**| 资源与控制模块 | 「当前共享文件/文档是否安全？如何防互踩？」 | 申请 (lock) ➔ 续期 (stay) ➔ 释放 (unlock) | `ic lock`, `ic unlock`, `ic queue`, `ic guard` |
 
 ### 跨场景交付与验收口径
-* **代码研发 (Code)**：交付物为代码提交；`acceptance` 为测试命令（如 `python -m unittest ...`）；支持 Git Worktree 沙箱或文件锁。
+* **代码研发 (Code)**：交付物为代码提交；`acceptance` 为测试命令（如 `python -m unittest ...`）且通过架构适应度门禁。
 * **科研攻关 (Research)**：交付物为论文草稿、定理证明、实验数据或文献综述；`acceptance` / `deps` 为 `file:<稿件或数据路径>` 或复现实验命令。
 * **商务工作 (Business)**：交付物为商业方案、调研报告、合同修订或表格；`acceptance` / `deps` 为 `file:<交付文档路径>` 及核查清单。
 
@@ -30,15 +33,14 @@ description: 信息中心多 Agent 协同与办事治理（消息队列、案卷
 
 ## 二、标准作业程序：Agent 五步工作法（5-Step SOP）
 
-1. **进场看盘（Look Before Leap）**：
+1. **进场看盘（Look & Align）**：
    * `ic inbox`：看发给自己的未读留言。
    * `ic status`：查看全局指示灯（是否有案卷在等我 `--wait-for`、名下锁状态、待改排队）。注意：`ic status` 的等待数为全局总账，守护提示词中的「只计本项目」需带 `--workspace` 查看，两处不混。
 2. **认领开工（Claim & Engage）**：
    * `ic read <msg_id>`：签收信件，自动认领关联线程案卷。
    * 若有分配给你的 Task 执行单：`ic task start <task_id>` 将状态推入 `doing`。
-3. **隔离或加锁推进（Sandbox or Lock Before Touch）**：
-   * **方式 A（独立任务沙箱，免锁防污染）**：执行 `ic task sandbox <task_id>` 获取独立工作区（Git 仓库自动建 Worktree，非 Git 科研/商务目录自动建独立草稿目录），在沙箱内自由读写，完成后 `ic task sandbox <task_id> --apply` 归档交付物。
-   * **方式 B（共享目录加锁修改）**：动手前先拿写锁 `ic lock <路径...>`。若被占用（409 Conflict），立即执行 `ic queue <路径> --note "想改什么"` 记入待办，**立刻转向做其他事情，严禁原地死等或轮询！**
+3. **持锁修改防踩踏（Lock Before Touch）**：
+   * 修改共享目录文件前先拿写锁 `ic lock <路径...>`。若被占用（409 Conflict），立即执行 `ic queue <路径> --note "想改什么"` 记入待办，**立刻转向做其他事情，严禁原地死等或轮询！**
    * **无进度不续期**：租约默认 1800 秒。盘上无写入改动时续期会被拒 `409 no_progress`；确需空盘占位使用 `ic lock --stay`（最长累计 1 小时）。
 4. **核验与释放（Verify & Release）**：
    * 核验交付物：`ic task verify <task_id>`（支持校验 `file:<路径>` 存在且非空、或 `<路径>@sha256:<哈希>` 一致性）。
@@ -70,14 +72,13 @@ description: 信息中心多 Agent 协同与办事治理（消息队列、案卷
 
 ---
 
-## 五、微观任务单与沙箱（Task Machinery & Sandbox）
+## 五、微观任务单（Task Machinery）
 
 ```bash
 ic task list [--workspace <dir>] [--owner <name>] [--status <todo|doing|...>] # 查看任务列表
 ic task show <task_id>                                                       # 查看任务详情与事件链
 ic task start <task_id>                                                      # 开工：todo -> doing
-ic task sandbox <task_id> [--apply] [--clean]                                # 创建/应用/清理跨场景任务沙箱
-ic task verify <task_id>                                                     # 核验 acceptance 与 deps 交付物
+ic task verify <task_id>                                                     # 核验 acceptance 与 deps 交付物（支持 file:<path>）
 ic task set <task_id> blocked --reason "上游数据缺失"                         # 卡住：doing -> blocked
 ic task set <task_id> done [--verify]                                        # 结项（需 coordinator）
 ic task set <task_id> stopped --handoff "中间进度已保存在 draft.md"           # 停工（强制交接说明）

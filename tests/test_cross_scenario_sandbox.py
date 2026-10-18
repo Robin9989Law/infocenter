@@ -1,193 +1,145 @@
-"""跨场景任务沙箱与通用交付物核验测试（代码研发 / 科研攻关 / 商务工作）。"""
+"""轻薄协作底座：大局观态势感知、架构观提示与全场景（代码/科研/商务）交付核验测试。"""
 
+import argparse
 import hashlib
-import io
-import os
 import shutil
-import subprocess
 import tempfile
-import threading
 import unittest
-from contextlib import redirect_stdout
-from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
-from infocenter import cli
+from infocenter.cli import _verify_task_deliverables
 from infocenter.common import MailError
-from infocenter.sandbox import manage_task_sandbox, verify_deliverables
-from infocenter.server import make_handler
-from infocenter.store import Store
+from infocenter.crew import _active_task_line, build_heartbeat_prompt, build_prompt
 
 
-class CrossScenarioSandboxTest(unittest.TestCase):
+class ThinSubstratePanoramaTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        self.tmp = Path(tempfile.mkdtemp(prefix="ic-test-panorama-"))
+        self.addCleanup(shutil.rmtree, self.tmp, True)
 
-    def tearDown(self):
-        self.tmp.cleanup()
-
-    def test_research_scenario_draft_sandbox_and_file_deliverable_verify(self):
-        """科研场景（非 Git 目录）：自动创建 draft-dir 沙箱、拷入依赖数据、撰写手稿后 --apply 回主目录并校验 file:<path>。"""
-        lab_dir = self.root / "iclr_paper_project"
-        lab_dir.mkdir()
-        raw_data = lab_dir / "dataset.csv"
-        raw_data.write_text("epoch,loss\n1,0.42\n", encoding="utf-8")
-        data_hash = hashlib.sha256(raw_data.read_bytes()).hexdigest()
-
-        task_data = {
-            "id": "t-research-01",
-            "workspace": str(lab_dir),
-            "deps": f"dataset.csv@sha256:{data_hash} file:sections/theorem1.tex",
-            "acceptance": "定理1推导完成且 sections/theorem1.tex 非空",
+    def test_active_task_line_injects_own_task_and_peer_big_picture(self):
+        """大局观态势感知：不仅返回当前 Agent 的任务，还注入同项目同伴正在推进（doing）的并行态势。"""
+        fake_tasks = {
+            "tasks": [
+                {
+                    "id": 101,
+                    "title": "撰写第3节实验对照与显著性检验",
+                    "owner": "cursor",
+                    "status": "doing",
+                    "case_id": 12,
+                },
+                {
+                    "id": 102,
+                    "title": "绘制主架构图与收敛曲线",
+                    "owner": "claude",
+                    "status": "doing",
+                    "case_id": 12,
+                },
+                {
+                    "id": 103,
+                    "title": "补充附录超参数表",
+                    "owner": "kimi",
+                    "status": "todo",
+                    "case_id": 12,
+                },
+            ]
         }
+        with mock.patch("infocenter.crew._api", return_value=fake_tasks):
+            line = _active_task_line("http://127.0.0.1:8787", "cursor", str(self.tmp))
 
-        # 1. 创建科研草稿沙箱（自动拷入已存在的 dataset.csv）
-        created = manage_task_sandbox(task_data)
-        self.assertEqual(created["mode"], "draft-dir")
-        sbox = Path(created["sandbox_dir"])
-        self.assertTrue((sbox / "dataset.csv").is_file())
+        self.assertIn("[101]", line)
+        self.assertIn("撰写第3节实验对照与显著性检验", line)
+        self.assertIn("同项目并行态势（大局观）", line)
+        self.assertIn("claude《绘制主架构图与收敛曲线》", line)
+        # 尚未开工的 todo 同伴任务不挤占并行态势行
+        self.assertNotIn("kimi", line)
 
-        # 2. 尚未产出 theorem1.tex 时，核验必须报错
-        with self.assertRaises(MailError) as ctx:
-            verify_deliverables("t-research-01", task_data["acceptance"], task_data["deps"], base_dir=lab_dir)
-        self.assertIn("交付物文件不存在：sections/theorem1.tex", ctx.exception.message)
+    def test_active_task_line_shows_peer_panorama_even_when_self_has_no_task(self):
+        """即使自身暂无直接挂载的 task，只要同项目有同伴在 doing，依然注入同项目并行态势（大局观）。"""
+        fake_tasks = {
+            "tasks": [
+                {
+                    "id": 201,
+                    "title": "商务尽职调查财务章节核算",
+                    "owner": "codex",
+                    "status": "doing",
+                    "case_id": 88,
+                },
+            ]
+        }
+        with mock.patch("infocenter.crew._api", return_value=fake_tasks):
+            line = _active_task_line("http://127.0.0.1:8787", "cursor", str(self.tmp))
 
-        # 3. 在沙箱内撰写科研手稿，主目录此时仍保持干净无污染
-        draft_tex = sbox / "sections" / "theorem1.tex"
-        draft_tex.parent.mkdir(parents=True, exist_ok=True)
-        draft_tex.write_text("\\begin{theorem} Convergence holds. \\end{theorem}\n", encoding="utf-8")
-        self.assertFalse((lab_dir / "sections" / "theorem1.tex").exists())
+        self.assertIn("同项目并行态势（大局观）", line)
+        self.assertIn("codex《商务尽职调查财务章节核算》", line)
 
-        # 4. --apply 将沙箱产物同步回主目录
-        applied = manage_task_sandbox(task_data, apply=True)
-        self.assertEqual(applied["applied_files"], ["sections/theorem1.tex"])
-        self.assertTrue((lab_dir / "sections" / "theorem1.tex").is_file())
+    def test_prompts_contain_big_picture_and_architectural_stewardship(self):
+        """唤醒提示词与心跳提示词均包含大局观与架构观引导，且充分赋能 Agent Harness 自由度。"""
+        p_wake = build_prompt(
+            "cursor",
+            str(self.tmp),
+            [{"id": 1, "from": "manager", "subject": "架构收敛", "created_at": "2026-10-18T00:00:00Z"}],
+            1,
+        )
+        p_hb = build_heartbeat_prompt(
+            "cursor",
+            str(self.tmp),
+            coordinator=False,
+        )
 
-        # 5. 再次运行核验，精确哈希与交付物非空校验均通过
-        acc, deps = verify_deliverables("t-research-01", task_data["acceptance"], task_data["deps"], base_dir=lab_dir)
-        self.assertIn("定理1", acc)
-        self.assertIn("file:sections/theorem1.tex", deps)
+        self.assertIn("【大局观与架构观】", p_wake)
+        for prompt in (p_wake, p_hb):
+            self.assertIn("Harness", prompt)
+            self.assertIn("大局观与架构观", prompt)
+            self.assertIn("减法", prompt)
 
-        # 6. --clean 清理沙箱
-        cleaned = manage_task_sandbox(task_data, clean=True)
-        self.assertEqual(cleaned["action"], "clean")
-        self.assertFalse(sbox.exists())
+    def test_verify_deliverables_supports_file_prefix_and_sha256(self):
+        """跨场景核验（代码/科研/商务）：支持 file:<path> 存在且非空核验，以及 @sha256:<hex> 哈希核验。"""
+        paper = self.tmp / "paper_section3.tex"
+        paper.write_text("\\section{Methodology}\nProof of Theorem 1.\n", encoding="utf-8")
+        digest = hashlib.sha256(paper.read_bytes()).hexdigest()
 
-    def test_business_scenario_empty_file_rejected(self):
-        """商务场景：0 字节空报告不能蒙混过关，必须有实质内容落盘。"""
-        biz_dir = self.root / "q4_proposal"
-        biz_dir.mkdir()
-        empty_doc = biz_dir / "proposal.md"
+        empty_doc = self.tmp / "empty_proposal.md"
         empty_doc.write_text("", encoding="utf-8")
 
-        with self.assertRaises(MailError) as ctx:
-            verify_deliverables("t-biz-01", "file:proposal.md", "", base_dir=biz_dir)
-        self.assertIn("0 字节", ctx.exception.message)
+        args = argparse.Namespace(id="t-301", url="http://127.0.0.1:8787", workspace=str(self.tmp))
 
-        empty_doc.write_text("# Q4 商务合作方案\n\n## 核心条款\n", encoding="utf-8")
-        acc, _ = verify_deliverables("t-biz-01", "file:proposal.md", "", base_dir=biz_dir)
-        self.assertEqual(acc, "file:proposal.md")
-
-    def test_code_scenario_git_worktree_sandbox_lifecycle(self):
-        """代码研发场景（Git 仓库）：自动创建 git-worktree 隔离沙箱，修改后可 apply 回主工作树并 clean 移除。"""
-        if not shutil.which("git"):
-            self.skipTest("当前环境未安装 git")
-        repo_dir = self.root / "code_repo"
-        repo_dir.mkdir()
-        subprocess.run(["git", "init"], cwd=repo_dir, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_dir, check=True, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Tester"], cwd=repo_dir, check=True, capture_output=True)
-        (repo_dir / "app.py").write_text("x = 1\n", encoding="utf-8")
-        subprocess.run(["git", "add", "app.py"], cwd=repo_dir, check=True, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "init"], cwd=repo_dir, check=True, capture_output=True)
-
-        task_data = {
-            "id": "t-code-01",
-            "workspace": str(repo_dir),
-            "deps": "file:app.py",
-            "acceptance": "python -c 'import app; assert app.x == 2'",
+        # 1. file:<path> 存在且非空 + @sha256 匹配 -> 通过
+        task_ok = {
+            "id": "t-301",
+            "workspace": str(self.tmp),
+            "acceptance": "file:paper_section3.tex",
+            "deps": f"paper_section3.tex@sha256:{digest}; task#99",
         }
-        created = manage_task_sandbox(task_data)
-        self.assertEqual(created["mode"], "git-worktree")
-        sbox = Path(created["sandbox_dir"])
-        self.assertTrue((sbox / "app.py").is_file())
+        with mock.patch("infocenter.cli.call", return_value=task_ok):
+            acc, deps = _verify_task_deliverables(args, "cursor", self.tmp)
+        self.assertEqual(acc, "file:paper_section3.tex")
+        self.assertIn(digest, deps)
 
-        # 在 worktree 沙箱中修改代码，主工作树不受影响
-        (sbox / "app.py").write_text("x = 2\n", encoding="utf-8")
-        self.assertEqual((repo_dir / "app.py").read_text(encoding="utf-8"), "x = 1\n")
+        # 2. file:<path> 为空文件 -> 抛 MailError
+        task_empty = {
+            "id": "t-302",
+            "workspace": str(self.tmp),
+            "acceptance": "file:empty_proposal.md",
+            "deps": "",
+        }
+        with mock.patch("infocenter.cli.call", return_value=task_empty):
+            with self.assertRaises(MailError) as ctx:
+                _verify_task_deliverables(args, "cursor", self.tmp)
+        self.assertIn("不存在或为空", str(ctx.exception))
 
-        # 归档回主工作树并清理 worktree
-        applied = manage_task_sandbox(task_data, apply=True)
-        self.assertEqual(applied["applied_files"], ["app.py"])
-        self.assertEqual((repo_dir / "app.py").read_text(encoding="utf-8"), "x = 2\n")
-
-        manage_task_sandbox(task_data, clean=True)
-        self.assertFalse(sbox.exists())
-
-
-class CliTaskSandboxEndToEndTest(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.home = Path(self.tmp.name) / "home"
-        self.home.mkdir()
-        os.environ["INFOCENTER_QUIET"] = "1"
-        self.store = Store(
-            self.home / "mailbox.db",
-            seeds=[("manager", "Manager", "coordinator"), ("kimi", "Kimi", "")],
-        )
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(self.store))
-        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}"
-        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
-        self.thread.start()
-
-    def tearDown(self):
-        self.httpd.shutdown()
-        self.httpd.server_close()
-        self.tmp.cleanup()
-
-    def test_cli_task_sandbox_and_verify_workflow(self):
-        ws = Path(self.tmp.name) / "biz_workspace"
-        ws.mkdir()
-        task = self.store.task_add(
-            agent="manager",
-            title="撰写市场调研报告",
-            owner="kimi",
-            workspace=str(ws),
-            deps="file:market_report.md",
-            acceptance="file:market_report.md",
-        )
-        tid = task["id"]
-
-        # 1. CLI 创建沙箱
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            rc = cli.main(["--home", str(self.home), "--url", self.url, "--as", "kimi", "task", "sandbox", tid])
-        self.assertEqual(rc, 0)
-        self.assertIn("跨场景独立草稿沙箱", buf.getvalue())
-
-        # 2. 在沙箱中写入报告并 --apply
-        sbox_file = ws / ".ic-sandboxes" / tid / "market_report.md"
-        sbox_file.write_text("# 2026 市场调研报告\n结论：增长显著。\n", encoding="utf-8")
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            rc = cli.main(["--home", str(self.home), "--url", self.url, "--as", "kimi", "task", "sandbox", tid, "--apply"])
-        self.assertEqual(rc, 0)
-        self.assertIn("market_report.md", buf.getvalue())
-
-        # 3. CLI verify 校验通过
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            rc = cli.main(["--home", str(self.home), "--url", self.url, "--as", "manager", "task", "verify", tid])
-        self.assertEqual(rc, 0)
-        self.assertIn("硬验证通过", buf.getvalue())
-
-        # 4. CLI --clean 清理沙箱
-        buf = io.StringIO()
-        with redirect_stdout(buf):
-            rc = cli.main(["--home", str(self.home), "--url", self.url, "--as", "kimi", "task", "sandbox", tid, "--clean"])
-        self.assertEqual(rc, 0)
-        self.assertIn("已清理任务", buf.getvalue())
+        # 3. file:<path> 不存在 -> 抛 MailError
+        task_missing = {
+            "id": "t-303",
+            "workspace": str(self.tmp),
+            "acceptance": "",
+            "deps": "file:missing_report.xlsx",
+        }
+        with mock.patch("infocenter.cli.call", return_value=task_missing):
+            with self.assertRaises(MailError) as ctx2:
+                _verify_task_deliverables(args, "cursor", self.tmp)
+        self.assertIn("不存在或为空", str(ctx2.exception))
 
 
 if __name__ == "__main__":
