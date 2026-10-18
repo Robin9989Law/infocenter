@@ -8,34 +8,45 @@ import sqlite3
 from pathlib import Path
 
 from infocenter.common import (
+    CLAIM_TTL,
     HUMAN,
     HUMAN_NAMES,
     NAME_RE,
     WINDOW_RE,
     MailError,
+    _is_thread_party,
+    _is_window_gone,
     _limit,
+    _pid_value,
+    _recipient_names,
+    _resolve_own_delivery,
     _same_agent,
+    _upsert_agent,
+    _upsert_project,
     _workspace,
     _workspace_scope,
     beijing_hhmm,
     beijing_time,
+    is_person,
     new_window_id,
     normalize_name,
     normalize_window,
     pid_alive,
-    _pid_value,
     utcnow,
-    _upsert_agent,
-    _upsert_project,
 )
 from infocenter.cases import (
     CASE_STATUS_LABELS,
-    _orphan_window_cases,
+    SEALED_STATUSES,
+    _find_case,
     _insert_node,
-    _node_note,
     _lazy_reconcile_case,
+    _must_unsealed,
+    _node_note,
+    _orphan_window_cases,
 )
 from infocenter.governance import (
+    _emit_task_event,
+    _lock_expiry,
     _release_window_locks,
 )
 
@@ -473,8 +484,6 @@ class WindowsMixin:
 
 
     def _lazy_reconcile_all(self, conn: sqlite3.Connection, now: str | None = None) -> None:
-        from infocenter.store import _lazy_reconcile_all
-
         _lazy_reconcile_all(conn, now)
 
     def _upsert_window(
@@ -500,3 +509,388 @@ class WindowsMixin:
             state=state,
             revive=revive,
         )
+
+    def _propagate_thread_claim(
+        self,
+        conn: sqlite3.Connection,
+        thread_id: str,
+        agent: str,
+        window_id: str,
+        now: str,
+        overwrite: bool = False,
+    ) -> None:
+        _propagate_thread_claim(conn, thread_id, agent, window_id, now, overwrite=overwrite)
+
+    def _claim_thread_on_touch(
+        self,
+        conn: sqlite3.Connection,
+        agent: str,
+        window_id: str,
+        message_row: sqlite3.Row,
+        force: bool,
+        mark_read: bool,
+        now: str,
+    ) -> None:
+        _claim_thread_on_touch(
+            conn,
+            agent=agent,
+            window_id=window_id,
+            message_row=message_row,
+            force=force,
+            mark_read=mark_read,
+            now=now,
+        )
+
+
+def _release_stale_claims(conn: sqlite3.Connection, now: str | None = None, ttl: int = CLAIM_TTL) -> int:
+    """释放**僵尸认领**（无争议回收），并逐条留痕。三类：
+
+    ① 认领窗口已离场/已死；② 认领窗口与信的 workspace 不相容；
+    ③ **认领超时**：`claimed_at` 超过 TTL，且那个窗口也超过 TTL 没跟服务说过话
+       （pi 报的洞：认领原来**没有 TTL**，僵尸窗口 pid 活着但不再干活 ⇒ 它的认领永不回收，
+        那封信对团队长时间不可见；而且回收只在"别人 inbox 时顺手"才触发）。
+    """
+    now = now or utcnow()
+    cutoff = _lock_expiry(now, -abs(int(ttl)))  # now - ttl
+    rows = conn.execute(
+        """
+        SELECT d.message_id, d.to_agent, d.claimed_by, d.claimed_at,
+               m.workspace AS message_workspace,
+               w.workspace, w.state, w.left_at, w.pid, w.last_seen_at
+        FROM deliveries d
+        JOIN messages m ON m.id = d.message_id
+        JOIN windows w ON w.window_id = d.claimed_by
+        WHERE d.claimed_by IS NOT NULL
+        """
+    ).fetchall()
+    released = 0
+    for row in rows:
+        stale = _is_window_gone(row) or not _workspace_compatible(
+            row["message_workspace"], row["workspace"]
+        )
+        why = "认领窗口已离场/已死或与项目不相容"
+        if not stale:
+            silent_since = row["last_seen_at"] or row["claimed_at"] or ""
+            if (row["claimed_at"] or "") < cutoff and silent_since < cutoff:
+                stale = True
+                why = f"认领超时（窗口 {ttl // 60} 分钟没跟服务说过话）"
+        if not stale:
+            continue
+        conn.execute(
+            """
+            UPDATE deliveries SET claimed_by = NULL, claimed_at = NULL
+            WHERE message_id = ? AND to_agent = ? AND claimed_by = ?
+            """,
+            (row["message_id"], row["to_agent"], row["claimed_by"]),
+        )
+        _emit_task_event(
+            conn, "", row["to_agent"], "claim_release", "", "",
+            {
+                "message_id": row["message_id"], "window_id": row["claimed_by"],
+                "claimed_at": row["claimed_at"] or "", "why": why,
+            },
+            now,
+        )
+        released += 1
+    return released
+
+
+def _mark_dead_windows(conn: sqlite3.Connection, now: str) -> int:
+    """把 pid 已死的窗口标成离场，并替它放锁（留痕）。返回处理了几个窗口。"""
+    active_wins = conn.execute(
+        "SELECT * FROM windows WHERE state != 'left' AND pid IS NOT NULL"
+    ).fetchall()
+    marked = 0
+    for w_row in active_wins:
+        # None 不算死（也没有在跑）。查询已排除 NULL，这里再显式挡一层。
+        if w_row["pid"] is None or pid_alive(w_row["pid"], policy="not_dead"):
+            continue
+        conn.execute(
+            "UPDATE windows SET state = 'left', left_at = COALESCE(left_at, ?) WHERE window_id = ?",
+            (now, w_row["window_id"]),
+        )
+        _release_window_locks(conn, w_row["window_id"], now, "窗口进程已死")
+        marked += 1
+    return marked
+
+
+def _lazy_reconcile_all(conn: sqlite3.Connection, now: str | None = None) -> None:
+    now = now or utcnow()
+    open_cases = conn.execute(
+        "SELECT * FROM cases WHERE sealed = 0 AND owner_window IS NOT NULL"
+    ).fetchall()
+    for c_row in open_cases:
+        _lazy_reconcile_case(conn, c_row, now)
+    _mark_dead_windows(conn, now)
+    # M6-0：对账顺带回收陈旧/错位/超时认领（否则来信会被静默隐藏）。
+    _release_stale_claims(conn, now)
+
+
+def _signoff_read_targets(conn: sqlite3.Connection, message_id: str, agent: str) -> list[sqlite3.Row]:
+    """这次 read 要改状态的已有行。不插入、不改 to_agent。
+
+    只有一行，或不是人：就是那一行。
+    人的两行都未读：一次都标上。
+    调用名那行已经不是未读、另一个名字仍未读：改签另一个名字那一行。
+    其余：只动调用名那一行；调用名没有行时，沿用别名回退。
+    """
+    agent = normalize_name(agent)
+    names = _recipient_names(agent)
+    name_sql = ",".join("?" for _ in names)
+    rows = list(
+        conn.execute(
+            f"""
+            SELECT message_id, to_agent, status, read_at, claimed_by, claimed_at
+            FROM deliveries
+            WHERE message_id = ? AND to_agent IN ({name_sql})
+            """,
+            (message_id, *names),
+        ).fetchall()
+    )
+    if not rows:
+        return []
+    if len(rows) == 1 or not is_person(agent):
+        return rows
+    own = next((row for row in rows if row["to_agent"] == agent), None)
+    others_unread = [row for row in rows if row["to_agent"] != agent and row["status"] == "unread"]
+    if own is None:
+        return others_unread or rows[:1]
+    if own["status"] == "unread" and others_unread:
+        return [own, *others_unread]
+    if own["status"] != "unread" and others_unread:
+        return others_unread
+    return [own]
+
+
+def _mark_own_delivery_read(
+    conn: sqlite3.Connection, message_id: str, agent: str, now: str
+) -> None:
+    """把这次 read 该清的行标成已读。不改认领，不动案卷，不改名字，不新建行。"""
+    for row in _signoff_read_targets(conn, message_id, agent):
+        conn.execute(
+            "UPDATE deliveries SET status = 'read', read_at = ? WHERE message_id = ? AND to_agent = ?",
+            (row["read_at"] or now, message_id, row["to_agent"]),
+        )
+
+
+def _is_thread_sealed(conn: sqlite3.Connection, thread_id: str) -> bool:
+    row = _find_case(conn, thread_id)
+    if row is None:
+        return False
+    row = _lazy_reconcile_case(conn, row)
+    return bool(row["sealed"]) or row["status"] in SEALED_STATUSES
+
+
+def _is_thread_paused_or_sealed(conn: sqlite3.Connection, thread_id: str) -> bool:
+    row = _find_case(conn, thread_id)
+    if row is None:
+        return False
+    row = _lazy_reconcile_case(conn, row)
+    return bool(row["sealed"]) or row["status"] in (SEALED_STATUSES | {"paused"})
+
+
+def _effective_thread_claim(
+    conn: sqlite3.Connection,
+    thread_id: str,
+    agent: str,
+    direct_claim: str | None = None,
+) -> str | None:
+    if direct_claim:
+        return direct_claim
+    row = conn.execute(
+        """
+        SELECT d.claimed_by
+        FROM deliveries d
+        JOIN messages m ON m.id = d.message_id
+        WHERE m.thread_id = ? AND d.to_agent = ? AND d.claimed_by IS NOT NULL
+        ORDER BY d.rowid DESC
+        LIMIT 1
+        """,
+        (thread_id, agent),
+    ).fetchone()
+    if row and row["claimed_by"]:
+        return row["claimed_by"]
+    case_row = _find_case(conn, thread_id)
+    if case_row and not case_row["sealed"] and case_row["owner_window"] and _same_agent(case_row["owner_agent"] or "", agent):
+        return case_row["owner_window"]
+    return None
+
+
+def _propagate_thread_claim(
+    conn: sqlite3.Connection,
+    thread_id: str,
+    agent: str,
+    window_id: str,
+    now: str,
+    overwrite: bool = False,
+) -> None:
+    if overwrite:
+        conn.execute(
+            """
+            UPDATE deliveries
+            SET claimed_by = ?, claimed_at = ?
+            WHERE to_agent = ?
+              AND message_id IN (SELECT id FROM messages WHERE thread_id = ?)
+            """,
+            (window_id, now, agent, thread_id),
+        )
+    else:
+        conn.execute(
+            """
+            UPDATE deliveries
+            SET claimed_by = ?, claimed_at = COALESCE(claimed_at, ?)
+            WHERE to_agent = ?
+              AND (claimed_by IS NULL OR claimed_by = ?)
+              AND message_id IN (SELECT id FROM messages WHERE thread_id = ?)
+            """,
+            (window_id, now, agent, window_id, thread_id),
+        )
+
+
+def _claim_thread_on_touch(
+    conn: sqlite3.Connection,
+    agent: str,
+    window_id: str,
+    message_row: sqlite3.Row,
+    force: bool,
+    mark_read: bool,
+    now: str,
+) -> None:
+    thread_id = message_row["thread_id"]
+    msg_id = message_row["id"]
+    delivery = _resolve_own_delivery(conn, msg_id, agent)
+    if delivery is None and not _is_thread_party(conn, thread_id, agent):
+        raise MailError("not_found", f"没有找到案卷或线程：{thread_id}", 404)
+    case_row = _find_case(conn, thread_id)
+    if case_row is not None:
+        case_row = _lazy_reconcile_case(conn, case_row, now)
+        # 签收不是改案卷。封卷线程里的信仍可标已读：不认领、不动案卷、不破只读。
+        if mark_read and (case_row["sealed"] or case_row["status"] in SEALED_STATUSES):
+            _mark_own_delivery_read(conn, msg_id, agent, now)
+            return
+        _must_unsealed(case_row)
+
+    if mark_read:
+        # 封卷分支已经在上面标过并返回。这里清掉同一人其余未读行，认领仍写在解析到的那一行。
+        _mark_own_delivery_read(conn, msg_id, agent, now)
+
+    direct_claim = delivery["claimed_by"] if delivery else None
+    existing_claim = _effective_thread_claim(conn, thread_id, agent, direct_claim)
+    if existing_claim is None and case_row is not None and case_row["owner_window"] and _same_agent(case_row["owner_agent"] or "", agent):
+        existing_claim = case_row["owner_window"]
+
+    if existing_claim is not None and existing_claim != window_id and not force:
+        raise MailError("already_claimed", f"这条线已被 {existing_claim} 主办，如需接手请使用 force=True", 409)
+
+    if delivery is not None:
+        target = delivery["to_agent"]
+        read_at = (delivery["read_at"] or now) if mark_read else delivery["read_at"]
+        new_status = "read" if mark_read else delivery["status"]
+        if force and existing_claim is not None and existing_claim != window_id:
+            conn.execute(
+                """
+                UPDATE deliveries
+                SET status = ?, read_at = ?, claimed_by = ?, claimed_at = ?
+                WHERE message_id = ? AND to_agent = ?
+                """,
+                (new_status, read_at, window_id, now, msg_id, target),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE deliveries
+                SET status = ?, read_at = ?, claimed_by = ?, claimed_at = COALESCE(claimed_at, ?)
+                WHERE message_id = ? AND to_agent = ?
+                  AND (claimed_by IS NULL OR claimed_by = ?)
+                """,
+                (new_status, read_at, window_id, now, msg_id, target, window_id),
+            )
+            if cur.rowcount == 0:
+                raise MailError("already_claimed", "并发认领冲突：这封信已被其他窗口抢先认领", 409)
+
+    _propagate_thread_claim(
+        conn,
+        thread_id,
+        agent,
+        window_id,
+        now,
+        overwrite=bool(force and existing_claim and existing_claim != window_id),
+    )
+
+    root_msg = conn.execute(
+        "SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC, id ASC LIMIT 1",
+        (thread_id,),
+    ).fetchone() or message_row
+    title = root_msg["subject"]
+    workspace = root_msg["workspace"] or message_row["workspace"]
+    if workspace:
+        _upsert_project(conn, workspace, None, now)
+
+    if case_row is None:
+        conn.execute(
+            """
+            INSERT INTO cases(
+                id, thread_id, title, workspace, status, owner_agent, owner_window,
+                waiting_for, sealed, created_at, updated_at, closed_at
+            ) VALUES (?, ?, ?, ?, 'open', ?, ?, NULL, 0, ?, ?, NULL)
+            """,
+            (thread_id, thread_id, title, workspace, agent, window_id, now, now),
+        )
+        note_text = f"强制接手（原主办 {existing_claim}） → 在办" if (force and existing_claim and existing_claim != window_id) else "认领 → 在办"
+        action_text = "takeover" if (force and existing_claim and existing_claim != window_id) else "claim"
+        _insert_node(
+            conn,
+            case_id=thread_id,
+            agent=agent,
+            window_id=window_id,
+            action=action_text,
+            note=note_text,
+            status="open",
+            auto=False,
+            now=now,
+        )
+    else:
+        prev_owner = case_row["owner_window"]
+        if force and prev_owner and prev_owner != window_id:
+            conn.execute(
+                """
+                UPDATE cases
+                SET owner_agent = ?, owner_window = ?, status = 'open',
+                    waiting_for = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (agent, window_id, now, case_row["id"]),
+            )
+            _insert_node(
+                conn,
+                case_id=case_row["id"],
+                agent=agent,
+                window_id=window_id,
+                action="takeover",
+                note=f"强制接手（原主办 {prev_owner}） → 在办",
+                status="open",
+                auto=False,
+                now=now,
+            )
+        elif prev_owner is None:
+            conn.execute(
+                """
+                UPDATE cases
+                SET owner_agent = ?, owner_window = ?, status = 'open',
+                    waiting_for = NULL, updated_at = ?
+                WHERE id = ?
+                """,
+                (agent, window_id, now, case_row["id"]),
+            )
+            _insert_node(
+                conn,
+                case_id=case_row["id"],
+                agent=agent,
+                window_id=window_id,
+                action="claim",
+                note="认领 → 在办",
+                status="open",
+                auto=False,
+                now=now,
+            )
+

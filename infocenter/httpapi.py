@@ -469,35 +469,7 @@ OPENAPI = {
 }
 
 
-def handle(method: str, target: str, headers, raw: bytes, store: Store):
-    parsed = urlparse(target)
-    path = unquote(parsed.path)
-    query = parse_qs(parsed.query, keep_blank_values=False)
-    if method == "GET" and path == "/health":
-        return 200, {"status": "ok", "version": __version__}
-    if method == "GET" and path == "/openapi.json":
-        return 200, OPENAPI
-    if method == "GET" and path == "/":
-        return 200, _index()
-    if method == "GET" and path == "/v1":
-        return 200, _index()
-
-    is_d_route = (
-        path == "/v1/cases"
-        or path.startswith("/v1/cases/")
-        or path == "/v1/tasks"
-        or path.startswith("/v1/tasks/")
-        or path == "/v1/locks"
-        or path.startswith("/v1/locks/")
-        or path == "/v1/guard"
-        or path == "/v1/windows"
-        or path.startswith("/v1/windows/")
-        or path == "/v1/projects"
-        or path.startswith("/v1/projects/")
-    )
-    _check_write_security(method, headers, raw, is_d_route or path in ("/v1/crew", "/v1/restart", "/v1/open"))
-    body = _json_object(raw)
-
+def _route_ops(method: str, path: str, headers, query: dict, body: dict, store: Store):
     if path == "/v1/crew":
         from pathlib import Path as _Path
         from infocenter import crew as _crew
@@ -517,8 +489,6 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
             raise MailError("invalid_dir", "需要 dir（项目目录）", 400)
         project_path = str(_Path(project).expanduser().resolve())
         if action == "up" and not _Path(project_path).is_dir():
-            # 守护要以项目目录为 cwd 启动；目录不存在会在 Popen 时抛 OSError → 500。
-            # 在路由层先判成客户端错误。
             raise MailError("invalid_dir", f"项目目录不存在：{project_path}", 400)
         if action == "up":
             return 200, _crew.up(home, url, project_path, only)
@@ -646,22 +616,12 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         except OSError as exc:
             raise MailError("open_failed", f"打开失败：{exc}", 500)
         return 200, {"ok": True, "path": d}
-    window_id = _resolve_window(headers, query, body)
-    req_pid = _resolve_pid(headers, body)
-    raw_agent = headers.get("X-Agent") if headers is not None else None
-    if is_d_route and (not raw_agent or not str(raw_agent).strip()):
-        b_ag = _opt_str(body, "agent")
-        if method == "GET":
-            q_ag = query.get("agent", [None])[0]
-            agent = normalize_name(b_ag or q_ag or HUMAN)
-        else:
-            agent = normalize_name(b_ag or HUMAN)
-    else:
-        agent = _agent_header(headers)
-        if window_id is not None:
-            _guard_window_agent(store, agent, window_id, req_pid)
-        store.touch(agent, window_id=window_id, pid=req_pid)
+    return None
 
+
+def _route_agents_and_projects(
+    method: str, path: str, query: dict, body: dict, store: Store, agent: str, window_id: str | None, req_pid: int | None
+):
     if method == "GET" and path == "/v1/agents":
         agents = store.list_agents(window_id=window_id)
         roster = {a.get("name") for a in config.load(store.path.parent).get("agents", [])}
@@ -669,8 +629,6 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
             a["roster"] = a.get("name") in roster
         probe_minutes = query.get("probe_minutes", [None])[0]
         if probe_minutes:
-            # 看板上给每家挂一对数（触发 / 产出）——"这一家在动，还是在原地踏步"。
-            # 控制台按同一次采样渲染，所以这里合并进去，不额外再发一个请求。
             try:
                 minutes_f = float(probe_minutes)
             except (TypeError, ValueError):
@@ -738,6 +696,31 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
             raise MailError("not_you", "只能移除你自己；用户请用 manager 身份移除别人（旧名 human 仍认）", 403)
         return 200, store.remove_agent(agent, name)
 
+    if path == "/v1/projects":
+        if method == "GET":
+            projects = store.list_projects()
+            return 200, {"projects": projects, "count": len(projects)}
+        if method in {"POST", "PUT"}:
+            ws = body.get("workspace") or body.get("dir") or body.get("path")
+            if not isinstance(ws, str) or not ws.strip():
+                raise MailError("invalid_workspace", "需要提供项目路径 workspace")
+            archived = body.get("archived")
+            if archived is not None and not isinstance(archived, bool):
+                raise MailError("invalid_archived", "archived 必须是布尔值", 400)
+            project = store.add_project(
+                ws,
+                name=_opt_str(body, "name"),
+                archived=archived,
+                coordinator=body.get("coordinator"),
+                actor=agent,
+            )
+            return (201 if method == "POST" else 200), project
+    return None
+
+
+def _route_messages(
+    method: str, path: str, query: dict, body: dict, store: Store, agent: str, window_id: str | None, req_pid: int | None
+):
     if method == "POST" and path == "/v1/messages":
         message = store.send(
             agent,
@@ -822,8 +805,12 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 client_cwd=_opt_str(body, "client_cwd"),
             )
             return 201, message
+    return None
 
-    # ── M9: /v1/locks 路由（写锁：同一时间只有一个 agent 能改同一路径）──────
+
+def _route_governance(
+    method: str, path: str, query: dict, body: dict, store: Store, agent: str, window_id: str | None
+):
     if path == "/v1/audit":
         if method != "GET":
             raise MailError("method_not_allowed", "只支持 GET", 405)
@@ -893,7 +880,6 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
         if not isinstance(paths, (list, tuple)) or not paths:
             raise MailError("path_required", "需要 paths（要落地检查的路径列表）", 400)
         result = store.guard_changes(agent, list(paths), require_mine=body.get("require_mine", True))
-        # 这是**报告**不是错误：始终 200，由 CLI 依据 ok 决定退出码。
         return 200, result
 
     if path == "/v1/locks/release":
@@ -905,7 +891,6 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
             force=_flag(query.get("force", ["0"])[0]) or bool(body.get("force")),
         )
 
-    # ── M8: /v1/tasks 路由（任务队列 / 工作包）───────────────────────────
     if path == "/v1/tasks":
         if method == "GET":
             return 200, store.task_list(
@@ -960,8 +945,12 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
             if action == "bump":
                 return 200, store.task_bump(agent, task_id, by=body.get("by", 1))
             raise MailError("not_found", "没有这个接口", 404)
+    return None
 
-    # ── D1: /v1/cases 路由 ────────────────────────────────────────────────
+
+def _route_cases_and_windows(
+    method: str, path: str, query: dict, body: dict, store: Store, agent: str, window_id: str | None, req_pid: int | None
+):
     if path == "/v1/cases":
         if method == "GET":
             workspace = query.get("workspace", [None])[0]
@@ -1102,7 +1091,6 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                     pid=req_pid,
                 )
 
-    # ── D1: /v1/windows 路由 ──────────────────────────────────────────────
     if path == "/v1/windows":
         if method == "GET":
             ag = query.get("agent", [None])[0]
@@ -1152,27 +1140,65 @@ def handle(method: str, target: str, headers, raw: bytes, store: Store):
                 return 200, store.pause_window(wid, agent=agent, note=note)
             if action == "resume":
                 return 200, store.resume_window(wid, agent=agent, note=note)
+    return None
 
-    # ── D1: /v1/projects 路由 ─────────────────────────────────────────────
-    if path == "/v1/projects":
+
+def handle(method: str, target: str, headers, raw: bytes, store: Store):
+    parsed = urlparse(target)
+    path = unquote(parsed.path)
+    query = parse_qs(parsed.query, keep_blank_values=False)
+    if method == "GET" and path == "/health":
+        return 200, {"status": "ok", "version": __version__}
+    if method == "GET" and path == "/openapi.json":
+        return 200, OPENAPI
+    if method == "GET" and path in ("/", "/v1"):
+        return 200, _index()
+
+    is_d_route = (
+        path == "/v1/cases"
+        or path.startswith("/v1/cases/")
+        or path == "/v1/tasks"
+        or path.startswith("/v1/tasks/")
+        or path == "/v1/locks"
+        or path.startswith("/v1/locks/")
+        or path == "/v1/guard"
+        or path == "/v1/windows"
+        or path.startswith("/v1/windows/")
+        or path == "/v1/projects"
+        or path.startswith("/v1/projects/")
+    )
+    _check_write_security(method, headers, raw, is_d_route or path in ("/v1/crew", "/v1/restart", "/v1/open"))
+    body = _json_object(raw)
+
+    res = _route_ops(method, path, headers, query, body, store)
+    if res is not None:
+        return res
+
+    window_id = _resolve_window(headers, query, body)
+    req_pid = _resolve_pid(headers, body)
+    raw_agent = headers.get("X-Agent") if headers is not None else None
+    if is_d_route and (not raw_agent or not str(raw_agent).strip()):
+        b_ag = _opt_str(body, "agent")
         if method == "GET":
-            projects = store.list_projects()
-            return 200, {"projects": projects, "count": len(projects)}
-        if method in {"POST", "PUT"}:
-            ws = body.get("workspace") or body.get("dir") or body.get("path")
-            if not isinstance(ws, str) or not ws.strip():
-                raise MailError("invalid_workspace", "需要提供项目路径 workspace")
-            archived = body.get("archived")
-            if archived is not None and not isinstance(archived, bool):
-                raise MailError("invalid_archived", "archived 必须是布尔值", 400)
-            project = store.add_project(
-                ws,
-                name=_opt_str(body, "name"),
-                archived=archived,
-                coordinator=body.get("coordinator"),
-                actor=agent,
-            )
-            return (201 if method == "POST" else 200), project
+            q_ag = query.get("agent", [None])[0]
+            agent = normalize_name(b_ag or q_ag or HUMAN)
+        else:
+            agent = normalize_name(b_ag or HUMAN)
+    else:
+        agent = _agent_header(headers)
+        if window_id is not None:
+            _guard_window_agent(store, agent, window_id, req_pid)
+        store.touch(agent, window_id=window_id, pid=req_pid)
+
+    for router in (
+        lambda: _route_agents_and_projects(method, path, query, body, store, agent, window_id, req_pid),
+        lambda: _route_messages(method, path, query, body, store, agent, window_id, req_pid),
+        lambda: _route_governance(method, path, query, body, store, agent, window_id),
+        lambda: _route_cases_and_windows(method, path, query, body, store, agent, window_id, req_pid),
+    ):
+        res = router()
+        if res is not None:
+            return res
 
     if method not in {"GET", "POST", "PUT", "DELETE"}:
         raise MailError("method_not_allowed", "只支持 GET、POST、PUT、DELETE", 405)

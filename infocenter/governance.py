@@ -47,6 +47,7 @@ from infocenter.common import (
     normalize_name,
     normalize_window,
     utcnow,
+    _upsert_agent,
 )
 
 
@@ -608,7 +609,7 @@ class GovernanceMixin:
         priority: int = 0,
     ) -> dict:
         """建任务：只有 coordinator，且必须带 workspace。"""
-        from infocenter.store import _find_case, _upsert
+        from infocenter.cases import _find_case
 
         agent = normalize_name(agent)
         title_text = _subject(title if title is not None else "")
@@ -619,7 +620,7 @@ class GovernanceMixin:
         now = utcnow()
         with self._session(immediate=True) as conn:
             _must_coordinator(conn, agent, workspace)
-            _upsert(conn, owner_name, None)
+            _upsert_agent(conn, owner_name, None)
             sup = normalize_case_id(supersedes) if supersedes else None
             if sup:
                 old = _find_task(conn, sup)
@@ -838,7 +839,7 @@ class GovernanceMixin:
 
     def task_update(self, agent: str, task_id: str, **fields) -> dict:
         """改规格：仅 coordinator，且只在 todo。"""
-        from infocenter.store import _find_case, _upsert
+        from infocenter.cases import _find_case
 
         agent = normalize_name(agent)
         allowed = {"title", "owner", "deps", "acceptance", "case_id", "priority"}
@@ -861,7 +862,7 @@ class GovernanceMixin:
                     value = _subject(value)
                 elif key == "owner":
                     value = normalize_name(value)
-                    _upsert(conn, value, None)
+                    _upsert_agent(conn, value, None)
                 elif key == "acceptance":
                     value = _task_text(value, TASK_ACCEPTANCE_MAX)
                 elif key == "deps":
@@ -1482,7 +1483,7 @@ class GovernanceMixin:
 
     def sweep(self, now: str | None = None) -> dict:
         """死流程回收：过期锁、死进程窗口、僵尸认领。全部留痕。"""
-        from infocenter.store import _mark_dead_windows, _release_stale_claims
+        from infocenter.windows import _mark_dead_windows, _release_stale_claims
 
         now = now or utcnow()
         with self._session(immediate=True) as conn:
