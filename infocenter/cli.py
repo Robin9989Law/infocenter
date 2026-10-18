@@ -15,7 +15,7 @@ from infocenter.common import (
     beijing_time,
     normalize_name,
 )
-from infocenter.governance import _same_file
+from infocenter.locks import _same_file
 from infocenter.paths import home_dir
 from infocenter.server import read_meta, serve, stop
 

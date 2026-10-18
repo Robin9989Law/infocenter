@@ -46,7 +46,7 @@ from infocenter.cases import (
     _node_note,
     _orphan_window_cases,
 )
-from infocenter.governance import (
+from infocenter.locks import (
     _lock_expiry,
     _release_window_locks,
 )

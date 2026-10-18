@@ -62,6 +62,9 @@ from infocenter.common import (
 )
 from infocenter.governance import (
     GovernanceMixin,
+)
+from infocenter.locks import (
+    LocksMixin,
     _lock_stay_cap,
     _lock_ttl,
     _locks_sweep,
@@ -85,7 +88,7 @@ from infocenter.windows import (
 )
 
 
-class Store(MessagesMixin, GovernanceMixin, CasesMixin, WindowsMixin):
+class Store(MessagesMixin, GovernanceMixin, LocksMixin, CasesMixin, WindowsMixin):
     def __init__(self, path: Path, seed: bool = True, seeds=()):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
