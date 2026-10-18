@@ -4,11 +4,10 @@ import json
 from urllib.parse import parse_qs, unquote, urlparse
 
 from infocenter import __version__, config
-from infocenter.store import (
+from infocenter.common import (
     HUMAN,
     LOCK_TTL,
     MailError,
-    Store,
     beijing_time,
     is_person,
     iso_ago,
@@ -16,6 +15,7 @@ from infocenter.store import (
     normalize_window,
     utcnow,
 )
+from infocenter.store import Store
 
 MAX_BODY = 1_000_000
 

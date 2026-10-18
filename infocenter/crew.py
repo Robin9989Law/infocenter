@@ -28,7 +28,7 @@ from pathlib import Path
 
 from infocenter import config
 from infocenter.client import NO_PID_ENV, ApiError, request, request_mail
-from infocenter.store import (
+from infocenter.common import (
     MailError,
     _parse_utc as parse_utc,   # 时间格式的唯一真相；本文件 `_started_at_epoch` 只做换算
     _workspace_scope,

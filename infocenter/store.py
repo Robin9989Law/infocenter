@@ -12,33 +12,38 @@ from pathlib import Path
 
 from infocenter.common import (
     BEIJING,
-    BROADCAST,
     CASE_ACCEPTANCE_MAX,
-    CASE_ID_RE,
     CLAIM_TTL,
     HUMAN,
     HUMAN_NAMES,
     LOCK_TTL,
-    LOCK_TTL_MAX,
-    NAME_RE,
     STALL_HOURS,
     SWEEP_INTERVAL,
-    TASK_ACCEPTANCE_MAX,
-    TASK_HANDOFF_MAX,
-    TASK_TEXT_MAX,
-    WINDOW_RE,
     MailError,
     _SEGMENT_RE,
-    _holder_names,
+    _body,
+    _collapse_alias_deliveries,
+    _emit_task_event,
+    _is_party,
     _is_wire_name,
     _limit,
-    _own_delivery_fallback_names,
+    _must_human,
     _parse_utc,
+    _pid_value,
+    _priority,
+    _re_subject,
     _recipient_names,
+    _reply_to,
+    _resolve_own_delivery,
+    _role,
     _same_agent,
     _subject,
+    _task_event_hash,
+    _upsert_agent,
+    _upsert_project,
     _workspace,
     _workspace_scope,
+    atomic_replace,
     beijing_hhmm,
     beijing_stamp,
     beijing_time,
@@ -51,128 +56,23 @@ from infocenter.common import (
     normalize_window,
     parse_recipients,
     pid_alive,
+    preview,
     utcnow,
-    _is_party,
-    _is_thread_party,
-    _pid_kill_alive,
-    _pid_value,
-    _resolve_own_delivery,
-    _is_window_gone,
-    _thread_has_messages,
-    _upsert_agent,
-    _upsert_project,
 )
-
-
-def _collapse_alias_deliveries(rows: list, agent: str) -> list:
-    """同一封信在人的两个名字上各有一行时，只留一份，避免未读数翻倍。
-
-    先留本名那一行，没有才留别名。名字只问 `_recipient_names`。
-    非人本来就只有一行。未读查询里若本名那行已读、不在这批里，就留下仍未读的别名行。
-    """
-    try:
-        agent = normalize_name(agent)
-    except MailError:
-        return list(rows)
-    if len(_recipient_names(agent)) < 2:
-        return list(rows)
-    best: dict[str, object] = {}
-    order: list[str] = []
-    for row in rows:
-        mid = row["id"]
-        prev = best.get(mid)
-        if prev is None:
-            best[mid] = row
-            order.append(mid)
-            continue
-        if row["delivered_to"] == agent and prev["delivered_to"] != agent:
-            best[mid] = row
-    return [best[mid] for mid in order]
-
-
-def preview(body: str, limit: int = 180) -> str:
-    flat = " ".join(body.split())
-    if len(flat) <= limit:
-        return flat
-    return flat[: limit - 1] + "…"
-
-
 from infocenter.governance import (
-    CASE_ACCEPTANCE_MAX,
     GovernanceMixin,
-    PROBE_MACHINERY_ACTIONS,
-    TASK_ACCEPTANCE_MAX,
-    TASK_EVENT_FIELDS,
-    TASK_HANDOFF_MAX,
-    TASK_STATUSES,
-    TASK_TERMINAL,
-    TASK_TEXT_MAX,
-    _TASK_COORD_MOVES,
-    _TASK_OWNER_MOVES,
-    _chmod_locked,
-    _chmod_writable,
-    _emit_case_event,
-    _emit_task_event,
-    _find_task,
-    _fingerprint,
-    _human_voices,
-    _is_coordinator,
-    _is_manager,
-    _lock_expiry,
-    _lock_has_progress,
-    _lock_paths,
-    _lock_remaining,
     _lock_stay_cap,
     _lock_ttl,
-    _lock_view,
     _locks_sweep,
-    _matching_lock,
-    _may_force,
-    _must_coordinator,
-    _must_human,
-    _parent_folds_case,
-    _project_for,
-    _project_for_path,
-    _relative_lock_hint,
-    _release_window_locks,
-    _replay_task_state,
-    _restore_readonly,
-    _rows_covering,
     _same_file,
-    _task_event_hash,
-    _task_priority,
-    _task_status,
-    _task_text,
-    _task_view,
 )
 from infocenter.cases import (
-    CASE_STATUS_LABELS,
-    _LABEL_TO_CASE_STATUS,
-    SEALED_STATUSES,
-    WBS_MAX,
-    MILESTONE_MAX,
-    MILESTONE_MAX_COUNT,
     CasesMixin,
-    _wbs_path,
-    _milestones,
-    _milestones_json,
-    _case_status,
-    _node_note,
-    _node_action,
-    _insert_node,
-    _node_view,
-    _own_unread_replies,
-    _block_unread_replies,
-    _must_unsealed,
+    SEALED_STATUSES,
     _find_case,
-    _must_case,
-    _ensure_case_from_thread,
-    _lazy_reconcile_case,
-    _orphan_window_cases,
-    _case_view,
+    _insert_node,
 )
 from infocenter.windows import (
-    WINDOW_STATE_LABELS,
     WindowsMixin,
     _activity,
     _auto_claim_allowed,
@@ -181,16 +81,12 @@ from infocenter.windows import (
     _is_thread_paused_or_sealed,
     _is_thread_sealed,
     _lazy_reconcile_all,
-    _mark_dead_windows,
     _mark_own_delivery_read,
     _propagate_thread_claim,
     _release_stale_claims,
-    _signoff_read_targets,
     _upsert_window,
     _window_summary,
-    _window_view,
     _window_workspace,
-    _workspace_compatible,
 )
 
 
@@ -1647,44 +1543,6 @@ class Store(GovernanceMixin, CasesMixin, WindowsMixin):
 # ── 内部辅助函数 ──────────────────────────────────────────────────────────
 
 
-def atomic_replace(path, data: bytes) -> None:
-    """把 data 换到 path 上，目标文件不会停在写了一半的状态。
-
-    与旧 sync._atomic_write 同一条纪律：同目录临时名、写入后 fsync、os.replace，
-    失败删掉临时文件。不创建父目录，也不 fsync 目录项（原先 sync 也没有）。
-    最终字节由调用方自己序列化，因为 indent / ensure_ascii 各处不同。
-
-    相对 config.save、server._write_server_meta、crew._write_meta（固定 *.json.tmp、不 fsync）
-    和 crew._write_pid_record（直接 write_text）的变化：
-    - 临时文件改成 `.原名.<pid>.<随机>.tmp`，不再占用固定的 `*.json.tmp`。
-    - 写入会 fsync；失败清掉临时文件。
-    - pid 记录不再直接覆盖目标，中途失败时旧文件还在。
-    成功后的文件内容与各调用方原来的 json.dumps 参数一致。
-    """
-    path = Path(path)
-    tmp = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
-    try:
-        with open(tmp, "wb") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            tmp.unlink()
-        except OSError:
-            pass
-        raise
-
-
-
-
-
-
-
-
-
-
 def _exact_send_id(
     conn: sqlite3.Connection,
     sender: str,
@@ -2079,58 +1937,5 @@ def _agent(row: sqlite3.Row, unread: int = 0, windows: list[dict] | None = None)
         out["windows"] = windows
     return out
 
-
-
-
-def _body(value: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise MailError("invalid_body", "正文不能为空")
-    if len(value) > 100_000:
-        raise MailError("invalid_body", "正文最长 100000 字", 413)
-    return value
-
-
-def _priority(value: str) -> str:
-    if value is None:
-        return "normal"
-    if not isinstance(value, str):
-        raise MailError("invalid_priority", "priority 只能是 normal 或 high")
-    text = value.strip().lower() or "normal"
-    if text not in {"normal", "high"}:
-        raise MailError("invalid_priority", "priority 只能是 normal 或 high")
-    return text
-
-
-
-
-def _reply_to(value: str | None) -> str | None:
-    if value is None:
-        return None
-    if not isinstance(value, str):
-        raise MailError("invalid_reply_to", "reply_to 必须是字符串")
-    text = value.strip()
-    return text or None
-
-
-_REPLY_PREFIX_RE = re.compile(r"^(?:\s*(?:re|fw|fwd|回复|答复)\s*[:：]\s*)+", re.IGNORECASE)
-
-
-def _re_subject(subject: str) -> str:
-    """折叠叠加的 Re:/回复: 前缀，主题不再一轮比一轮长。"""
-    core = _REPLY_PREFIX_RE.sub("", subject).strip() or subject.strip()
-    return f"Re: {core}"[:200]
-
-
-def _role(value) -> str:
-    if value is None:
-        return ""
-    if not isinstance(value, str):
-        raise MailError("invalid_role", "role 必须是字符串")
-    text = value.strip().lower()
-    if text in {"", "member"}:
-        return ""
-    if text in {"manager", "coordinator"}:   # coordinator 是**旧名**，一律记成 manager
-        return "manager"
-    raise MailError("invalid_role", "role 只能是空（成员）或 manager")
 
 

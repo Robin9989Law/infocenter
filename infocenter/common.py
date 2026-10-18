@@ -1,6 +1,8 @@
 """信息中心基础常量、异常与通用工具函数（无依赖层）。"""
 
 import ast
+import hashlib
+import json
 import os
 import re
 import secrets
@@ -469,6 +471,253 @@ def parse_recipients(value) -> list[str]:
         if token not in seen:
             seen.append(token)
     return seen
+
+
+def atomic_replace(path, data: bytes) -> None:
+    """把 data 换到 path 上，目标文件不会停在写了一半的状态。"""
+    path = Path(path)
+    tmp = path.parent / f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp"
+    try:
+        with open(tmp, "wb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def preview(body: str, limit: int = 180) -> str:
+    flat = " ".join(body.split())
+    if len(flat) <= limit:
+        return flat
+    return flat[: limit - 1] + "…"
+
+
+def _collapse_alias_deliveries(rows: list, agent: str) -> list:
+    """同一封信在人的两个名字上各有一行时，只留一份，避免未读数翻倍。"""
+    try:
+        agent = normalize_name(agent)
+    except MailError:
+        return list(rows)
+    if len(_recipient_names(agent)) < 2:
+        return list(rows)
+    best: dict[str, object] = {}
+    order: list[str] = []
+    for row in rows:
+        mid = row["id"]
+        prev = best.get(mid)
+        if prev is None:
+            best[mid] = row
+            order.append(mid)
+            continue
+        if row["delivered_to"] == agent and prev["delivered_to"] != agent:
+            best[mid] = row
+    return [best[mid] for mid in order]
+
+
+def _body(value: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise MailError("invalid_body", "正文不能为空")
+    if len(value) > 100_000:
+        raise MailError("invalid_body", "正文最长 100000 字", 413)
+    return value
+
+
+def _priority(value: str) -> str:
+    if value is None:
+        return "normal"
+    if not isinstance(value, str):
+        raise MailError("invalid_priority", "priority 只能是 normal 或 high")
+    text = value.strip().lower() or "normal"
+    if text not in {"normal", "high"}:
+        raise MailError("invalid_priority", "priority 只能是 normal 或 high")
+    return text
+
+
+def _reply_to(value: str | None) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise MailError("invalid_reply_to", "reply_to 必须是字符串")
+    text = value.strip()
+    return text or None
+
+
+_REPLY_PREFIX_RE = re.compile(r"^(?:\s*(?:re|fw|fwd|回复|答复)\s*[:：]\s*)+", re.IGNORECASE)
+
+
+def _re_subject(subject: str) -> str:
+    """折叠叠加的 Re:/回复: 前缀，主题不再一轮比一轮长。"""
+    core = _REPLY_PREFIX_RE.sub("", subject).strip() or subject.strip()
+    return f"Re: {core}"[:200]
+
+
+def _role(value) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise MailError("invalid_role", "role 必须是字符串")
+    text = value.strip().lower()
+    if text in {"", "member"}:
+        return ""
+    if text in {"manager", "coordinator"}:
+        return "manager"
+    raise MailError("invalid_role", "role 只能是空（成员）或 manager")
+
+
+def _task_text(value, limit: int = TASK_TEXT_MAX) -> str:
+    text = str(value or "").strip()
+    if len(text) > limit:
+        raise MailError(
+            "task_text_too_long", f"内容超过 {limit} 字；请写进文件，这里只留引用", 400
+        )
+    return text
+
+
+def _must_human(agent: str) -> None:
+    """只有人能指定项目的 coordinator、移除别人。现名 manager，旧名 human 同样算。"""
+    if not is_person(agent):
+        raise MailError(
+            "human_only",
+            f"{agent} 不是 manager；这件事只有 manager 能做（旧名 human 仍认）",
+            403,
+        )
+
+
+def _is_manager(conn: sqlite3.Connection, agent: str) -> bool:
+    """全局管理者（旧称 coordinator）：名册里 role=manager 的；人（manager / human）天然算。"""
+    agent = normalize_name(agent)
+    if is_person(agent):
+        return True
+    row = conn.execute("SELECT role FROM agents WHERE name = ?", (agent,)).fetchone()
+    return bool(row and str(row["role"] or "") in {"manager", "coordinator"})
+
+
+def _project_for(conn: sqlite3.Connection, workspace: str | None) -> sqlite3.Row | None:
+    """按 workspace 找项目行。"""
+    if not (workspace or "").strip():
+        return None
+    for row in conn.execute("SELECT * FROM projects").fetchall():
+        if _workspace_scope(workspace, row["workspace"]):
+            return row
+    return None
+
+
+def _project_for_path(conn: sqlite3.Connection, path: str) -> sqlite3.Row | None:
+    """按文件路径找它属于哪个项目（最长匹配）。"""
+    if not (path or "").strip():
+        return None
+    real = os.path.realpath(path).replace("\\", "/")
+    best: sqlite3.Row | None = None
+    best_len = -1
+    for row in conn.execute("SELECT * FROM projects").fetchall():
+        ws = (row["workspace"] or "").strip()
+        if not ws:
+            continue
+        root = os.path.realpath(ws).replace("\\", "/")
+        if real == root or real.startswith(root.rstrip("/") + "/"):
+            if len(root) > best_len:
+                best, best_len = row, len(root)
+    return best
+
+
+def _is_coordinator(conn: sqlite3.Connection, agent: str, workspace: str | None) -> bool:
+    """这个项目的协调者。"""
+    agent = normalize_name(agent)
+    if is_person(agent):
+        return True
+    row = _project_for(conn, workspace)
+    if row is None:
+        return _is_manager(conn, agent)
+    return (row["coordinator"] or "").strip() == agent
+
+
+def _may_force(conn: sqlite3.Connection, agent: str, paths) -> bool:
+    """抢锁 / 替成员落地等不可逆操作权限判定。"""
+    if paths is None:
+        return _is_manager(conn, agent)
+    for path in [p for p in (paths or []) if p]:
+        row = _project_for_path(conn, path)
+        if row is None:
+            if not _is_manager(conn, agent):
+                return False
+        elif not _is_coordinator(conn, agent, row["workspace"]):
+            return False
+    return True
+
+
+def _must_coordinator(conn: sqlite3.Connection, agent: str, workspace: str | None) -> None:
+    if _is_coordinator(conn, agent, workspace):
+        return
+    row = _project_for(conn, workspace)
+    if row is not None and not (row["coordinator"] or "").strip():
+        raise MailError(
+            "no_coordinator",
+            f"项目 {row['workspace']} 还没指定 coordinator。请 human 指定：`ic --as human projects --project <路径> --coordinator <身份>`",
+            409,
+        )
+    raise MailError(
+        "not_coordinator",
+        f"{agent} 不是这个项目的 coordinator"
+        + (f"（{row['workspace']}：coordinator = {row['coordinator']}）" if row is not None else "（这卷没归属项目）")
+        + "；建任务 / 改规格只有它或 human 能做",
+        403,
+    )
+
+
+def _human_voices(conn: sqlite3.Connection) -> set[str]:
+    """谁有资格代表人话。"""
+    voices = set(HUMAN_NAMES)
+    voices.update(
+        row["name"]
+        for row in conn.execute("SELECT name FROM agents WHERE role IN ('manager', 'coordinator')")
+    )
+    return voices
+
+
+def _task_event_hash(prev_hash: str, fields: dict) -> str:
+    """一条痕迹的哈希 = sha256(上一条哈希 + 本条全部关键字段)。"""
+    blob = "\x1f".join([prev_hash] + [str(fields.get(key, "")) for key in
+                                       ("task_id", "at", "agent", "action", "from_status", "to_status", "detail")])
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _emit_case_event(
+    conn, agent, action, from_status, to_status, case_id, window_id, note, now: str,
+) -> None:
+    """案卷状态机进既有哈希链。"""
+    name = action if str(action).startswith("case_") else f"case_{action}"
+    _emit_task_event(
+        conn, "", agent, name, from_status or "", to_status or "",
+        {"case_id": case_id, "window_id": window_id or "", "note": note or ""},
+        now,
+    )
+
+
+def _emit_task_event(conn, task_id, agent, action, from_status, to_status, detail: dict, now: str) -> None:
+    """写一行痕迹（必须与业务改动同一个事务）。"""
+    payload = json.dumps(detail or {}, ensure_ascii=False, sort_keys=True)
+    row = conn.execute("SELECT hash FROM task_events ORDER BY seq DESC LIMIT 1").fetchone()
+    prev_hash = row["hash"] if row else ""
+    fields = {
+        "task_id": task_id, "at": now, "agent": agent, "action": action,
+        "from_status": from_status or "", "to_status": to_status or "", "detail": payload,
+    }
+    conn.execute(
+        """
+        INSERT INTO task_events(task_id, at, agent, action, from_status, to_status, detail, prev_hash, hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            task_id, now, agent, action, from_status or "", to_status or "",
+            payload, prev_hash, _task_event_hash(prev_hash, fields),
+        ),
+    )
 
 
 def duplicate_module_level_defs(package: Path) -> dict[str, list[str]]:

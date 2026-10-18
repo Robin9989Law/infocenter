@@ -15,9 +15,8 @@ import time
 from pathlib import Path
 
 from infocenter import config
-from infocenter.store import (
+from infocenter.common import (
     MailError,
-    Store,
     _SEGMENT_RE,
     _body,
     _is_wire_name,
@@ -27,6 +26,7 @@ from infocenter.store import (
     atomic_replace,
     utcnow,
 )
+from infocenter.store import Store
 
 MAX_ENVELOPE = 1_000_000
 

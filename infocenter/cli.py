@@ -7,17 +7,17 @@ from pathlib import Path
 
 from infocenter import DEFAULT_HOST, DEFAULT_PORT, __version__, config
 from infocenter.client import ApiError, call, ensure_server, healthy, request, resolve_url
-from infocenter.paths import home_dir
-from infocenter.server import read_meta, serve, stop
-from infocenter.store import (
+from infocenter.common import (
     LOCK_TTL,
     MailError,
     _parse_utc,
-    _same_file,
     beijing_stamp,
     beijing_time,
     normalize_name,
 )
+from infocenter.governance import _same_file
+from infocenter.paths import home_dir
+from infocenter.server import read_meta, serve, stop
 
 # 各 agent 实际加载的 SKILL 安装位点（交互会话读的是这些副本，不是仓库里那份）。
 # 约定：优先做成软链（安装副本 → 仓库副本，一份真相）；不能软链的，由 `ic status` /

@@ -26,22 +26,7 @@
 import json
 from pathlib import Path
 
-from infocenter.store import MailError, atomic_replace, normalize_name
-
-# 人的名字只有 store 一份：HUMAN / HUMAN_NAMES / is_person。
-# 符号还没进 store 时（cursor 那一笔）ImportError。except 里的契约与派单相同，
-# 只为这一小段空窗让 import 不把 `ic` 打崩；符号一落地，测试钉死必须用 store 那份。
-try:
-    from infocenter.store import HUMAN, HUMAN_NAMES, is_person
-except ImportError:
-    HUMAN = "manager"
-    HUMAN_NAMES = frozenset({"manager", "human"})
-
-    def is_person(name: str) -> bool:
-        try:
-            return normalize_name(name) in HUMAN_NAMES
-        except MailError:
-            return False
+from infocenter.common import HUMAN, HUMAN_NAMES, MailError, atomic_replace, is_person, normalize_name
 
 
 DEFAULT_AGENTS = (

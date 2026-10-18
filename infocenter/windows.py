@@ -5,6 +5,7 @@
 """
 
 import sqlite3
+import sys
 from pathlib import Path
 
 from infocenter.common import (
@@ -14,6 +15,7 @@ from infocenter.common import (
     NAME_RE,
     WINDOW_RE,
     MailError,
+    _emit_task_event,
     _is_thread_party,
     _is_window_gone,
     _limit,
@@ -45,7 +47,6 @@ from infocenter.cases import (
     _orphan_window_cases,
 )
 from infocenter.governance import (
-    _emit_task_event,
     _lock_expiry,
     _release_window_locks,
 )
@@ -484,7 +485,9 @@ class WindowsMixin:
 
 
     def _lazy_reconcile_all(self, conn: sqlite3.Connection, now: str | None = None) -> None:
-        _lazy_reconcile_all(conn, now)
+        store_mod = sys.modules.get("infocenter.store")
+        fn = getattr(store_mod, "_lazy_reconcile_all", _lazy_reconcile_all)
+        fn(conn, now)
 
     def _upsert_window(
         self,

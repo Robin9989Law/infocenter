@@ -9,7 +9,7 @@ import time
 
 from infocenter import __version__
 from infocenter.client import ApiError, ensure_server, request
-from infocenter.store import MailError, normalize_name, normalize_window
+from infocenter.common import MailError, normalize_name, normalize_window
 
 PROTOCOL = "2024-11-05"
 # None 直到读到第一条消息。现行客户端（OpenCode、Cursor、Grok）用换行 JSON；

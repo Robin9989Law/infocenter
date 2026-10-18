@@ -42,8 +42,6 @@ from infocenter.common import (
     _is_window_gone,
     _resolve_own_delivery,
     _upsert_project,
-)
-from infocenter.governance import (
     _emit_case_event,
     _human_voices,
     _is_coordinator,

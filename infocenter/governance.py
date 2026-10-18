@@ -32,12 +32,25 @@ from infocenter.common import (
     TASK_ACCEPTANCE_MAX,
     TASK_HANDOFF_MAX,
     TASK_TEXT_MAX,
+    _emit_case_event,
+    _emit_task_event,
     _holder_names,
+    _human_voices,
+    _is_coordinator,
+    _is_manager,
     _is_wire_name,
     _limit,
+    _may_force,
+    _must_coordinator,
+    _must_human,
     _parse_utc,
+    _project_for,
+    _project_for_path,
     _same_agent,
     _subject,
+    _task_event_hash,
+    _task_text,
+    _upsert_agent,
     _workspace,
     _workspace_scope,
     beijing_time,
@@ -47,7 +60,6 @@ from infocenter.common import (
     normalize_name,
     normalize_window,
     utcnow,
-    _upsert_agent,
 )
 
 
@@ -86,15 +98,6 @@ def _task_status(value) -> str:
     if text not in TASK_STATUSES:
         raise MailError(
             "invalid_task_status", f"任务状态只能是 {'/'.join(TASK_STATUSES)}", 400
-        )
-    return text
-
-
-def _task_text(value, limit: int = TASK_TEXT_MAX) -> str:
-    text = str(value or "").strip()
-    if len(text) > limit:
-        raise MailError(
-            "task_text_too_long", f"内容超过 {limit} 字；请写进文件，这里只留引用", 400
         )
     return text
 
@@ -166,109 +169,6 @@ def _replay_task_state(conn: sqlite3.Connection, task_id: str) -> dict:
         if row["to_status"]:
             state["status"] = row["to_status"]
     return state
-
-
-# ── 辅助函数：权限与角色校验 ──────────────────────────────────────────
-
-def _must_human(agent: str) -> None:
-    """只有人能指定项目的 coordinator、移除别人。现名 manager，旧名 human 同样算。"""
-    if not is_person(agent):
-        raise MailError(
-            "human_only",
-            f"{agent} 不是 manager；这件事只有 manager 能做（旧名 human 仍认）",
-            403,
-        )
-
-
-def _is_manager(conn: sqlite3.Connection, agent: str) -> bool:
-    """全局管理者（旧称 coordinator）：名册里 role=manager 的；人（manager / human）天然算。"""
-    agent = normalize_name(agent)
-    if is_person(agent):
-        return True
-    row = conn.execute("SELECT role FROM agents WHERE name = ?", (agent,)).fetchone()
-    return bool(row and str(row["role"] or "") in {"manager", "coordinator"})
-
-
-def _project_for(conn: sqlite3.Connection, workspace: str | None) -> sqlite3.Row | None:
-    """按 workspace 找项目行。"""
-    if not (workspace or "").strip():
-        return None
-    for row in conn.execute("SELECT * FROM projects").fetchall():
-        if _workspace_scope(workspace, row["workspace"]):
-            return row
-    return None
-
-
-def _project_for_path(conn: sqlite3.Connection, path: str) -> sqlite3.Row | None:
-    """按文件路径找它属于哪个项目（最长匹配）。"""
-    if not (path or "").strip():
-        return None
-    real = os.path.realpath(path)
-    best: sqlite3.Row | None = None
-    best_len = -1
-    for row in conn.execute("SELECT * FROM projects").fetchall():
-        ws = (row["workspace"] or "").strip()
-        if not ws:
-            continue
-        root = os.path.realpath(ws)
-        if real == root or real.startswith(root.rstrip("/") + "/"):
-            if len(root) > best_len:
-                best, best_len = row, len(root)
-    return best
-
-
-def _is_coordinator(conn: sqlite3.Connection, agent: str, workspace: str | None) -> bool:
-    """这个项目的协调者。"""
-    agent = normalize_name(agent)
-    if is_person(agent):
-        return True
-    row = _project_for(conn, workspace)
-    if row is None:
-        return _is_manager(conn, agent)
-    return (row["coordinator"] or "").strip() == agent
-
-
-def _may_force(conn: sqlite3.Connection, agent: str, paths) -> bool:
-    """抢锁 / 替成员落地等不可逆操作权限判定。"""
-    if paths is None:
-        return _is_manager(conn, agent)
-    for path in [p for p in (paths or []) if p]:
-        row = _project_for_path(conn, path)
-        if row is None:
-            if not _is_manager(conn, agent):
-                return False
-        elif not _is_coordinator(conn, agent, row["workspace"]):
-            return False
-    return True
-
-
-def _must_coordinator(conn: sqlite3.Connection, agent: str, workspace: str | None) -> None:
-    if _is_coordinator(conn, agent, workspace):
-        return
-    row = _project_for(conn, workspace)
-    if row is not None and not (row["coordinator"] or "").strip():
-        raise MailError(
-            "no_coordinator",
-            f"项目 {row['workspace']} 还没指定 coordinator。请 human 指定：`ic --as human projects --project <路径> --coordinator <身份>`",
-            409,
-        )
-    raise MailError(
-        "not_coordinator",
-        f"{agent} 不是这个项目的 coordinator"
-        + (f"（{row['workspace']}：coordinator = {row['coordinator']}）" if row is not None else "（这卷没归属项目）")
-        + "；建任务 / 改规格只有它或 human 能做",
-        403,
-    )
-
-
-def _human_voices(conn: sqlite3.Connection) -> set[str]:
-    """谁有资格代表人话。"""
-    voices = set(HUMAN_NAMES)
-    voices.update(
-        row["name"]
-        for row in conn.execute("SELECT name FROM agents WHERE role IN ('manager', 'coordinator')")
-    )
-    return voices
 
 
 # ── 辅助函数：写锁与路径安全 ──────────────────────────────────────────
@@ -545,48 +445,6 @@ def _lock_view(row: sqlite3.Row) -> dict:
         "expires_at_beijing": beijing_time(row["expires_at"]),
         "expires_in_seconds": _lock_remaining(row["expires_at"]),
     }
-
-
-# ── 辅助函数：留痕与哈希链 ──────────────────────────────────────────
-
-def _task_event_hash(prev_hash: str, fields: dict) -> str:
-    """一条痕迹的哈希 = sha256(上一条哈希 + 本条全部关键字段)。"""
-    blob = "\x1f".join([prev_hash] + [str(fields.get(key, "")) for key in
-                                       ("task_id", "at", "agent", "action", "from_status", "to_status", "detail")])
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
-
-
-def _emit_case_event(
-    conn, agent, action, from_status, to_status, case_id, window_id, note, now: str,
-) -> None:
-    """案卷状态机进既有哈希链。"""
-    name = action if str(action).startswith("case_") else f"case_{action}"
-    _emit_task_event(
-        conn, "", agent, name, from_status or "", to_status or "",
-        {"case_id": case_id, "window_id": window_id or "", "note": note or ""},
-        now,
-    )
-
-
-def _emit_task_event(conn, task_id, agent, action, from_status, to_status, detail: dict, now: str) -> None:
-    """写一行痕迹（必须与业务改动同一个事务）。"""
-    payload = json.dumps(detail or {}, ensure_ascii=False, sort_keys=True)
-    row = conn.execute("SELECT hash FROM task_events ORDER BY seq DESC LIMIT 1").fetchone()
-    prev_hash = row["hash"] if row else ""
-    fields = {
-        "task_id": task_id, "at": now, "agent": agent, "action": action,
-        "from_status": from_status or "", "to_status": to_status or "", "detail": payload,
-    }
-    conn.execute(
-        """
-        INSERT INTO task_events(task_id, at, agent, action, from_status, to_status, detail, prev_hash, hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            task_id, now, agent, action, from_status or "", to_status or "",
-            payload, prev_hash, _task_event_hash(prev_hash, fields),
-        ),
-    )
 
 
 # ── GovernanceMixin 混入类 ──────────────────────────────────────────────

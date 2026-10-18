@@ -10,9 +10,9 @@ import urllib.error
 import urllib.request
 from urllib.parse import quote, urlencode
 
+from infocenter.common import MailError
 from infocenter.paths import ROOT, home_dir
 from infocenter.server import discover_url, healthy, owned_url
-from infocenter.store import MailError
 
 # 守护注入给 headless 子进程。子进程仍继承窗口号（认领算宿主办公室），
 # 但请求里的 pid（X-Pid 和 JSON 体的 pid）一律丢掉，避免短命进程改写宿主窗口 pid。

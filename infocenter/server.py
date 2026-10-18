@@ -9,8 +9,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from infocenter import DEFAULT_HOST, DEFAULT_PORT, config
+from infocenter.common import SWEEP_INTERVAL, MailError, atomic_replace, pid_alive
 from infocenter.httpapi import MAX_BODY, handle
-from infocenter.store import SWEEP_INTERVAL, MailError, Store, atomic_replace, pid_alive
+from infocenter.store import Store
 
 _WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
 _MIME = {
