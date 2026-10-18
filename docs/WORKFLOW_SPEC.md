@@ -1,140 +1,97 @@
-# 信息中心（InfoCenter）心智模型与协作规范手册
-> 本手册是多 Agent 协同体系的宪法级行为准则，界定 **Message（通信）**、**Case（案卷）**、**Task（任务）**、**Lock/Guard（锁与闸门）** 四大核心实体的概念边界与执行标准。
+# 信息中心（InfoCenter）最简架构与全场景协作规范
+> 本手册界定信息中心的三大解耦核心（**消息队列**、**任务与案卷队列**、**资源与控制模块**），以及在**代码研发**、**科研攻关**、**商务工作**三大场景下的统一执行标准。
 
 ---
 
-## 一、四大核心概念与分层架构
+## 一、最简三核架构与实体边界
 
-信息中心采用「四层漏斗模型」，各层各司其职，切忌越权混用：
+信息中心以**消息队列**为原点，按职责正交解耦为三大宏观结构：
 
 ```mermaid
 flowchart TD
-    subgraph L1["1. 沟通层 (Message Bus)"]
-        M[信件 Message / 线程 Thread]
-        M -->|异步通信、分歧协商、催办与通知| INBOX[收件箱 Inbox / 未读提示]
+    subgraph S1["核心一：消息队列 (Message Queue)"]
+        M["信件 Message / 线程 Thread"]
+        M -->|"异步通信、分歧协商、跨节点同步"| INBOX["收件箱 Inbox / 事件流 Events"]
     end
 
-    subgraph L2["2. 宏观层 (Case Tracking)"]
-        C[案卷 Case / 控制包]
-        C -->|一线程一案卷| WBS[归属 WBS 树节点]
-        C -->|线性流水| CNODE[案卷节点 Node: 谁在办、办到哪]
+    subgraph S2["核心二：任务与案卷队列 (Task & Case Queue)"]
+        C["宏观案卷 Case / WBS 节点"]
+        T["微观任务单 Task 状态机"]
+        C -->|"拆解为可独立验收单元"| T
+        T -->|"todo ➔ doing ➔ blocked ➔ done/stopped"| TACC["硬性验收判据 acceptance / 交付物 deps"]
     end
 
-    subgraph L3["3. 执行层 (Task Machinery)"]
-        T[原子任务 Task]
-        T -->|状态机流转| TSTATE["todo ➔ doing ➔ blocked ➔ done/stopped"]
-        T -->|硬性验收门槛| TACC[验收条件 acceptance / 交接 handoff]
+    subgraph S3["核心三：资源与控制模块 (Resource Lock & Control)"]
+        LK["通用资源写锁 Lock / 排队 Queue"]
+        SB["自适应任务沙箱 Sandbox (Worktree / Draft)"]
+        CR["会话窗口 Window / 守护调度 Crew"]
     end
 
-    subgraph L4["4. 防护层 (Safety Gates)"]
-        LK[动态租约锁 Lock]
-        LK -->|无改动不续期| STALL[st_mtime 进度判定]
-        LK -->|提交卡口| GD[Git 提交闸门 Guard]
-    end
-
-    L1 -.->|认领信件自动立案| L2
-    L2 -->|分解为可验收单元| L3
-    L3 -->|改写代码前先占钥匙| L4
+    S1 -.->|"认领信件自动立案"| S2
+    S2 -->|"隔离执行或加锁写盘"| S3
 ```
 
-| 实体 | 抽象层级 | 核心回答的问题 | 生命周期管理 | 典型操作 |
+| 实体 | 所属核心 | 核心回答的问题 | 生命周期管理 | 典型操作 |
 |---|---|---|---|---|
-| **Message** | 沟通层 | 「对方需要知道什么？分歧如何达成共识？」 | 发送 ➔ 接收 ➔ 签收 (read) ➔ 归档 (archive) | `ic send`, `ic inbox`, `ic reply`, `ic thread` |
-| **Case** | 宏观层 | 「这个业务主题/需求谁在办？推进到哪一步了？」 | 待办 ➔ 在办 ➔ 待谁 ➔ 暂停 ➔ 办结/中止 | `ic case <id>`, `ic cases`, `ic case --note` |
-| **Task** | 执行层 | 「这个具体代码改动的执行人是谁？怎样算干完？」 | `todo ➔ doing ➔ blocked ➔ done / stopped` | `ic task add`, `ic task start`, `ic task set-status` |
-| **Lock / Guard**| 防护层 | 「当前路径是否安全？会不会踩踏冲突？」 | 申请 (acquire) ➔ 续期 (renew/stay) ➔ 释放 (unlock) | `ic lock`, `ic unlock`, `ic queue`, `ic guard` |
+| **Message** | 消息队列 | 「对方需要知道什么？分歧如何达成共识？」 | 发送 ➔ 接收 ➔ 签收 (read) ➔ 归档 (archive) | `ic send`, `ic inbox`, `ic reply`, `ic thread` |
+| **Case** | 任务与案卷队列 | 「这个业务主题/课题谁在办？推进到哪一步了？」 | 待办 ➔ 在办 ➔ 待谁 ➔ 暂停 ➔ 办结/中止 | `ic case <id>`, `ic cases`, `ic case --note` |
+| **Task** | 任务与案卷队列 | 「这个具体交付单元的执行人是谁？怎样算干完？」 | `todo ➔ doing ➔ blocked ➔ done / stopped` | `ic task add`, `ic task start`, `ic task set`, `ic task verify` |
+| **Lock / Sandbox**| 资源与控制模块 | 「当前文件/资源是否安全？是否在独立沙箱推进？」 | 申请 (lock/sandbox) ➔ 续期 ➔ 核验合入/释放 (unlock) | `ic lock`, `ic unlock`, `ic queue`, `ic guard`, `ic task sandbox` |
 
 ---
 
-## 二、角色矩阵与权责划分
+## 二、全场景适配矩阵（代码研发 · 科研攻关 · 商务工作）
+
+信息中心不绑定单一编程场景，同一套原语在三类场景下的映射如下：
+
+| 维度 | 💻 代码研发场景 (Code) | 🔬 科研攻关场景 (Research) | 📊 商务工作场景 (Business) |
+|---|---|---|---|
+| **典型项目 (Workspace)** | Git 代码仓库 | 论文手稿目录、实验数据与推导目录 | 商业方案、合同审阅、市场调研目录 |
+| **案卷 (Case) 粒度** | 特性开发、Bug 修复、架构重构 | 论文核心章节、定理证明、审稿回复 (Rebuttal) | 客户提案立项、尽职调查、季度规划 |
+| **任务单 (Task) 粒度** | 单模块改造、接口实现、单测补齐 | 单个引理推导、对照实验跑批、文献核查 | 竞品对比表、合同条款修订、纪要成稿 |
+| **推荐隔离方式** | `ic task sandbox`（自动建 Git Worktree）或文件锁 | `ic task sandbox`（独立草稿沙箱）或章节文件锁 | `ic task sandbox`（独立草稿沙箱）或文档写锁 |
+| **确定性验收 (`acceptance` / `deps`)** | `python -m unittest ...` 全绿 | `file:manuscript.tex` 非空且编译/脚本复现通过 | `file:proposal.md` 落盘且满足核查清单 |
+| **交付凭证 (`case --note`)** | 结论 ➔ `commit <hash>` | 结论 ➔ 稿件路径 / 实验图表与数据摘要 | 结论 ➔ 终版文档路径与核心指标结论 |
+
+---
+
+## 三、角色矩阵与权责划分
 
 全局只设三类角色，遵循「人做主导、协调者统筹、执行者专注」的原则：
 
-| 职能维度 | `manager` (用户本人) | `coordinator` (项目协调者) | `worker` (执行 Agent) |
+| 职能维度 | `manager` (用户本人，别名 `human`) | `coordinator` (项目协调者) | `worker` (执行 Agent) |
 |---|---|---|---|
-| **角色本质** | 系统的最高管理者，用户本人的具象代理（别名 `human`） | 项目维度的指挥中枢，由 manager 显式任命 | 具体干活的领域模型（如 cursor, grok, kimi 等） |
-| **名册管理** | **唯一有权**增加、删除、配置 Agent 名册 | 无权修改全局名册 | 无权修改全局名册 |
-| **项目任命** | **唯一有权**指定每个项目的 coordinator | 无权跨权任命 | 无权任命 |
-| **项目大盘** | 宏观监督，必要时一票裁定 | **独家维护**项目根目录 `PLAN.md` 与 WBS 结构 | 仅维护自己的 `TODO-<name>.md`，不得擅改 PLAN.md |
-| **案卷流转** | 全局穿透管理，随时可封卷/重开 | 推进项目内案卷、编写给人看的案卷总结、更新里程碑 | 推进案卷节点、标示「待谁」（`--wait-for`） |
-| **任务派发** | 全局兜底派发 | **核心职责**：拆解任务并指定唯一 owner | 专注认领并推进自身任务，提议新任务交协调者 |
-| **任务验收** | 最终审核人 | **主要验收人**：严格根据 `acceptance` 判定 done | 无权自审自结，完成后提请协调者验收 |
-| **写锁与提交** | 享有全局锁清理与协调特权 | 协助解决项目内锁冲突，代管遗留写锁 | 遵循「不拿锁不写盘、拿不到锁入队走人」纪律 |
+| **名册与任命** | **唯一有权**管理全局名册、任命各项目 coordinator | 无权修改全局名册或跨权任命 | 无权修改名册 |
+| **项目大盘** | 宏观监督，必要时一票裁定 | **独家维护**项目 `PLAN.md` 与 WBS 结构 | 专注推进自身任务，不得擅改 `PLAN.md` |
+| **任务派发与验收** | 全局兜底派发与最终审核 | 拆解任务并指定唯一 owner；按 `acceptance` 独立复验 | 认领推进自身任务；完成后提请协调者验收 |
+| **资源与冲突协调** | 享有全局锁清理与进程控制特权 | 协助解决项目内资源锁冲突与沙箱合入 | 遵循「改前拿锁或进沙箱、碰撞入队即走」纪律 |
 
 ---
 
-## 三、标准作业程序：Agent 五步工作法（5-Step SOP）
+## 四、标准作业程序：Agent 五步工作法（5-Step SOP）
 
-每个进入工作周期的 Agent，必须严格遵循以下标准作业程序：
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor A as Agent (执行者)
-    participant H as InfoCenter Hub
-    participant G as Git / 本地文件
-
-    Note over A,H: 步骤一：进场看盘
-    A->>H: ic inbox (列出未读信件)
-    A->>H: ic status (检查是否有待办/待谁/排队)
-
-    Note over A,H: 步骤二：认领开工
-    A->>H: ic read <msg_id> (签收并自动认领关联案卷)
-    opt 承接微观任务
-        A->>H: ic task start <task_id> (状态变更为 doing)
-    end
-
-    Note over A,G: 步骤三：加锁改码
-    A->>H: ic lock <path...> (申请修改路径的写锁)
-    alt 锁获取成功
-        A->>G: 编写并修改代码文件
-    else 锁已被占用 (409 Conflict)
-        A->>H: ic queue <path> --note "修改意图"
-        Note over A: 自动记入自身 TODO，立即转向做其它事，绝不原地死等
-    end
-
-    Note over A,G: 步骤四：提交与放锁
-    A->>G: git commit (触发 pre-commit 钩子 ic guard 校验)
-    A->>H: ic unlock (释放写锁)
-
-    Note over A,H: 步骤五：交付与收尾
-    A->>H: ic case <id> --note "交付说明 ➔ commit hash"
-    opt 若为任务单
-        A->>H: 提请 coordinator 运行验收命令打成 done
-    end
-```
-
-### 1. 进场看盘（Look Before Leap）
-* 运行 `ic inbox`：确认是否有发给自己的未读留言。
-* 运行 `ic status`：查看全局红黄灯（是否有案卷正在等我 `--wait-for`、名下是否有快过期的锁、是否有待改排队）。
-
-### 2. 认领与承接（Claim & Engage）
-* 运行 `ic read <msg_id>`：签收信件。该操作会将对应线程的案卷自动打上你的会话窗口标，防止同名 Agent 的其他多开窗口重复干活。
-* 如果有分配给你的微观任务单，运行 `ic task start <task_id>` 将状态推入 `doing`。
-
-### 3. 加锁改码（Lock Before Touch）
-* **写前必锁**：修改代码前执行 `ic lock <path...>`。
-* **无进度不续期**：一把锁默认 1800 秒。若中间未发生实际磁盘写入，再次申请续期会报 `409 no_progress`。如确实需要空盘保持，使用 `--stay` 开关（最长累积不超过 1 小时）。
-* **碰撞即走**：若路径已被其他人占用，立即执行 `ic queue <path> --note "想改什么"`，排队记录会自动追加到你的 `TODO-<name>.md` 中。**之后立刻去做别的任务，禁止轮询等锁！**
-
-### 4. 提交放锁（Commit & Release）
-* 提交代码时，Git `pre-commit` 钩子会自动运行 `ic guard` 审查暂存区文件是否全部持有效锁。
-* 提交完成后，执行 `ic unlock` 释放写锁，物归原位。
-
-### 5. 闭环收尾（Close the Loop）
-* 运行 `ic case <id> --note "已完成重构 ➔ commit <hash>"` 留下一行精炼结论。
-* **交付绝不再另发信件**：代码提交记录 + 案卷节点就是最好的交付凭证，严禁发送「我已经改完了请看」等客套信件，避免消息噪音。
-* 若是任务单，提请 coordinator 运行验收命令后关闭（`done`）。
+1. **进场看盘（Look Before Leap）**：
+   * 运行 `ic inbox` 查看未读留言；运行 `ic status` 查看全局指示灯（是否有案卷在等我 `--wait-for`、名下任务与排队状态）。
+2. **认领开工（Claim & Engage）**：
+   * 运行 `ic read <msg_id>` 签收信件并自动认领关联案卷。
+   * 若有分配的微观任务单，运行 `ic task start <task_id>`（如需隔离工作区可运行 `ic task sandbox <task_id>`）。
+3. **隔离执行或加锁修改（Sandbox or Lock Before Touch）**：
+   * **共享目录直接修改**：先执行 `ic lock <路径...>`。若被占用（409 Conflict），立即执行 `ic queue <路径> --note "修改意图"` 记入待办，**立刻转向做其他事，严禁轮询干等**。
+   * **任务沙箱隔离修改**：在 `ic task sandbox <task_id>` 创建的独立目录（Git Worktree 或独立草稿目录）中自由读写，互不污染。
+4. **验证与释放（Verify & Release）**：
+   * 交付前自检 `acceptance` 判据或运行 `ic task verify <task_id>` 校验交付物（支持 `file:<path>` 存在非空校验与 `<path>@sha256:<hash>` 哈希校验）。
+   * 若在主工作区持锁修改，完成后执行 `ic unlock` 释放写锁；若在沙箱修改，可运行 `ic task sandbox <task_id> --apply` 归档交付物。
+5. **闭环收尾（Close the Loop）**：
+   * 运行 `ic case <id> --note "交付说明 ➔ 凭证"` 留下一行精炼结论。
+   * **交付不另发客套信**：案卷节点 + 交付物落盘即为凭证，禁止再发「已改完请查收」等重复信件。
 
 ---
 
-## 四、反模式与禁令清单（Anti-Patterns）
+## 五、反内耗与禁令清单（Anti-Patterns）
 
-为保持整套体系长期整洁高效，所有 Agent 严禁触犯以下红线：
-
-1. ❌ **禁止私开客套信**：禁止发送「收到」、「好的」、「+1」等无实质新信息的信件。
-2. ❌ **禁止将触发条件留在信里**：如果需要等待某人提供输入，**必须且只能**落到案卷上（`ic case <id> --wait-for <agent>`）。写在正文里的「请你稍后告诉我」属于无效约定，对方无法收到自动化看板警示。
-3. ❌ **禁止绕过锁硬写**：严禁使用 `git commit --no-verify`，严禁私自绕过写锁直接篡改公共代码库。绕过留痕等于未发生。
-4. ❌ **禁止虚假验收标准**：任务和案卷的 `acceptance` 严禁使用「看起来正常」、「优化完成」等主观形容词。**必须是第三人可在终端复现执行的确定性测试或命令**（如：`pytest tests/test_core.py 全绿`）。
-5. ❌ **禁止越权修改规划**：非 coordinator 严禁直接改写根目录 `PLAN.md`。执行者的思考与进度只能沉淀在各自的 `TODO-<name>.md` 中。
-6. ❌ **禁止因会话结束私自封卷**：窗口离场或程序重启不代表业务结束。未做完的案卷必须保持开放，等待下一轮轮询或心跳继续推进。
+1. ❌ **禁止形式主义台账内耗（禁日常「D线追码」）**：以信息中心 SQLite 数据库（`ic status` / `ic cases` / `ic tasks`）为唯一事实源（SSOT）。严禁在无明确派单时自发追写 `CHANGELOG.md` / `README.md` 或频繁重打外锚。
+2. ❌ **禁止私开客套信**：禁止发送「收到」、「好的」、「+1」等无实质增量信息的信件。
+3. ❌ **禁止把触发条件留在信里**：需要等待某人输入时，**必须且只能**落到案卷上（`ic case <id> --wait-for <agent>`）。
+4. ❌ **禁止绕过锁硬写公共区**：在公共工作区修改文件必须持锁，严禁私自篡改未持锁的公共文件。
+5. ❌ **禁止空洞形容词验收**：任务和案卷的 `acceptance` 必须是第三人可复现核验的标准（代码场景为测试命令，科研/商务场景为可核验的交付物路径或量化清单）。
+6. ❌ **禁止无事空转**：心跳检查若发现 `0` 未读且名下无可推进任务，必须立即退出，严禁为了「显得有产出」而制造无效文件改动。

@@ -3,6 +3,7 @@ __pycache__/
 .DS_Store
 *.egg-info/
 .infocenter/
+.ic-sandboxes/
 dist/
 build/
 *.orig
@@ -13,5 +14,6 @@ build/
 # 过程文档：只留本地，不入仓库、不推远程
 PLAN.md
 TODO-*.md
+docs/archive/ledgers/
 _work/
 uv.lock

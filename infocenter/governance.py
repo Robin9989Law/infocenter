@@ -31,7 +31,6 @@ from infocenter.common import (
     normalize_name,
     utcnow,
 )
-from infocenter.locks import _locks_sweep
 
 TASK_STATUSES = ("todo", "doing", "blocked", "stopped", "done")
 TASK_TERMINAL = ("stopped", "done")
@@ -513,6 +512,7 @@ class GovernanceMixin:
 
     def sweep(self, now: str | None = None) -> dict:
         """死流程回收：过期锁、死进程窗口、僵尸认领。全部留痕。"""
+        from infocenter.locks import _locks_sweep
         from infocenter.windows import _mark_dead_windows, _release_stale_claims
 
         now = now or utcnow()
